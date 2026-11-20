@@ -13,6 +13,7 @@
 // TEST_DEPS: src/Core/IntakeReviewRule.mm src/Core/IntakeMountAliases.mm src/Core/IntakeDecorStats.mm
 // TEST_DEPS: src/Core/IntakeWatchFilter.mm
 // TEST_DEPS: src/Core/IntakeGroupBadge.mm
+// TEST_DEPS: src/Core/IntakeWatchSet.mm src/Core/IntakeSettingsParse.mm
 //
 
 #import <Foundation/Foundation.h>

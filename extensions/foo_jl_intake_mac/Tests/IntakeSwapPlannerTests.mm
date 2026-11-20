@@ -16,6 +16,7 @@
 // TEST_DEPS: src/Core/IntakeSidecarMembers.mm src/Core/IntakeEnvelope.mm src/Core/IntakePath.mm
 // TEST_DEPS: src/Core/IntakeSettingsParse.mm src/Core/IntakeMountAliases.mm src/Core/IntakeLog.mm
 // TEST_DEPS: src/Core/IntakeErrorMap.mm
+// TEST_DEPS: src/Core/IntakeWatchSet.mm
 //
 
 #import <Foundation/Foundation.h>

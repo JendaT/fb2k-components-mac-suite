@@ -140,9 +140,13 @@ LinkCheck posixLinkReader(const std::string &path, std::string &target) {
 }
 
 std::string resolveLocalPath(const std::string &path, const std::vector<MountEntry> &mounts,
-                             const LinkReader &readLink, bool *touched) {
+                             const LinkReader &readLink, bool *touched, ResolveEnd *end) {
     if (touched) *touched = false;
-    if (!readLink || path.empty() || path[0] != '/') return path;
+    if (end) *end = ResolveEnd::Complete;
+    if (!readLink || path.empty() || path[0] != '/') {
+        if (end) *end = ResolveEnd::Missing;
+        return path;
+    }
     std::deque<std::string> todo;
     appendParts(path, todo, false);
     // Resolved so far: no symlink in it, every component examined locally,
@@ -162,6 +166,7 @@ std::string resolveLocalPath(const std::string &path, const std::vector<MountEnt
         // Under a network mount, or under none known: not one lstat there.
         if (!mayResolvePath(next, mounts)) {
             todo.push_front(std::move(name));
+            if (end) *end = ResolveEnd::Network;
             break;
         }
         std::string target;
@@ -173,7 +178,11 @@ std::string resolveLocalPath(const std::string &path, const std::vector<MountEnt
         }
         if (check == LinkCheck::Missing || target.empty() || ++links > kMaxSymlinks) {
             todo.push_front(std::move(name));
-            if (links > kMaxSymlinks) return path;  // a loop: as written
+            if (links > kMaxSymlinks) {
+                if (end) *end = ResolveEnd::Loop;
+                return path;  // a loop: as written
+            }
+            if (end) *end = ResolveEnd::Missing;
             break;
         }
         // The link's text replaces it; a relative one is read from `done`.
@@ -184,6 +193,81 @@ std::string resolveLocalPath(const std::string &path, const std::vector<MountEnt
     for (const std::string &name : todo) out = joinPath(out, name);
     const std::string clean = lexicalAbsolutePath(out);
     return clean.empty() ? path : clean;
+}
+
+ShareLinkRead readShareLink(const std::string &link, const std::vector<MountEntry> &mounts,
+                            const LinkReader &readLink) {
+    ShareLinkRead out;
+    // 1. Lexically clean: the spelling foobar2000's items use (no trailing
+    // slash), and the one the parent and name are cut from.
+    out.linkPath = lexicalAbsolutePath(link);
+    if (out.linkPath.empty() || !readLink) return out;  // Missing: nothing may be examined
+    if (out.linkPath == "/") {
+        out.status = ShareLinkStatus::NotLink;
+        return out;
+    }
+    const std::string parent = parentDirectory(out.linkPath);
+    const std::string_view name = std::string_view(out.linkPath).substr(parent.size() == 1 ? 1 : parent.size() + 1);
+
+    // 2. The parent, resolved locally. Only a walk that finished leaves a
+    // folder with no symlink in it, so that an lstat of the link below
+    // examines exactly the folders the walk examined. A walk that stopped
+    // at a missing folder keeps the rest as written, and lexical ".." in a
+    // link's text could then name a folder never examined.
+    ResolveEnd end = ResolveEnd::Complete;
+    out.resolvedParent = resolveLocalPath(parent, mounts, readLink, nullptr, &end);
+    switch (end) {
+        case ResolveEnd::Complete: break;
+        case ResolveEnd::Missing: return out;
+        case ResolveEnd::Network:
+            out.status = ShareLinkStatus::OnNetwork;
+            return out;
+        case ResolveEnd::Loop:
+            out.status = ShareLinkStatus::Loop;
+            return out;
+    }
+
+    // 3. The link itself must lie on a local filesystem by the mount table.
+    const std::string path = joinPath(out.resolvedParent, name);
+    if (!mayResolvePath(path, mounts)) {
+        out.status = ShareLinkStatus::OnNetwork;
+        return out;
+    }
+
+    // 4. One read of that path.
+    std::string text;
+    const LinkCheck check = readLink(path, text);
+    if (check == LinkCheck::NotLink) {
+        out.status = ShareLinkStatus::NotLink;
+        return out;
+    }
+    if (check == LinkCheck::Missing || text.empty()) return out;
+
+    // 5. The target, resolved locally: a chain is followed, ".." is taken
+    // physically (the walk resolves it, so the text is not cleaned first),
+    // and the walk stops where it enters a network mount. A target that
+    // does not exist (an unmounted share's mount point) is still a Link.
+    const std::string target = text[0] == '/' ? text : joinPath(out.resolvedParent, text);
+    ResolveEnd targetEnd = ResolveEnd::Complete;
+    const std::string resolved = resolveLocalPath(target, mounts, readLink, nullptr, &targetEnd);
+    if (targetEnd == ResolveEnd::Loop) {
+        out.status = ShareLinkStatus::Loop;
+        return out;
+    }
+    out.rawTarget = lexicalAbsolutePath(resolved);
+    out.status = ShareLinkStatus::Link;
+    return out;
+}
+
+const char *shareLinkStatusText(ShareLinkStatus status) {
+    switch (status) {
+        case ShareLinkStatus::Link: return "symlink";
+        case ShareLinkStatus::NotLink: return "not a symlink";
+        case ShareLinkStatus::Missing: return "missing";
+        case ShareLinkStatus::OnNetwork: return "on a network volume";
+        case ShareLinkStatus::Loop: return "a symlink loop";
+    }
+    return "";
 }
 
 std::vector<std::string> watchCandidates(const std::vector<std::string> &configured,

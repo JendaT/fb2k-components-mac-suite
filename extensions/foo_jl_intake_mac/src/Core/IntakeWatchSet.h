@@ -55,8 +55,25 @@
 //  no candidate maps to nothing and returns false: the caller then treats
 //  everything as changed.
 //
+//  Share links (B11, readShareLink): after the plorg migration foobar2000
+//  keeps music-share items as file://<link>/<rel>, where <link> is a local
+//  symlink a mount agent points at the share's current mount point (or at
+//  /Volumes/<share> while unmounted, or at a local mirror). Reading where a
+//  configured link points must not reach the share either, and a plain
+//  lstat of the configured path would follow symlinks in its parent
+//  folders (~/NAS -> /Volumes/<share> makes ~/NAS/music a path on the
+//  share). So the read goes: clean the path lexically; resolve its parent
+//  with resolveLocalPath, which must finish locally; check the link itself
+//  against the mount table (mayResolvePath on the resolved parent plus the
+//  name); only then read that one path; and resolve a symlink's target with
+//  resolveLocalPath, which stops where the target enters a network mount
+//  (the share's mount point is never examined). The status says what the
+//  read found, so not-a-link, missing, on-a-network-volume, a loop and a
+//  dangling link (still a Link: an unmounted share's mount point is
+//  exactly that) stay apart.
+//
 //  Thread-safety: a built WatchSet is immutable; build() runs the link
-//  reader on the calling thread (the loader queue).
+//  reader on the calling thread (the loader queue), as readShareLink does.
 //
 
 #pragma once
@@ -96,11 +113,50 @@ enum class LinkCheck {
 using LinkReader = std::function<LinkCheck(const std::string &path, std::string &target)>;
 LinkCheck posixLinkReader(const std::string &path, std::string &target);
 
-// `path` (lexically clean, absolute) with its symlinks resolved as far as
-// the mount table allows (see the top of this file). `readLink` runs only
-// on paths mayResolvePath allows; `touched` (optional) is set when it ran.
+// How resolveLocalPath ended.
+enum class ResolveEnd {
+    Complete, // every component was examined locally: the result holds no symlink
+    Missing,  // a component does not exist or could not be examined (or no reader, or not
+              // absolute); the rest is kept as written
+    Network,  // the walk reached a path mayResolvePath refuses; the rest is kept as written
+    Loop,     // more than 32 links: the path as written
+};
+
+// `path` (lexically clean, absolute; "." and ".." are also taken physically
+// where the walk reaches them, so readShareLink passes a link's text as
+// is) with its symlinks resolved as far as the mount table allows (see the
+// top of this file). `readLink` runs only
+// on paths mayResolvePath allows; `touched` (optional) is set when it ran;
+// `end` (optional) says how the walk ended.
 std::string resolveLocalPath(const std::string &path, const std::vector<MountEntry> &mounts,
-                             const LinkReader &readLink, bool *touched = nullptr);
+                             const LinkReader &readLink, bool *touched = nullptr, ResolveEnd *end = nullptr);
+
+// B11: what readShareLink found at a configured share link.
+enum class ShareLinkStatus {
+    Link,      // a symlink, read locally; rawTarget holds where it leads (which need not exist)
+    NotLink,   // exists and is not a symlink
+    Missing,   // it or a folder above it does not exist or cannot be examined (also: not
+               // absolute, or no reader)
+    OnNetwork, // on a network volume, or on none the mount table knows: never examined
+    Loop,      // more than 32 links in its parent folders or its target
+};
+
+struct ShareLinkRead {
+    ShareLinkStatus status = ShareLinkStatus::Missing;
+    std::string linkPath;       // the configured path, lexically clean; "" when not absolute
+    std::string rawTarget;      // Link: the target, resolved as far as resolveLocalPath goes
+                                // (stops at a network mount or a missing component), lexically clean
+    std::string resolvedParent; // the parent folder as far as it was resolved; "" when not reached
+};
+
+// See the top of this file. `readLink` runs only on paths mayResolvePath
+// allows, never past a network mount point. "/" is NotLink without a read.
+ShareLinkRead readShareLink(const std::string &link, const std::vector<MountEntry> &mounts,
+                            const LinkReader &readLink);
+
+// "symlink", "not a symlink", "missing", "on a network volume" or "a
+// symlink loop", for log lines and the preferences page.
+const char *shareLinkStatusText(ShareLinkStatus status);
 
 // The candidates in the order described above, lexically cleaned, each once
 // (by exact bytes), "/" and anything not absolute left out. `rootPaths` are

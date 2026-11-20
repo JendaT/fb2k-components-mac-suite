@@ -6,8 +6,13 @@
 //  PLAN.md B3) and for IntakeView's per-row lookup through them: two aliases
 //  of one share, different shares, nested mount points, the mount point
 //  itself, no mounts, NFD names, mount points in another case, the changed
-//  bases of two tables, and losing one mount point. Synthetic mount lists
-//  only: nothing here reads the real mount table.
+//  bases of two tables, and losing one mount point. B11 share links: a link
+//  to either mount point of a share, to a mirror and to the unmounted
+//  placeholder, path boundaries, NFD link text, exact case, a link-form
+//  root, nested links, a link to "/", changed bases on a re-point and on
+//  removal, order independence, and the rejected cases. Synthetic mount
+//  lists and link reads only: nothing here reads the real mount table or
+//  a real link.
 //
 // TEST_DEPS: src/Core/IntakePath.mm src/Core/IntakeView.mm src/Core/IntakeSnapshot.mm
 // TEST_DEPS: src/Core/IntakeLog.mm src/Core/IntakeDecorationMap.mm src/Core/IntakeReviewRule.mm
@@ -15,7 +20,7 @@
 // TEST_DEPS: src/Core/IntakeWatchFilter.mm
 // TEST_DEPS: src/Core/IntakeGroupBadge.mm
 // TEST_DEPS: src/Core/IntakeLibraryIndex.mm src/Core/IntakeSwapPlanner.mm src/Core/IntakeSidecarMembers.mm
-// TEST_DEPS: src/Core/IntakeSettingsParse.mm
+// TEST_DEPS: src/Core/IntakeSettingsParse.mm src/Core/IntakeWatchSet.mm
 //
 
 #import <Foundation/Foundation.h>
@@ -24,6 +29,7 @@
 #include "../src/Core/IntakeMountAliases.h"
 #include "../src/Core/IntakePath.h"
 #include "../src/Core/IntakeView.h"
+#include "../src/Core/IntakeWatchSet.h"
 #include "TestHarness.h"
 
 #include <string>
@@ -355,6 +361,272 @@ static void testViewMountPointCase() {
           "a case difference past the mount point still matches nothing");
 }
 
+// --- B11 share links ---
+
+// What readShareLink would report for `link` (synthetic: nothing is read).
+static ShareLinkRead linkRead(const std::string &link, const std::string &target,
+                              ShareLinkStatus status = ShareLinkStatus::Link) {
+    ShareLinkRead r;
+    r.status = status;
+    r.linkPath = link;
+    if (status == ShareLinkStatus::Link) r.rawTarget = target;
+    r.resolvedParent = parentDirectory(link);
+    return r;
+}
+
+static const std::string kLink = "/Users/x/Music/NAS/music";
+
+static std::vector<MountEntry> bothMounts() {
+    return withSystem({smb("/Volumes/music", "//user@nas-lan.local/music"), smb("/Volumes/music-1", "//user@10.8.0.1/music")});
+}
+
+static bool hasNote(const MountAliases &a, const std::string &part) {
+    for (const std::string &n : a.notes()) {
+        if (n.find(part) != std::string::npos) return true;
+    }
+    return false;
+}
+
+static void testShareLinkOnShare() {
+    g_context = "link-on-share";
+    const std::vector<MountEntry> mounts = bothMounts();
+    auto lan = MountAliases::build(mounts, {linkRead(kLink, "/Volumes/music")});
+    auto vpn = MountAliases::build(mounts, {linkRead(kLink, "/Volumes/music-1")});
+    const std::string rootKey = rw(*lan, "/Volumes/music/income/dump/Fixture Artist - Album");
+    CHECK(rootKey == "/smbfs:music/income/dump/Fixture Artist - Album", "the /Volumes-form root key names the share");
+    CHECK(rw(*lan, kLink + "/income/dump/Fixture Artist - Album") == rootKey,
+          "link -> /Volumes/music: the link-form path gives the root's key");
+    CHECK(rw(*vpn, kLink + "/income/dump/Fixture Artist - Album") == rootKey,
+          "link -> /Volumes/music-1 (the same share): the same key");
+    CHECK(rw(*lan, "file://" + kLink + "/income/dump/Fixture Artist - Album/01.wav") == rootKey + "/01.wav",
+          "a file:// row under the link");
+    CHECK(rw(*lan, kLink) == "/smbfs:music", "the link itself is the share");
+    CHECK(rw(*lan, "/Volumes/music-1/income/a.wav") == "/smbfs:music/income/a.wav", "the smbfs entries still work");
+    CHECK(lan->links().size() == 1, "one link entry");
+    if (lan->links().size() == 1) {
+        const MountAliases::LinkEntry &e = lan->links()[0];
+        CHECK(e.linkKey == kLink && e.rawLink == kLink && e.rawTarget == "/Volumes/music" &&
+                  e.targetKey == "/smbfs:music" && e.onShare,
+              "the entry's fields: the target rewritten through the smbfs entries, on a share");
+    }
+    CHECK(vpn->links().size() == 1 && vpn->links()[0].rawTarget == "/Volumes/music-1" &&
+              vpn->links()[0].targetKey == "/smbfs:music",
+          "the raw target is kept for Swap");
+    CHECK(!lan->underOffShareLink(key(kLink + "/income/a.wav")), "rows under a link on the share are not off it");
+    CHECK(lan->notes().empty(), "no note for a link on the share");
+    CHECK(lan->aliasCount() == 2, "links are not counted as smbfs aliases");
+    CHECK(lan->describe().find("link " + kLink + " -> /smbfs:music (exact case, on a share)") != std::string::npos,
+          "describe names the link, its case rule and that it is on a share");
+    CHECK(!lan->sameAs(*vpn), "another raw target is another table (Swap reads it)");
+    CHECK(MountAliases::changedBases(*lan, *vpn).empty(), "but no key rewrites differently: no bases");
+}
+
+static void testShareLinkOffShare() {
+    g_context = "link-mirror";
+    const std::vector<MountEntry> mounts = bothMounts();
+    auto mirror = MountAliases::build(mounts, {linkRead(kLink, "/Users/x/mirror/music")});
+    const std::string row = kLink + "/income/dump/Fixture Artist - Album/01.wav";
+    CHECK(rw(*mirror, row) == "/Users/x/mirror/music/income/dump/Fixture Artist - Album/01.wav",
+          "link -> mirror: the mirror's key, no share key");
+    CHECK(rw(*mirror, row).rfind("/smbfs:", 0) != 0, "nothing under /smbfs:");
+    CHECK(mirror->links().size() == 1 && !mirror->links()[0].onShare, "off the share");
+    CHECK(mirror->underOffShareLink(key(row)), "its rows lie under an off-share link");
+    CHECK(mirror->underOffShareLink(key(kLink)), "the link itself too");
+    CHECK(!mirror->underOffShareLink(key("/Volumes/music/income/a.wav")), "a /Volumes row is not under a link");
+    CHECK(!mirror->underOffShareLink(key("/Users/x/Music/other/a.wav")), "nor a local row elsewhere");
+    CHECK(!mirror->underOffShareLink(key(kLink + "2/a.wav")), "nor one that only starts like the link");
+    CHECK(mirror->notes().size() == 1 && hasNote(*mirror, "not at a mounted share"),
+          "one note says why its rows match no share root");
+    CHECK(mirror->describe().find("(exact case, not on a share)") != std::string::npos, "describe says off the share");
+
+    g_context = "link-placeholder";
+    // Unmounted: no smbfs entry; the agent points the link at /Volumes/music.
+    auto placeholder = MountAliases::build(withSystem({}), {linkRead(kLink, "/Volumes/music")});
+    CHECK(rw(*placeholder, kLink + "/income/a") == rw(*placeholder, "/Volumes/music/income/a") &&
+              rw(*placeholder, "/Volumes/music/income/a") == "/Volumes/music/income/a",
+          "link -> placeholder: the unaliased /Volumes/music root key, as /Volumes rows have while unmounted");
+    CHECK(placeholder->underOffShareLink(key(kLink + "/income/a")), "and its rows count as off the share");
+    CHECK(placeholder->links().size() == 1 && placeholder->links()[0].targetKey == "/Volumes/music",
+          "target key unaliased");
+    CHECK(placeholder->describe().rfind("no smbfs mounts; link " + kLink, 0) == 0,
+          "describe with links and no smbfs mount");
+
+    g_context = "link-nested-mount";
+    // A local disk mounted inside the share passes through: not on the share.
+    auto nested = MountAliases::build(withSystem({smb("/Volumes/music", "//user@host/music"),
+                                                  local("/Volumes/music/disk", "hfs")}),
+                                      {linkRead(kLink, "/Volumes/music/disk/sub")});
+    CHECK(nested->links().size() == 1 && !nested->links()[0].onShare &&
+              nested->links()[0].targetKey == "/Volumes/music/disk/sub",
+          "a target on a local mount inside the share is off the share");
+}
+
+static void testShareLinkMatching() {
+    g_context = "link-boundary";
+    const std::vector<MountEntry> mounts = bothMounts();
+    auto a = MountAliases::build(mounts, {linkRead("/Users/x/music", "/Volumes/music")});
+    CHECK(rw(*a, "/Users/x/music2/a.wav") == "/Users/x/music2/a.wav", "/Users/x/music2 is not under /Users/x/music");
+    CHECK(rw(*a, "/Users/x/music/a.wav") == "/smbfs:music/a.wav", "/Users/x/music/a.wav is");
+    CHECK(rw(*a, "/Users/x/mus") == "/Users/x/mus", "a shorter name is not");
+
+    g_context = "link-case";
+    CHECK(rw(*a, "/Users/x/Music/a.wav") == "/Users/x/Music/a.wav", "a link matches byte-exact, never ignoring case");
+    CHECK(rw(*a, "/users/x/music/a.wav") == "/users/x/music/a.wav", "anywhere in the link path");
+
+    g_context = "link-nfd";
+    const std::string nfc = "/Users/x/M\xC3\xBAsica/NAS";   // "Música", precomposed
+    const std::string nfd = "/Users/x/Mu\xCC\x81sica/NAS";  // decomposed
+    auto n = MountAliases::build(mounts, {linkRead(nfd, "/Volumes/music")});
+    CHECK(rw(*n, nfc + "/Fixture Artist/01.wav") == "/smbfs:music/Fixture Artist/01.wav",
+          "NFD link text meets an NFC row");
+    CHECK(rw(*n, nfd + "/Fixture Artist/01.wav") == "/smbfs:music/Fixture Artist/01.wav", "and an NFD row");
+    CHECK(n->links().size() == 1 && n->links()[0].rawLink == nfd && n->links()[0].linkKey == key(nfc),
+          "the raw link keeps its bytes, the key is NFC");
+
+    g_context = "link-nested";
+    // A link inside another link's folder (as the kernel would resolve it):
+    // the longer one wins for its own rows.
+    auto nestedLinks = MountAliases::build(mounts, {linkRead("/Users/x/a", "/Users/x/mirror"),
+                                                    linkRead("/Users/x/a/b", "/Volumes/music-1/sub")});
+    CHECK(rw(*nestedLinks, "/Users/x/a/b/c.wav") == "/smbfs:music/sub/c.wav", "the longer link wins");
+    CHECK(rw(*nestedLinks, "/Users/x/a/c.wav") == "/Users/x/mirror/c.wav", "the shorter one elsewhere");
+    CHECK(!nestedLinks->underOffShareLink(key("/Users/x/a/b/c.wav")) &&
+              nestedLinks->underOffShareLink(key("/Users/x/a/c.wav")),
+          "underOffShareLink follows the entry rewrite() uses");
+    CHECK(nestedLinks->links().size() == 2 && nestedLinks->links()[0].linkKey == "/Users/x/a",
+          "links() by link key");
+
+    g_context = "link-to-root";
+    auto toRoot = MountAliases::build(mounts, {linkRead("/Users/x/rootlink", "/")});
+    CHECK(rw(*toRoot, "/Users/x/rootlink/etc/a") == "/etc/a" && rw(*toRoot, "/Users/x/rootlink") == "/",
+          "a link to / maps onto the rest of the path (no //)");
+}
+
+static void testShareLinkRootAndView() {
+    g_context = "link-view";
+    const std::vector<MountEntry> mounts = bothMounts();
+    auto aliases = MountAliases::build(mounts, {linkRead(kLink, "/Volumes/music-1")});
+    std::vector<IntakeRecord> records = {
+        record("itk_00000001", "/Volumes/music/income/dump/Fixture Artist - New Album", IntakeStatus::New),
+        // A root the CLI spelled through the link (pure test: the CLI keeps /Volumes roots).
+        record("itk_00000002", kLink + "/income/dump/Fixture Artist - Linked Album", IntakeStatus::Rejected),
+    };
+    auto snapshot = aliasedSnapshot(records, *aliases);
+    auto view = IntakeView::make(snapshot, aliases);
+    ViewScratch scratch;
+    const IntakeRowVisual *linked =
+        view->visualFor("file://" + kLink + "/income/dump/Fixture Artist - New Album/01 - Test Track One.wav", scratch);
+    CHECK(linked && linked->icon == IntakeIcon::CircleOpen, "a link-form row matches the /Volumes-form root");
+    const IntakeRowVisual *rejected =
+        view->visualFor("/Volumes/music/income/dump/Fixture Artist - Linked Album/01.wav", scratch);
+    CHECK(rejected && rejected->strikethrough, "a link-form root matches a /Volumes row");
+    CHECK(snapshot->recordForId("itk_00000002") &&
+              snapshot->recordForId("itk_00000002")->rootKey == "/smbfs:music/income/dump/Fixture Artist - Linked Album",
+          "its root key is the share key");
+    auto unlinked = IntakeView::make(aliasedSnapshot(records, *MountAliases::build(mounts)), MountAliases::build(mounts));
+    CHECK(unlinked->visualFor("file://" + kLink + "/income/dump/Fixture Artist - New Album/01.wav", scratch) == nullptr,
+          "without the link entry the same row matches nothing (negative control)");
+}
+
+static void testShareLinkChanges() {
+    g_context = "link-changed-bases";
+    using Bases = std::vector<std::string>;
+    const std::vector<MountEntry> mounts = withSystem({smb("/Volumes/music", "//user@host/music")});
+    auto onShare = MountAliases::build(mounts, {linkRead(kLink, "/Volumes/music")});
+    auto repointed = MountAliases::build(mounts, {linkRead(kLink, "/Users/x/mirror/music")});
+    auto removed = MountAliases::build(mounts);
+    CHECK(MountAliases::changedBases(*onShare, *onShare).empty(), "the same table: none");
+    CHECK(MountAliases::changedBases(*onShare, *repointed) == Bases({"/smbfs:music", "/Users/x/mirror/music"}),
+          "a re-point: the link as each table rewrites it");
+    CHECK(MountAliases::changedBases(*onShare, *removed) == Bases({"/smbfs:music", kLink}),
+          "a removed link: the old target is still reported");
+    CHECK(MountAliases::changedBases(*removed, *onShare) == Bases({kLink, "/smbfs:music"}), "an added link");
+    // The share unmounts; the agent points the link at the placeholder.
+    auto unmounted = MountAliases::build(withSystem({}), {linkRead(kLink, "/Volumes/music")});
+    const Bases unmount = MountAliases::changedBases(*onShare, *unmounted);
+    CHECK(unmount == Bases({"/smbfs:music", "/Volumes/music", "/smbfs:music", "/Volumes/music"}),
+          "the mount and the link entry both change (the link's target key moved)");
+    // A link and a mount point spelled alike in two tables stay apart.
+    auto mountX = MountAliases::build({smb("/Volumes/x", "//user@host/x")});
+    auto linkX = MountAliases::build(withSystem({}), {linkRead("/Volumes/x", "/Users/x/mirror")});
+    CHECK(MountAliases::changedBases(*mountX, *linkX).size() == 4, "a link never merges with a mount key");
+
+    g_context = "link-remount-rows";
+    std::vector<IntakeRecord> records = {
+        record("itk_00000001", "/Volumes/music/income/dump/Fixture Artist - New Album", IntakeStatus::New)};
+    auto before = aliasedSnapshot(records, *onShare);
+    CHECK(remountChangesRows(*before, *onShare, *aliasedSnapshot(records, *repointed), *repointed),
+          "a re-point off the share changes rows under a share root");
+    CHECK(remountChangesRows(*before, *onShare, *aliasedSnapshot(records, *removed), *removed),
+          "removing the link does too");
+    auto other = MountAliases::build(bothMounts(), {linkRead(kLink, "/Volumes/music")});
+    auto otherVpn = MountAliases::build(bothMounts(), {linkRead(kLink, "/Volumes/music-1")});
+    CHECK(!remountChangesRows(*aliasedSnapshot(records, *other), *other, *aliasedSnapshot(records, *otherVpn), *otherVpn),
+          "a move between two mounts of one share changes no row");
+
+    g_context = "link-same";
+    const std::vector<ShareLinkRead> reads = {linkRead(kLink, "/Volumes/music"),
+                                              linkRead("/Users/x/other", "/Users/x/mirror"),
+                                              linkRead("/Users/x/plain", "", ShareLinkStatus::NotLink)};
+    const std::vector<ShareLinkRead> reordered = {reads[2], reads[1], reads[0]};
+    auto first = MountAliases::build(mounts, reads);
+    auto second = MountAliases::build(mounts, reordered);
+    CHECK(first->sameAs(*second) && second->sameAs(*first), "links (and notes) in another order: the same table");
+    CHECK(rw(*first, kLink + "/a") == rw(*second, kLink + "/a"), "same answers");
+    CHECK(!first->sameAs(*onShare), "more links: another table");
+    CHECK(!repointed->sameAs(*onShare), "a re-point: another table");
+    CHECK(MountAliases::build(mounts, {})->sameAs(*removed), "no links is the one-argument table");
+    CHECK(!MountAliases::build(mounts, {linkRead("/Users/x/plain", "", ShareLinkStatus::NotLink)})->sameAs(*removed),
+          "a new note alone is another table (logged once)");
+}
+
+static void testShareLinkRejected() {
+    g_context = "link-rejected";
+    const std::vector<MountEntry> mounts = bothMounts();
+    auto t = MountAliases::build(mounts, {
+        linkRead("/Volumes/music", "/Users/x/mirror"),        // a mounted share's mount point
+        linkRead("/volumes/MUSIC-1", "/Users/x/mirror"),      // another one, in another case
+        linkRead("/System/Volumes/Data", "/Users/x/mirror"),  // a local mount point
+        linkRead("/Volumes/music/link", "/Volumes/music-1"),  // under an smbfs mount
+        linkRead("/", "/Volumes/music"),                      // the root
+        linkRead("/Users/x/plain", "", ShareLinkStatus::NotLink),
+        linkRead("/Users/x/none", "", ShareLinkStatus::Missing),
+        linkRead("/Users/x/NAS/music", "", ShareLinkStatus::OnNetwork),
+        linkRead("/Users/x/loop", "", ShareLinkStatus::Loop),
+        linkRead("/Users/x/no-target", ""),                   // a Link without a usable target
+    });
+    CHECK(t->links().empty(), "no link entry for any of them");
+    CHECK_EQ(t->notes().size(), 10, "one note each");
+    CHECK(hasNote(*t, "\"/Volumes/music\": a mount point") && hasNote(*t, "\"/volumes/MUSIC-1\": a mount point") &&
+              hasNote(*t, "\"/System/Volumes/Data\": a mount point"),
+          "mount points");
+    CHECK(hasNote(*t, "\"/Volumes/music/link\": on a network volume"), "under an smbfs mount");
+    CHECK(hasNote(*t, "\"/\": the root folder"), "the root");
+    CHECK(hasNote(*t, "\"/Users/x/plain\": not a symlink") && hasNote(*t, "\"/Users/x/none\": missing") &&
+              hasNote(*t, "\"/Users/x/NAS/music\": on a network volume") &&
+              hasNote(*t, "\"/Users/x/loop\": a symlink loop"),
+          "the read statuses");
+    CHECK(hasNote(*t, "\"/Users/x/no-target\": its target is not an absolute path"), "a target that is no path");
+    CHECK(rw(*t, "/Volumes/music/a.wav") == "/smbfs:music/a.wav" && rw(*t, "/Volumes/music/link/a") == "/smbfs:music/link/a" &&
+              rw(*t, "/Volumes/music-1/a.wav") == "/smbfs:music/a.wav",
+          "no rejected path shadows a share's own entry");
+    CHECK(rw(*t, "/Users/x/plain/a") == "/Users/x/plain/a" && rw(*t, "/x/a") == "/x/a",
+          "rejected paths keep today's behaviour");
+    CHECK(!t->underOffShareLink(key("/Users/x/plain/a")) && !t->underOffShareLink(key("/Volumes/music/a")),
+          "nothing counts as off the share");
+    CHECK(t->sameAs(*MountAliases::build(mounts, {
+              linkRead("/Users/x/loop", "", ShareLinkStatus::Loop), linkRead("/", "/Volumes/music"),
+              linkRead("/Volumes/music", "/Users/x/mirror"), linkRead("/volumes/MUSIC-1", "/Users/x/mirror"),
+              linkRead("/System/Volumes/Data", "/Users/x/mirror"), linkRead("/Volumes/music/link", "/Volumes/music-1"),
+              linkRead("/Users/x/plain", "", ShareLinkStatus::NotLink),
+              linkRead("/Users/x/none", "", ShareLinkStatus::Missing),
+              linkRead("/Users/x/NAS/music", "", ShareLinkStatus::OnNetwork), linkRead("/Users/x/no-target", "")})),
+          "notes are sorted: the input order does not matter");
+    auto noMounts = MountAliases::build({}, {linkRead(kLink, "/Volumes/music")});
+    CHECK(noMounts->links().empty() && hasNote(*noMounts, "on a network volume"),
+          "with no mount table nothing is known to be local: no entry");
+}
+
 int main(void) {
     @autoreleasepool {
         testShareKey();
@@ -370,6 +642,12 @@ int main(void) {
         testViewThroughAliases();
         testViewInert();
         testViewMountPointCase();
+        testShareLinkOnShare();
+        testShareLinkOffShare();
+        testShareLinkMatching();
+        testShareLinkRootAndView();
+        testShareLinkChanges();
+        testShareLinkRejected();
     }
     TEST_MAIN_END();
 }

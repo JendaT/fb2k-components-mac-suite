@@ -12,8 +12,13 @@
 //  reduction to top-level ancestors, and mapping event directories back to
 //  match keys (resolved spellings, a second mount point of a share, NFD,
 //  case of the mount point). One test resolves a real temp directory
-//  (/var -> /private/var) and compares with realpath(3). Synthetic names
-//  only.
+//  (/var -> /private/var) and compares with realpath(3). B11: how the walk
+//  ends (ResolveEnd), and readShareLink on the same fake filesystem: a
+//  chain, a loop, a dangling target, the unmounted placeholder, not a link,
+//  missing, a parent that passes through a symlink into a share and a
+//  target on a share (no read at or under the mount point), lexical
+//  cleaning, and one real temp directory with a relative and a dangling
+//  symlink read through posixLinkReader. Synthetic names only.
 //
 // TEST_DEPS: src/Core/IntakePath.mm src/Core/IntakeMountAliases.mm src/Core/IntakeSettingsParse.mm
 //
@@ -313,6 +318,166 @@ static void testMapping() {
           "an event under both entries gives its key once");
 }
 
+// B11: how resolveLocalPath ended.
+static void testResolveEnd() {
+    g_context = "resolve-end";
+    const std::vector<MountEntry> mounts = {kRoot, kLan};
+    RecordingResolver r;
+    r.links["/tmp"] = "private/tmp";
+    r.links["/Users/x/NAS"] = "/Volumes/fixture-share";
+    r.links["/Users/x/loop"] = "/Users/x/loop";
+    r.links["/Users/x/empty"] = "";
+    r.missing.insert("/Users/x/later");
+    ResolveEnd end = ResolveEnd::Loop;
+    CHECK(resolveLocalPath("/tmp/scratch", mounts, r.fn(), nullptr, &end) == "/private/tmp/scratch" &&
+              end == ResolveEnd::Complete,
+          "every component examined: Complete");
+    CHECK(resolveLocalPath("/", mounts, r.fn(), nullptr, &end) == "/" && end == ResolveEnd::Complete,
+          "the root: Complete, nothing read");
+    CHECK(resolveLocalPath("/Users/x/later/a", mounts, r.fn(), nullptr, &end) == "/Users/x/later/a" &&
+              end == ResolveEnd::Missing,
+          "a missing component: Missing");
+    CHECK(resolveLocalPath("/Users/x/empty/a", mounts, r.fn(), nullptr, &end) == "/Users/x/empty/a" &&
+              end == ResolveEnd::Missing,
+          "a link with empty text: Missing");
+    CHECK(resolveLocalPath("/Users/x/NAS/music", mounts, r.fn(), nullptr, &end) == "/Volumes/fixture-share/music" &&
+              end == ResolveEnd::Network,
+          "into a share: Network");
+    CHECK(resolveLocalPath("/Users/x/loop/a", mounts, r.fn(), nullptr, &end) == "/Users/x/loop/a" &&
+              end == ResolveEnd::Loop,
+          "a loop: Loop, as written");
+    CHECK(resolveLocalPath("/x", mounts, LinkReader(), nullptr, &end) == "/x" && end == ResolveEnd::Missing,
+          "no reader: Missing");
+    CHECK(resolveLocalPath("relative", mounts, r.fn(), nullptr, &end) == "relative" && end == ResolveEnd::Missing,
+          "not absolute: Missing");
+    CHECK(resolveLocalPath("/x", {}, r.fn(), nullptr, &end) == "/x" && end == ResolveEnd::Network,
+          "an empty mount table: Network (nothing may be examined)");
+}
+
+// B11: readShareLink (doc 04 "Path matching", PLAN-B11 step 2).
+static void testReadShareLink() {
+    g_context = "share-link";
+    const std::vector<MountEntry> mounts = {kRoot, kData, kLan, kVpn};
+    RecordingResolver r;
+    r.links["/tmp"] = "private/tmp";
+    r.links["/Users/x/Music/NAS/music"] = "/Volumes/fixture-share";       // on the share
+    r.links["/Users/x/Music/NAS/vpn"] = "/Volumes/fixture-share-1/sub";  // into the other mount point
+    r.links["/Users/x/Music/NAS/hop"] = "../hop2";                       // a chain, relative
+    r.links["/Users/x/Music/hop2"] = "/Users/x/Music/hop3";
+    r.links["/Users/x/Music/hop3"] = "/Volumes/fixture-share";
+    r.links["/Users/x/Music/NAS/up"] = "../../../../Volumes/fixture-share";  // ".." up to "/"
+    r.links["/Users/x/a"] = "/Users/x/b";                               // a loop of two
+    r.links["/Users/x/b"] = "/Users/x/a";
+    r.links["/Users/x/self"] = "self";                                  // a loop of one, relative
+    r.links["/Users/x/dangling"] = "/Users/x/gone/deeper";
+    r.links["/Users/x/mirror-link"] = "/Users/x/mirror";
+    r.links["/Users/x/NAS"] = "/Volumes/fixture-share";                 // a folder that is a link into the share
+    r.links["/private/tmp/scratch/music-link"] = "/private/tmp/scratch/target";
+    r.missing.insert("/Users/x/gone");
+    r.missing.insert("/Users/x/none");
+
+    ShareLinkRead l = readShareLink("/Users/x/Music/NAS/music", mounts, r.fn());
+    CHECK(l.status == ShareLinkStatus::Link && l.rawTarget == "/Volumes/fixture-share" &&
+              l.linkPath == "/Users/x/Music/NAS/music" && l.resolvedParent == "/Users/x/Music/NAS",
+          "a link to the share's mount point");
+    CHECK(!r.calledUnder("/Volumes/fixture-share"), "the mount point is never examined");
+
+    r.calls.clear();
+    l = readShareLink("/Users/x/Music/NAS/vpn", mounts, r.fn());
+    CHECK(l.status == ShareLinkStatus::Link && l.rawTarget == "/Volumes/fixture-share-1/sub",
+          "a target under a network mount: kept as written past the mount point");
+    CHECK(!r.calledUnder("/Volumes/fixture-share-1") && r.called("/Volumes"),
+          "read only up to the mount point, never at or past it");
+
+    l = readShareLink("/Users/x/Music/NAS/hop", mounts, r.fn());
+    CHECK(l.status == ShareLinkStatus::Link && l.rawTarget == "/Volumes/fixture-share",
+          "a chain of links is followed locally (a relative one from the link's folder)");
+    l = readShareLink("/Users/x/Music/NAS/up", mounts, r.fn());
+    CHECK(l.status == ShareLinkStatus::Link && l.rawTarget == "/Volumes/fixture-share", "'..' in the target text");
+
+    l = readShareLink("/Users/x/a", mounts, r.fn());
+    CHECK(l.status == ShareLinkStatus::Loop && l.rawTarget.empty(), "a loop of two links");
+    l = readShareLink("/Users/x/self", mounts, r.fn());
+    CHECK(l.status == ShareLinkStatus::Loop, "a link to itself");
+
+    l = readShareLink("/Users/x/dangling", mounts, r.fn());
+    CHECK(l.status == ShareLinkStatus::Link && l.rawTarget == "/Users/x/gone/deeper",
+          "a dangling target: still a Link, the target kept");
+    l = readShareLink("/Users/x/mirror-link", mounts, r.fn());
+    CHECK(l.status == ShareLinkStatus::Link && l.rawTarget == "/Users/x/mirror", "a link to a local folder");
+
+    g_context = "share-link-placeholder";
+    // The share is unmounted: its mount point is a plain local path (gone,
+    // or an empty folder), and the agent points the link there.
+    RecordingResolver u;
+    u.links["/Users/x/Music/NAS/music"] = "/Volumes/fixture-share";
+    u.missing.insert("/Volumes/fixture-share");
+    l = readShareLink("/Users/x/Music/NAS/music", {kRoot, kData}, u.fn());
+    CHECK(l.status == ShareLinkStatus::Link && l.rawTarget == "/Volumes/fixture-share",
+          "the unmounted placeholder is a Link with its target");
+
+    g_context = "share-link-not";
+    l = readShareLink("/Users/x/Music", mounts, r.fn());
+    CHECK(l.status == ShareLinkStatus::NotLink && l.rawTarget.empty(), "a folder that is not a link");
+    r.calls.clear();
+    l = readShareLink("/Users/x/none", mounts, r.fn());
+    CHECK(l.status == ShareLinkStatus::Missing && r.called("/Users/x/none"), "a missing path");
+    r.calls.clear();
+    l = readShareLink("/Users/x/gone/link", mounts, r.fn());
+    CHECK(l.status == ShareLinkStatus::Missing && !r.called("/Users/x/gone/link"),
+          "a missing parent: the link itself is not read");
+    r.calls.clear();
+    l = readShareLink("/", mounts, r.fn());
+    CHECK(l.status == ShareLinkStatus::NotLink && r.calls.empty(), "/ is never a link, nothing read");
+    l = readShareLink("relative/link", mounts, r.fn());
+    CHECK(l.status == ShareLinkStatus::Missing && l.linkPath.empty() && r.calls.empty(), "not absolute");
+    l = readShareLink("/Users/x/Music/NAS/music", mounts, LinkReader());
+    CHECK(l.status == ShareLinkStatus::Missing, "no reader: nothing examined");
+    l = readShareLink("/Users/x/Music/NAS/music", {}, r.fn());
+    CHECK(l.status == ShareLinkStatus::OnNetwork && r.calls.empty(), "an empty mount table: nothing examined");
+
+    g_context = "share-link-network";
+    // The parent passes through a local symlink into the share: an lstat of
+    // the configured path would follow it onto the share.
+    r.calls.clear();
+    l = readShareLink("/Users/x/NAS/music", mounts, r.fn());
+    CHECK(l.status == ShareLinkStatus::OnNetwork, "a link whose parent leads into a share");
+    CHECK(!r.calledUnder("/Volumes/fixture-share") && !r.called("/Users/x/NAS/music"),
+          "zero reads under that mount, and the configured path is never lstat'd");
+    r.calls.clear();
+    l = readShareLink("/Volumes/fixture-share/link", mounts, r.fn());
+    CHECK(l.status == ShareLinkStatus::OnNetwork && !r.calledUnder("/Volumes/fixture-share"),
+          "a path on the share itself: never examined");
+    r.calls.clear();
+    l = readShareLink("/Volumes/FIXTURE-SHARE-1/link", mounts, r.fn());
+    CHECK(l.status == ShareLinkStatus::OnNetwork && !r.calledUnder("/Volumes/FIXTURE-SHARE-1"),
+          "the mount point in another case too");
+    l = readShareLink("/Volumes/fixture-nfs/link", {kRoot, kNfs}, r.fn());
+    CHECK(l.status == ShareLinkStatus::OnNetwork, "any network type");
+
+    g_context = "share-link-lexical";
+    l = readShareLink("/tmp/scratch/music-link/", mounts, r.fn());
+    CHECK(l.status == ShareLinkStatus::Link && l.linkPath == "/tmp/scratch/music-link" &&
+              l.resolvedParent == "/private/tmp/scratch" && l.rawTarget == "/private/tmp/scratch/target",
+          "a trailing slash is cleaned; the link path keeps its spelling, the parent is resolved");
+    CHECK(r.called("/private/tmp/scratch/music-link") && !r.called("/tmp/scratch/music-link"),
+          "the read goes to the resolved parent");
+    l = readShareLink("/Users//x/./Music/NAS/../NAS/music", mounts, r.fn());
+    CHECK(l.status == ShareLinkStatus::Link && l.linkPath == "/Users/x/Music/NAS/music", "// . and .. cleaned");
+    const std::string nfd = "/Users/x/Mu\xCC\x81sica/link";
+    RecordingResolver n;
+    n.links[nfd] = "/Volumes/fixture-share";
+    l = readShareLink(nfd, mounts, n.fn());
+    CHECK(l.status == ShareLinkStatus::Link && l.linkPath == nfd, "NFD bytes kept (no NFC on a path for I/O)");
+
+    CHECK(std::string(shareLinkStatusText(ShareLinkStatus::NotLink)) == "not a symlink" &&
+              std::string(shareLinkStatusText(ShareLinkStatus::OnNetwork)) == "on a network volume" &&
+              !std::string(shareLinkStatusText(ShareLinkStatus::Missing)).empty() &&
+              !std::string(shareLinkStatusText(ShareLinkStatus::Loop)).empty() &&
+              !std::string(shareLinkStatusText(ShareLinkStatus::Link)).empty(),
+          "status texts");
+}
+
 static void testRealTempDirectory() {
     g_context = "real-temp";
     std::string base = NSTemporaryDirectory().UTF8String;
@@ -347,6 +512,44 @@ static void testRealTempDirectory() {
     rmdir(dir.c_str());
 }
 
+// B11: readShareLink with the real reader, in a fresh temp directory
+// (spelled through /var -> /private/var, so the parent is resolved too).
+static void testRealShareLink() {
+    g_context = "real-share-link";
+    std::string base = NSTemporaryDirectory().UTF8String;
+    if (!base.empty() && base.back() == '/') base.pop_back();
+    std::string tmpl = base + "/intake-sharelink-XXXXXX";
+    std::vector<char> buf(tmpl.begin(), tmpl.end());
+    buf.push_back('\0');
+    if (!mkdtemp(buf.data())) {
+        CHECK(false, "mkdtemp");
+        return;
+    }
+    const std::string dir = buf.data();
+    const std::string target = dir + "/target";
+    const std::string link = dir + "/link";
+    const std::string dangling = dir + "/dangling";
+    mkdir(target.c_str(), 0755);
+    const bool made = symlink("target", link.c_str()) == 0 && symlink((dir + "/gone").c_str(), dangling.c_str()) == 0;
+    CHECK(made, "symlinks created");
+    char buffer[PATH_MAX];
+    const std::string realDir = ::realpath(dir.c_str(), buffer) ? std::string(buffer) : dir;
+
+    ShareLinkRead l = readShareLink(link + "/", {kRoot}, &posixLinkReader);
+    CHECK(l.status == ShareLinkStatus::Link && l.linkPath == link && l.resolvedParent == realDir &&
+              l.rawTarget == realDir + "/target",
+          "a relative link: read from the resolved parent, target in realpath's spelling, link path as configured");
+    l = readShareLink(dangling, {kRoot}, &posixLinkReader);
+    CHECK(l.status == ShareLinkStatus::Link && l.rawTarget == realDir + "/gone", "a dangling link keeps its target");
+    CHECK(readShareLink(target, {kRoot}, &posixLinkReader).status == ShareLinkStatus::NotLink, "a folder");
+    CHECK(readShareLink(dir + "/none", {kRoot}, &posixLinkReader).status == ShareLinkStatus::Missing, "missing");
+
+    unlink(link.c_str());
+    unlink(dangling.c_str());
+    rmdir(target.c_str());
+    rmdir(dir.c_str());
+}
+
 int main(void) {
     @autoreleasepool {
         testParseWatchFolders();
@@ -356,7 +559,10 @@ int main(void) {
         testResolveLocal();
         testBuild();
         testMapping();
+        testResolveEnd();
+        testReadShareLink();
         testRealTempDirectory();
+        testRealShareLink();
     }
     TEST_MAIN_END();
 }

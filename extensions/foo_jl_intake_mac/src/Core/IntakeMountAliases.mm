@@ -6,9 +6,11 @@
 #include "IntakeMountAliases.h"
 
 #include "IntakePath.h"
+#include "IntakeWatchSet.h"  // ShareLinkRead, mayResolvePath
 
 #include <algorithm>
 #include <map>
+#include <utility>
 
 namespace intake {
 
@@ -62,17 +64,31 @@ char asciiLower(char c) {
     return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
 }
 
-// `key` is `mount` or lies under it (both normalized). The mount point is
-// compared ignoring ASCII case (see the header); bytes past it are not
-// compared here, and ASCII folding keeps lengths, so the caller's
-// key.substr(mount.size()) is still the rest of `key`.
-bool isUnder(std::string_view key, std::string_view mount) {
+// `key` is `mount` or lies under it (both normalized). A mount point is
+// compared ignoring ASCII case (see the header), a link byte-exact
+// (`foldCase` false); bytes past it are not compared here, and ASCII
+// folding keeps lengths, so the caller's key.substr(mount.size()) is still
+// the rest of `key`.
+bool isUnder(std::string_view key, std::string_view mount, bool foldCase = true) {
     if (mount == "/") return !key.empty() && key[0] == '/';
     if (key.size() < mount.size() || (key.size() > mount.size() && key[mount.size()] != '/')) return false;
+    if (!foldCase) return key.compare(0, mount.size(), mount) == 0;
     for (size_t i = 0; i < mount.size(); i++) {
         if (asciiLower(key[i]) != asciiLower(mount[i])) return false;
     }
     return true;
+}
+
+bool sameIgnoringCase(std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); i++) {
+        if (asciiLower(a[i]) != asciiLower(b[i])) return false;
+    }
+    return true;
+}
+
+std::string linkNote(const std::string &link, const char *why) {
+    return "share link \"" + link + "\": " + why + "; ignored";
 }
 
 } // anonymous namespace
@@ -93,6 +109,11 @@ std::string smbShareKey(std::string_view source) {
 }
 
 std::shared_ptr<const MountAliases> MountAliases::build(const std::vector<MountEntry> &mounts) {
+    return build(mounts, {});
+}
+
+std::shared_ptr<const MountAliases> MountAliases::build(const std::vector<MountEntry> &mounts,
+                                                        const std::vector<ShareLinkRead> &links) {
     auto table = std::make_shared<MountAliases>(Token{});
 
     // By normalized mount point. A later row for the same mount point is a
@@ -133,6 +154,79 @@ std::shared_ptr<const MountAliases> MountAliases::build(const std::vector<MountE
     // a function of the entries alone (sameAs compares in order).
     std::stable_sort(table->entries_.begin(), table->entries_.end(),
                      [](const Entry &a, const Entry &b) { return a.mountKey.size() > b.mountKey.size(); });
+
+    // B11: share links (see the header). The table holds only mount entries
+    // here, so rewritten() gives a target's key through the smbfs entries.
+    std::map<std::string, LinkEntry> byLink;  // by linkKey: one entry per link, in a fixed order
+    std::string linkKey;
+    std::string targetNorm;
+    for (const ShareLinkRead &read : links) {
+        if (read.status != ShareLinkStatus::Link) {
+            table->notes_.push_back(linkNote(read.linkPath, shareLinkStatusText(read.status)));
+            continue;
+        }
+        if (normalizePath(read.linkPath, linkKey) != PathStatus::Ok) {
+            table->notes_.push_back(linkNote(read.linkPath, "not an absolute path"));
+            continue;
+        }
+        // "/" would put every key under the link.
+        if (linkKey == "/") {
+            table->notes_.push_back(linkNote(read.linkPath, "the root folder"));
+            continue;
+        }
+        // A mount point is no symlink; an entry for one would merge with or
+        // shadow that mount's own entry.
+        bool isMountPoint = false;
+        for (const auto &[mount, alias] : byMount) {
+            if (sameIgnoringCase(linkKey, mount)) {
+                isMountPoint = true;
+                break;
+            }
+        }
+        if (isMountPoint) {
+            table->notes_.push_back(linkNote(read.linkPath, "a mount point"));
+            continue;
+        }
+        // readShareLink never reports Link there; a table built from other
+        // reads still must not shadow a share's own entry with one.
+        if (!mayResolvePath(read.linkPath, mounts)) {
+            table->notes_.push_back(linkNote(read.linkPath, "on a network volume"));
+            continue;
+        }
+        if (normalizePath(read.rawTarget, targetNorm) != PathStatus::Ok) {
+            table->notes_.push_back(linkNote(read.linkPath, "its target is not an absolute path"));
+            continue;
+        }
+        if (byLink.count(linkKey)) continue;  // the same link twice (NFC and NFD spellings): the first wins
+        LinkEntry link;
+        link.linkKey = linkKey;
+        link.rawLink = read.linkPath;
+        link.rawTarget = read.rawTarget;
+        link.targetKey = table->rewritten(targetNorm);
+        for (const Entry &e : table->entries_) {
+            if (!isUnder(targetNorm, e.mountKey)) continue;
+            link.onShare = !e.aliasKey.empty();  // a nested mount that is not smbfs: off the share
+            break;
+        }
+        if (!link.onShare) {
+            table->notes_.push_back("share link \"" + link.rawLink + "\" points at \"" + link.rawTarget +
+                                    "\", not at a mounted share: its rows match only intake roots there");
+        }
+        byLink.emplace(linkKey, std::move(link));
+    }
+    if (byLink.empty() && table->notes_.empty()) return table;
+    for (auto &[key, link] : byLink) {
+        table->entries_.push_back({link.linkKey, link.targetKey, false, link.onShare});
+        table->links_.push_back(std::move(link));
+    }
+    // Longest first again; equal lengths by path, a mount point before a
+    // link, so the order is a function of the entries alone.
+    std::stable_sort(table->entries_.begin(), table->entries_.end(), [](const Entry &a, const Entry &b) {
+        if (a.mountKey.size() != b.mountKey.size()) return a.mountKey.size() > b.mountKey.size();
+        if (a.mountKey != b.mountKey) return a.mountKey < b.mountKey;
+        return a.foldCase && !b.foldCase;
+    });
+    std::sort(table->notes_.begin(), table->notes_.end());
     return table;
 }
 
@@ -143,10 +237,15 @@ std::shared_ptr<const MountAliases> MountAliases::none() {
 
 std::string_view MountAliases::rewrite(std::string_view key, std::string &buffer) const {
     for (const Entry &e : entries_) {
-        if (!isUnder(key, e.mountKey)) continue;
+        if (!isUnder(key, e.mountKey, e.foldCase)) continue;
         if (e.aliasKey.empty()) return key;  // a nested mount that is not smbfs
         std::string_view rest = e.mountKey == "/" ? key : key.substr(e.mountKey.size());
         if (rest == "/") rest = std::string_view();
+        if (e.aliasKey == "/") {
+            // A link to "/": the rest is the key ("/" + "/a" would be "//a").
+            buffer.assign(rest.empty() ? std::string_view("/") : rest);
+            return buffer;
+        }
         buffer.assign(e.aliasKey);
         buffer.append(rest);
         return buffer;
@@ -160,10 +259,24 @@ std::string MountAliases::rewritten(std::string_view key) const {
 }
 
 bool MountAliases::sameAs(const MountAliases &other) const {
-    if (entries_.size() != other.entries_.size()) return false;
+    if (entries_.size() != other.entries_.size() || links_.size() != other.links_.size() ||
+        notes_ != other.notes_) {
+        return false;
+    }
     for (size_t i = 0; i < entries_.size(); i++) {
-        if (entries_[i].mountKey != other.entries_[i].mountKey ||
-            entries_[i].aliasKey != other.entries_[i].aliasKey) {
+        const Entry &x = entries_[i];
+        const Entry &y = other.entries_[i];
+        if (x.mountKey != y.mountKey || x.aliasKey != y.aliasKey || x.foldCase != y.foldCase ||
+            x.onShare != y.onShare) {
+            return false;
+        }
+    }
+    // Every field, the raw spellings included: Swap reads them.
+    for (size_t i = 0; i < links_.size(); i++) {
+        const LinkEntry &x = links_[i];
+        const LinkEntry &y = other.links_[i];
+        if (x.linkKey != y.linkKey || x.rawLink != y.rawLink || x.rawTarget != y.rawTarget ||
+            x.targetKey != y.targetKey || x.onShare != y.onShare) {
             return false;
         }
     }
@@ -171,28 +284,42 @@ bool MountAliases::sameAs(const MountAliases &other) const {
 }
 
 std::vector<std::string> MountAliases::changedBases(const MountAliases &a, const MountAliases &b) {
-    std::map<std::string, std::pair<const std::string *, const std::string *>> byMount;  // mount -> (a, b) alias
-    for (const Entry &e : a.entries_) byMount[e.mountKey].first = &e.aliasKey;
-    for (const Entry &e : b.entries_) byMount[e.mountKey].second = &e.aliasKey;
+    // (path, folds case) -> (a, b) entry: a link never merges with a mount
+    // point spelled alike.
+    std::map<std::pair<std::string, bool>, std::pair<const Entry *, const Entry *>> byPath;
+    for (const Entry &e : a.entries_) byPath[{e.mountKey, e.foldCase}].first = &e;
+    for (const Entry &e : b.entries_) byPath[{e.mountKey, e.foldCase}].second = &e;
     std::vector<std::string> bases;
-    for (const auto &[mount, aliasPair] : byMount) {
-        const auto &[inA, inB] = aliasPair;
-        if (inA && inB && *inA == *inB) continue;
-        bases.push_back(a.rewritten(mount));
-        bases.push_back(b.rewritten(mount));
+    for (const auto &[path, entryPair] : byPath) {
+        const auto &[inA, inB] = entryPair;
+        if (inA && inB && inA->aliasKey == inB->aliasKey && inA->onShare == inB->onShare) continue;
+        bases.push_back(a.rewritten(path.first));
+        bases.push_back(b.rewritten(path.first));
     }
     return bases;
 }
 
 std::string MountAliases::describe() const {
-    if (aliasCount_ == 0) return "no smbfs mounts";
-    std::string out;
+    if (aliasCount_ == 0 && links_.empty()) return "no smbfs mounts";
+    std::string out = aliasCount_ == 0 ? "no smbfs mounts" : "";
     for (const Entry &e : entries_) {
-        if (e.aliasKey.empty()) continue;
+        if (e.aliasKey.empty() || !e.foldCase) continue;
         if (!out.empty()) out += "; ";
         out += e.mountKey + " -> " + e.aliasKey;
     }
+    for (const LinkEntry &link : links_) {
+        out += "; link " + link.rawLink + " -> " + link.targetKey +
+               (link.onShare ? " (exact case, on a share)" : " (exact case, not on a share)");
+    }
     return out;
+}
+
+bool MountAliases::underOffShareLink(std::string_view key) const {
+    for (const Entry &e : entries_) {
+        if (!isUnder(key, e.mountKey, e.foldCase)) continue;
+        return !e.foldCase && !e.onShare;  // the entry rewrite() uses
+    }
+    return false;
 }
 
 } // namespace intake
