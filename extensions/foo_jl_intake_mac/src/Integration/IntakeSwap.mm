@@ -68,11 +68,13 @@ struct PlannedRow {
     SwapSkip skip = SwapSkip::None;
     std::string libraryPath;               // the spelling found first
     std::vector<MountedPath> candidates;   // that spelling under each mount of the share where it exists, it first
+    std::string linkPath;                  // B11: the link form to swap to, used as is (no conversion)
 };
 
 struct SwapJob {
     PlaylistRef playlist;
     std::vector<std::string> playlistForms;  // the volume forms of the playlist's items at the click
+    PlaylistLinkForms linkForms;             // B11: the share links its items lie under at the click (view's table)
     std::vector<PlannedRow> rows;
     std::shared_ptr<const IntakeView> view;
     LibraryPrefix prefix;
@@ -180,6 +182,30 @@ void planOnQueue(SwapJob &job) {
                 if (!S_ISREG(st.st_mode)) continue;
             }
             p.candidates.push_back({path, mount});
+        }
+        // B11: a playlist that uses a share link gets the link form, from
+        // the links of the table the menu matched with (no re-read here),
+        // or nothing: the volume form would be a second spelling of the
+        // file.
+        if (!job.linkForms.empty()) {
+            std::vector<std::string> paths;
+            paths.reserve(p.candidates.size());
+            for (const MountedPath &m : p.candidates) paths.push_back(m.path);
+            const LinkForm form = linkFormFor(paths, job.view->aliases().links(), job.linkForms.links);
+            if (form.candidateIndex < 0) {
+                p.skip = SwapSkip::LinkOffShare;
+                std::string targets;
+                for (const MountAliases::LinkEntry &link : job.view->aliases().links()) {
+                    for (const std::string &noted : job.linkForms.links) {
+                        if (noted != link.linkKey) continue;
+                        targets += (targets.empty() ? "" : ", ") + link.rawLink + " -> " + link.rawTarget;
+                    }
+                }
+                logDebug("swap: " + found + " lies under no target of the share links the playlist uses (" + targets +
+                         ")");
+                continue;
+            }
+            p.linkPath = linkSpellingFor(job.linkForms, form.path);
         }
     }
 }
@@ -385,7 +411,9 @@ void applyOnMain(std::shared_ptr<SwapJob> job) {
             continue;
         }
         SwapSkip why = SwapSkip::None;
-        const std::string canonical = converter.canonicalFor(p, why);
+        // A link form (B11) is foobar2000's own spelling already: no SDK
+        // conversion, so no budget either.
+        const std::string canonical = p.linkPath.empty() ? converter.canonicalFor(p, why) : p.linkPath;
         if (canonical.empty()) {
             for (size_t k = 0; k < indices.size(); k++) result.tally.skip(why);
             logDebug("swap: " + p.row.native + ": " + swapSkipText(why) + " for " + p.libraryPath);
@@ -471,14 +499,24 @@ namespace {
 // What one handle maps to.
 enum class RowMatch { None, Income, Unchecked };
 
+// `census`: the Delete census's rule (censusEntry): a row under a share
+// link off the share is unchecked, even when it maps to an income path.
+// Swap's own scans keep it an income row, so Swap decides about it.
 RowMatch matchRow(const metadb_handle_ptr &handle, const std::unordered_set<std::string> &rootIds,
                   const IntakeView &view, NativePathMenuBudget *budget, pfc::string8 &native, ViewScratch &scratch,
-                  SwapRow &out) {
+                  SwapRow &out, bool census = false) {
     bool refused = false;
     const char *path = intakeNativePath(handle->get_path(), native, budget, &refused);
-    if (path == nullptr) return refused ? RowMatch::Unchecked : RowMatch::None;
-    const IntakeRecord *record = view.recordFor(path, scratch);
-    if (record == nullptr || !rootIds.count(record->id)) return RowMatch::None;
+    const IntakeRecord *record = path != nullptr ? view.recordFor(path, scratch) : nullptr;
+    const bool income = record != nullptr && rootIds.count(record->id);
+    if (census) {
+        const bool offShareLink = path != nullptr && view.underOffShareLink(path, scratch);
+        const CensusEntry entry = censusEntry(path == nullptr && refused, offShareLink, income);
+        if (entry != CensusEntry::Income) return entry == CensusEntry::Unchecked ? RowMatch::Unchecked : RowMatch::None;
+    } else if (path == nullptr) {
+        return refused ? RowMatch::Unchecked : RowMatch::None;
+    }
+    if (!income) return RowMatch::None;
     out.handle = handle;
     out.path = handle->get_path();
     out.subsong = handle->get_subsong_index();
@@ -492,11 +530,12 @@ struct PlaylistScan {
     std::vector<SwapRow> rows;
     std::vector<size_t> entries;  // per row
     std::vector<t_size> indices;  // every income entry, ascending
-    size_t unchecked = 0;         // entries not converted
+    size_t unchecked = 0;         // entries not converted (census: also those under a share link off the share)
 };
 
+// `census`: as matchRow's.
 PlaylistScan scanPlaylist(t_size playlist, const std::unordered_set<std::string> &rootIds, const IntakeView &view,
-                          NativePathMenuBudget *budget) {
+                          NativePathMenuBudget *budget, bool census = false) {
     PlaylistScan out;
     auto pm = playlist_manager::get();
     if (playlist == SIZE_MAX || playlist >= pm->get_playlist_count()) return out;
@@ -516,7 +555,7 @@ PlaylistScan scanPlaylist(t_size playlist, const std::unordered_set<std::string>
                 state = known->second;
             } else {
                 SwapRow row;
-                const RowMatch match = matchRow(handle, rootIds, view, budget, native, scratch, row);
+                const RowMatch match = matchRow(handle, rootIds, view, budget, native, scratch, row, census);
                 if (match == RowMatch::Income) {
                     state = static_cast<long>(out.rows.size());
                     out.rows.push_back(std::move(row));
@@ -585,7 +624,7 @@ IncomeRowCensus incomeRowCensus(const std::unordered_set<std::string> &rootIds, 
     NativePathMenuBudget budget;
     std::unordered_map<const metadb_handle *, size_t> rowOf;
     for (t_size p : order) {
-        PlaylistScan scan = scanPlaylist(p, rootIds, view, &budget);
+        PlaylistScan scan = scanPlaylist(p, rootIds, view, &budget, true);
         out.unchecked += scan.unchecked;
         if (scan.indices.empty()) continue;
         out.playlists.push_back(playlistRefFor(p));
@@ -630,8 +669,20 @@ bool swapStart(t_size playlist, std::vector<SwapRow> rows, std::shared_ptr<const
     {
         metadb_handle_list items;
         pm->playlist_get_all_items(playlist, items);
+        // B11: the share links of the view the menu matched with; none
+        // configured costs nothing here.
+        const std::vector<MountAliases::LinkEntry> &links = view->aliases().links();
+        std::string buffer;
         for (t_size i = 0; i < items.get_count(); i++) {
-            if (items[i].is_valid()) noteVolumeForm(job->playlistForms, items[i]->get_path());
+            if (!items[i].is_valid()) continue;
+            const char *path = items[i]->get_path();
+            noteVolumeForm(job->playlistForms, path);
+            if (!links.empty()) noteLinkForm(job->linkForms, links, path, buffer);
+        }
+        if (!job->linkForms.empty()) {
+            std::string used;
+            for (const std::string &linkKey : job->linkForms.links) used += (used.empty() ? "" : ", ") + linkKey;
+            logDebug("swap: the playlist uses share link(s) " + used + ": rows get the link form");
         }
     }
     for (SwapRow &row : rows) {

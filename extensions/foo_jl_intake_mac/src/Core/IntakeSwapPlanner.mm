@@ -211,6 +211,7 @@ const char *swapSkipText(SwapSkip skip) {
         case SwapSkip::LibraryMissing: return "library file missing";
         case SwapSkip::ShareUnreachable: return "library share unreachable";
         case SwapSkip::NoMatchingMount: return "no matching mount";
+        case SwapSkip::LinkOffShare: return "the share link does not lead to the library copy";
         case SwapSkip::SlowConversion: return "path conversion too slow";
         case SwapSkip::PlaylistGone: return "playlist gone";
         case SwapSkip::PlaylistLocked: return "playlist locked";
@@ -406,6 +407,84 @@ long chooseCanonicalCandidate(const std::vector<CanonicalCandidate> &candidates,
         }
     }
     return -1;
+}
+
+void noteLinkForm(PlaylistLinkForms &forms, const std::vector<MountAliases::LinkEntry> &links,
+                  std::string_view path, std::string &buffer) {
+    static constexpr std::string_view kFile = "file://";
+    if (links.empty() || path.size() <= kFile.size() ||
+        !equalsIgnoringAsciiCase(path.substr(0, kFile.size()), kFile)) {
+        return;
+    }
+    std::string_view key;
+    if (normalizePath(path, buffer, key) != PathStatus::Ok) return;
+    const MountAliases::LinkEntry *holder = nullptr;
+    for (const MountAliases::LinkEntry &link : links) {
+        const std::string &l = link.linkKey;
+        if (l.empty() || l == "/" || (holder != nullptr && l.size() <= holder->linkKey.size())) continue;
+        if (key.size() >= l.size() && key.compare(0, l.size(), l) == 0 &&
+            (key.size() == l.size() || key[l.size()] == '/')) {
+            holder = &link;
+        }
+    }
+    if (holder == nullptr) return;
+    if (std::find(forms.links.begin(), forms.links.end(), holder->linkKey) == forms.links.end()) {
+        forms.links.push_back(holder->linkKey);
+    }
+    forms.items.emplace(std::string(key), std::string(path));
+}
+
+LinkForm linkFormFor(const std::vector<std::string> &candidates, const std::vector<MountAliases::LinkEntry> &links,
+                     const std::vector<std::string> &linkForms) {
+    LinkForm out;
+    std::vector<const MountAliases::LinkEntry *> noted;
+    for (const std::string &linkKey : linkForms) {
+        for (const MountAliases::LinkEntry &link : links) {
+            if (link.linkKey == linkKey) {
+                noted.push_back(&link);
+                break;
+            }
+        }
+    }
+    if (noted.empty()) return out;
+    for (size_t i = 0; i < candidates.size(); i++) {
+        const std::string &candidate = candidates[i];
+        if (candidate.empty() || candidate[0] != '/') continue;
+        for (const MountAliases::LinkEntry *link : noted) {
+            const std::string rawLink = lexicalAbsolutePath(link->rawLink);
+            const std::string target = lexicalAbsolutePath(link->rawTarget);
+            if (rawLink.empty() || rawLink == "/") continue;  // MountAliases never maps "/"
+            // The bytes past the target ("/" holds the whole path), or past
+            // the link when the candidate is already spelled through it.
+            std::string_view rest;
+            if (!target.empty() && underMount(candidate, target)) {
+                rest = std::string_view(candidate).substr(target == "/" ? 0 : target.size());
+            } else if (candidate.size() >= rawLink.size() && candidate.compare(0, rawLink.size(), rawLink) == 0 &&
+                       (candidate.size() == rawLink.size() || candidate[rawLink.size()] == '/')) {
+                rest = std::string_view(candidate).substr(rawLink.size());
+            } else {
+                continue;
+            }
+            out.path = "file://" + rawLink;
+            out.path.append(rest.data(), rest.size());
+            out.candidateIndex = static_cast<long>(i);
+            return out;
+        }
+    }
+    return out;
+}
+
+std::string linkSpellingFor(const PlaylistLinkForms &forms, const std::string &path) {
+    if (forms.items.empty()) return path;
+    std::string key;
+    if (normalizePath(path, key) != PathStatus::Ok) return path;
+    auto found = forms.items.find(key);
+    return found == forms.items.end() ? path : found->second;
+}
+
+CensusEntry censusEntry(bool refused, bool offShareLink, bool income) {
+    if (refused || offShareLink) return CensusEntry::Unchecked;
+    return income ? CensusEntry::Income : CensusEntry::Clear;
 }
 
 size_t SwapTally::skippedTotal() const {

@@ -9,7 +9,9 @@
 //  bases of two tables, and losing one mount point. B11 share links: a link
 //  to either mount point of a share, to a mirror and to the unmounted
 //  placeholder, path boundaries, NFD link text, exact case, a link-form
-//  root, nested links, a link to "/", changed bases on a re-point and on
+//  root, nested links, a link to "/", the Delete census over a view (a
+//  link on the share, a mirror, the unmounted placeholder, no link),
+//  changed bases on a re-point and on
 //  removal, order independence, the rejected cases, and the per-link
 //  reasons and flag text for the preferences page. Synthetic mount
 //  lists and link reads only: nothing here reads the real mount table or
@@ -29,6 +31,7 @@
 #include "../src/Core/IntakeLoadPolicy.h"
 #include "../src/Core/IntakeMountAliases.h"
 #include "../src/Core/IntakePath.h"
+#include "../src/Core/IntakeSwapPlanner.h"
 #include "../src/Core/IntakeView.h"
 #include "../src/Core/IntakeWatchSet.h"
 #include "TestHarness.h"
@@ -529,6 +532,55 @@ static void testShareLinkRootAndView() {
           "without the link entry the same row matches nothing (negative control)");
 }
 
+// The Delete census decision for one row of `view` (IntakeSwap matchRow's
+// census rule): the root ids are those of `view`'s snapshot.
+static CensusEntry census(const IntakeView &view, const std::string &path) {
+    ViewScratch scratch;
+    const IntakeRecord *record = view.recordFor(path, scratch);
+    return censusEntry(false, view.underOffShareLink(path, scratch), record != nullptr);
+}
+
+static void testShareLinkCensus() {
+    g_context = "link-census";
+    const std::vector<MountEntry> mounts = bothMounts();
+    const std::string rootPath = "/Volumes/music/income/dump/Fixture Artist - Placed Album";
+    const std::vector<IntakeRecord> records = {record("itk_00000001", rootPath, IntakeStatus::Placed)};
+    auto viewWith = [&](const std::vector<MountEntry> &m, const std::vector<ShareLinkRead> &links) {
+        auto aliases = MountAliases::build(m, links);
+        return IntakeView::make(aliasedSnapshot(records, *aliases), aliases);
+    };
+    const std::string linkRow = "file://" + kLink + "/income/dump/Fixture Artist - Placed Album/01.wav";
+    const std::string volumeRow = "/Volumes/music-1/income/dump/Fixture Artist - Placed Album/01.wav";
+    const std::string libraryRow = "file://" + kLink + "/library/Fixture Artist/Placed Album/01.wav";
+
+    auto onShare = viewWith(mounts, {linkRead(kLink, "/Volumes/music-1")});
+    CHECK(census(*onShare, linkRow) == CensusEntry::Income, "link on the share: a link-form income row counts as income");
+    CHECK(census(*onShare, libraryRow) == CensusEntry::Clear, "and a link-form library row is clear");
+
+    auto mirror = viewWith(mounts, {linkRead(kLink, "/Users/x/mirror/music")});
+    CHECK(census(*mirror, linkRow) == CensusEntry::Unchecked,
+          "link -> mirror: the row matches nothing now, but counts as unchecked, never clear");
+    CHECK(census(*mirror, libraryRow) == CensusEntry::Unchecked, "every row under that link, a library row too");
+    CHECK(census(*mirror, volumeRow) == CensusEntry::Income, "a /Volumes-form income row is still an income row");
+    CHECK(census(*mirror, "file:///Users/x/Music/other/01.wav") == CensusEntry::Clear, "a local row elsewhere: clear");
+    CHECK(census(*mirror, "file://" + kLink + "2/01.wav") == CensusEntry::Clear,
+          "a name that only starts like the link: clear");
+
+    // Unmounted: the agent points the link at /Volumes/music; the last
+    // snapshot's roots stay unaliased, so the row still matches its root.
+    auto placeholder = viewWith(withSystem({}), {linkRead(kLink, "/Volumes/music")});
+    ViewScratch scratch;
+    CHECK(placeholder->recordFor(linkRow, scratch) != nullptr, "the placeholder: the row keeps matching (last tint)");
+    CHECK(census(*placeholder, linkRow) == CensusEntry::Unchecked, "but the census counts it unchecked");
+
+    auto noLinks = viewWith(mounts, {});
+    CHECK(!noLinks->underOffShareLink(linkRow, scratch) && census(*noLinks, linkRow) == CensusEntry::Clear,
+          "no link configured: the row matches nothing and is clear, as before B11");
+    CHECK(!mirror->underOffShareLink("mac-volume://U1/income/01.wav", scratch) &&
+              !mirror->underOffShareLink("", scratch) && !mirror->underOffShareLink("relative/01.wav", scratch),
+          "another scheme, an empty or relative path: not under a link");
+}
+
 static void testShareLinkChanges() {
     g_context = "link-changed-bases";
     using Bases = std::vector<std::string>;
@@ -691,6 +743,7 @@ int main(void) {
         testShareLinkOffShare();
         testShareLinkMatching();
         testShareLinkRootAndView();
+        testShareLinkCensus();
         testShareLinkChanges();
         testShareLinkRejected();
         testShareLinkSummary();

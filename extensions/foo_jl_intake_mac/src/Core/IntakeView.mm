@@ -52,6 +52,13 @@ bool IntakeView::matchKey(std::string_view path, ViewScratch &scratch, std::stri
     return true;
 }
 
+bool IntakeView::underOffShareLink(std::string_view path, ViewScratch &scratch) const {
+    if (aliases_->links().empty() || path.empty()) return false;
+    std::string_view key;
+    if (normalizePath(path, scratch.normalized, key) != PathStatus::Ok) return false;
+    return aliases_->underOffShareLink(key);
+}
+
 const IntakeRecord *IntakeView::libraryRecordFor(std::string_view path, ViewScratch &scratch) const {
     if (library_->isEmpty() || snapshot_->isEmpty() || path.empty()) return nullptr;
     std::string_view key;

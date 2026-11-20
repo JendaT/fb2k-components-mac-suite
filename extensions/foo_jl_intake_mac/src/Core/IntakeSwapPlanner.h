@@ -47,6 +47,20 @@
 //  income row's volume does not decide: local income and a library on a
 //  share are the usual case.
 //
+//  Share links (B11, docs/shadow-link.md): when items of the playlist lie
+//  under a share link (file://<link>/<rel>, MountAliases::LinkEntry), the
+//  mount's volume form would be a second spelling of the same file, so a
+//  second metadb entry. Swap then notes those links at the click
+//  (noteLinkForm) and uses the link form instead (linkFormFor): the first
+//  candidate that lies under a noted link's raw target, as "file://" + the
+//  link + the candidate's bytes past the target, with no conversion; an
+//  item of the playlist that already spells that path in another Unicode
+//  form lends its spelling (linkSpellingFor). No noted link leads to any
+//  candidate (a mirror, the unmounted placeholder): the row is skipped,
+//  never swapped to the volume form. A playlist with no link-form item
+//  keeps the volume-form rule above; in a mixed playlist the link form
+//  wins.
+//
 //  Thread-safety: pure functions, except readPlacedRootFiles, which calls
 //  `fs` (any thread; Swap's queue and the loader queue).
 //
@@ -57,6 +71,7 @@
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "IntakeMountAliases.h"
@@ -141,6 +156,7 @@ enum class SwapSkip {
     LibraryMissing,    // no library file at that path (either Unicode form, any mount of the share)
     ShareUnreachable,  // the library share stopped answering
     NoMatchingMount,   // no mount of the share has a volume form the playlist uses or foobar2000 resolves to it
+    LinkOffShare,      // B11: the playlist uses a share link, and no link it uses leads to the library copy
     SlowConversion,    // the swap's path conversions on the main thread ran over their budget
     PlaylistGone,      // the playlist was closed meanwhile
     PlaylistLocked,    // the playlist does not allow replacing items
@@ -234,6 +250,64 @@ struct CanonicalCandidate {
 // volume form never count.
 long chooseCanonicalCandidate(const std::vector<CanonicalCandidate> &candidates,
                               const std::vector<std::string> &playlistForms);
+
+// --- share links (B11; see the top of this file) ---
+
+// The share links a playlist's items lie under, noted at the Swap click.
+struct PlaylistLinkForms {
+    std::vector<std::string> links;  // LinkEntry::linkKey of each link an item lies under, each once, in playlist order
+    // Every such item: its IntakePath key -> its path as the playlist spells
+    // it (the first item with that key).
+    std::unordered_map<std::string, std::string> items;
+    bool empty() const { return links.empty(); }
+};
+
+// Notes `path` (a playlist item's path) when it is a file:// path under one
+// of `links`: by IntakePath key, byte-exact, the longest link winning, as
+// MountAliases::rewrite() matches links. Other schemes are never link
+// forms. `buffer` is scratch.
+void noteLinkForm(PlaylistLinkForms &forms, const std::vector<MountAliases::LinkEntry> &links,
+                  std::string_view path, std::string &buffer);
+
+struct LinkForm {
+    std::string path;          // "file://" + rawLink + the candidate's bytes past the target; "" with none
+    long candidateIndex = -1;  // the candidate it stands for, or -1
+};
+
+// The link form of the first of `candidates` (raw library paths Swap
+// stat'ed, in order) that lies under the raw target of one of `links`
+// whose key is in `linkForms` (the noted links, tried in that order): the
+// target compared ignoring ASCII case, as mount points are (a candidate
+// spelled through the link itself also counts, byte-exact). onShare is not
+// read: a link to a local folder works the same. The link is lexically
+// cleaned; the rest keeps the candidate's bytes (its Unicode form as
+// stat'ed). None (index -1) when `linkForms` is empty or no noted link
+// leads to any candidate.
+LinkForm linkFormFor(const std::vector<std::string> &candidates, const std::vector<MountAliases::LinkEntry> &links,
+                     const std::vector<std::string> &linkForms);
+
+// `path` (a link form) as an item of the playlist already spells it, the
+// same path by IntakePath key (NFC and NFD alike), so handle_create meets
+// the metadb entry that item uses; else `path` itself.
+std::string linkSpellingFor(const PlaylistLinkForms &forms, const std::string &path);
+
+// --- the Delete census ---
+
+// How the income-row census (IntakeSwap incomeRowCensus) counts one
+// playlist entry. Fail closed (doc 04 "Delete local copy"):
+enum class CensusEntry {
+    Clear,     // no income path of the roots
+    Income,    // an income path of one of the roots
+    Unchecked, // unknown, never clear: "Swap, then delete" deletes nothing while one is left
+};
+// `refused`: the entry's mac-volume path was not converted (a slow volume,
+// the budget). `offShareLink` (B11): it lies under a share link whose
+// target is off the share (MountAliases::underOffShareLink); whatever it
+// matches now, it could reach an income copy once the link points at the
+// share again, and Swap skips it while the link is off. `income`: its path
+// maps to one of the roots. Either of the first two makes it unchecked,
+// even when it matches.
+CensusEntry censusEntry(bool refused, bool offShareLink, bool income);
 
 // --- the console line ---
 

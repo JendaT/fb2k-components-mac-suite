@@ -25,7 +25,8 @@
 //  shadow, a file files[] does not list: no library copy) are named
 //  instead, and rows whose mac-volume path could not be converted (a slow
 //  volume) are named as not checked: "Swap, then delete" deletes nothing
-//  while any is left.
+//  while any is left. Rows under a share link off the share (B11) count as
+//  not checked too, and the text still names them as on a slow volume.
 //
 //  Recheck on confirm (recheckGcRoots): the lane was free while the alert
 //  was open, so every captured root must still be in the current snapshot,
@@ -56,7 +57,8 @@ struct GcIncomeRows {
     size_t inFirst = 0;        // of them, in the playlist Delete was opened from
     size_t playlists = 0;      // playlists holding them
     size_t noLibraryCopy = 0;  // of them, entries Swap never moves (shadow, not in files[])
-    size_t unchecked = 0;      // mac-volume entries whose path was not converted: unknown
+    size_t unchecked = 0;      // unknown: mac-volume entries whose path was not converted, and (B11) entries
+                               // under a share link off the share (IntakeSwapPlanner censusEntry)
     // "Swap, then delete" can end in gc: income rows, and Swap moves each.
     bool offerSwap() const { return rows > 0 && noLibraryCopy == 0; }
     // No entry points at an income path, and none was left unchecked.

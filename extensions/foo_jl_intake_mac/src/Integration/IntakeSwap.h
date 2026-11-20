@@ -16,7 +16,9 @@
 //      by their income path (IntakeView::recordFor). The host frees its
 //      selection afterwards; the indices are never kept. Also the volume
 //      forms the playlist's items use (canonicalVolumePrefix of each path:
-//      mac-volume://<UUID>/ or file://).
+//      mac-volume://<UUID>/ or file://), and (B11) the share links of the
+//      view's alias table that its file:// items lie under, with those
+//      items by match key (IntakeSwapPlanner noteLinkForm).
 //   2. A private serial queue: the mount table (MNT_NOWAIT), each root's
 //      sidecar files[] read afresh (IntakeSwapPlanner readPlacedRootFiles;
 //      a read whose errno says the share is gone ends the reads), each row
@@ -30,7 +32,13 @@
 //      the share is stat'ed too, and only the mounts where it exists stay
 //      candidates (a mount whose stat says the share is gone is not stat'ed
 //      again in this swap). A stat whose errno says the share is gone ends
-//      the first stats: the remaining rows are skipped.
+//      the first stats: the remaining rows are skipped. B11: when the
+//      playlist uses a share link, the row's path is its link form
+//      (linkFormFor: a candidate under a noted link's target, from the
+//      view's table, never read again here; an item's existing spelling
+//      of it first, linkSpellingFor), or the row is skipped ("the share
+//      link does not lead to the library copy"), never given a volume
+//      form.
 //   3. Main thread: the playlist is found again (by GUID, else the same
 //      index). Gone, or locked against replacing items
 //      (playlist_lock_get_filter_mask & playlist_lock::filter_replace):
@@ -45,7 +53,8 @@
 //      metadb entry (docs/VOLUME_UUID_ISSUE.md, docs/intake-mac-paths.md),
 //      and the income row's own volume does not matter (local income and a
 //      library on a share is the usual case). None: the row is skipped ("no
-//      matching mount"). The chosen file is converted with
+//      matching mount"). A link form is used as it is, with no
+//      conversion. The chosen file is converted with
 //      g_get_canonical_path; every SDK call here is timed, and once they
 //      add up to 200 ms the remaining rows are skipped ("path conversion
 //      too slow", one Info line). Then playlist_undo_backup once, and
@@ -129,7 +138,10 @@ std::vector<SwapRow> swapIncomeRows(t_size playlist, const std::unordered_set<st
 // The entries of every playlist that still point at an income path of
 // `rootIds` (main thread; one NativePathMenuBudget for all of them, so at
 // most 3 slow conversions per volume, and a slow volume never stops another). Fail closed: an entry whose mac-volume path was
-// not converted counts as unchecked, never as "no income row". An entry
+// not converted counts as unchecked, never as "no income row", and so
+// (B11) does an entry under a share link off the share, whatever it maps
+// to now (IntakeSwapPlanner censusEntry; Swap's own scans above still
+// count its income rows, so Swap decides about them). An entry
 // whose conversion was tried and failed (foobar2000 cannot resolve its
 // volume, e.g. a stale volume id) is not counted: it already points at no
 // reachable file, and Swap could not move it either.
@@ -139,7 +151,7 @@ struct IncomeRowCensus {
     std::vector<PlaylistRef> playlists;  // the playlists holding income entries, `first` first
     size_t total = 0;                    // income entries, every playlist
     size_t inFirst = 0;                  // of them, in `first`
-    size_t unchecked = 0;                // entries not converted, every playlist
+    size_t unchecked = 0;                // entries not converted or under an off-share link, every playlist
 };
 IncomeRowCensus incomeRowCensus(const std::unordered_set<std::string> &rootIds, const IntakeView &view,
                                 const PlaylistRef &first);

@@ -10,8 +10,12 @@
 //  (NFC/NFD, smbfs alias keys, shadows, files not in files[]), the mount
 //  alias paths for I/O, the Unicode form switch, the canonical volume
 //  prefix, the choice of the mount foobar2000 gets (the playlist's volume
-//  forms first, then the round trip) and the console line. Synthetic paths
-//  only.
+//  forms first, then the round trip) and the console line. B11 share
+//  links: the links a playlist's items use, the link form (a link to
+//  either mount of the share, a mirror, a link the playlist does not use,
+//  a mixed playlist, NFD bytes, a configured trailing slash, a candidate
+//  spelled through the link), the reuse of an item's existing spelling,
+//  and the Delete census decision. Synthetic paths only.
 //
 // TEST_DEPS: src/Core/IntakeSidecarMembers.mm src/Core/IntakeEnvelope.mm src/Core/IntakePath.mm
 // TEST_DEPS: src/Core/IntakeSettingsParse.mm src/Core/IntakeMountAliases.mm src/Core/IntakeLog.mm
@@ -26,6 +30,7 @@
 #include "../src/Core/IntakeSidecarMembers.h"
 #include "../src/Core/IntakeStatusModel.h"
 #include "../src/Core/IntakeSwapPlanner.h"
+#include "../src/Core/IntakeWatchSet.h"
 #include "TestHarness.h"
 
 #include <cerrno>
@@ -442,6 +447,209 @@ static void testLine() {
               std::string(swapSkipText(SwapSkip::PlaylistLocked)) == "playlist locked" &&
               std::string(swapSkipText(SwapSkip::SlowConversion)) == "path conversion too slow",
           "reason texts");
+    SwapTally links;
+    links.skip(SwapSkip::LinkOffShare);
+    links.skip(SwapSkip::LibraryMissing);
+    CHECK(swapResultLine(links) == "swap: 0 row(s) swapped to library paths, 2 skipped (1 library file missing, 1 the "
+                                   "share link does not lead to the library copy)",
+          "B11: the share-link skip, after the mount reasons");
+}
+
+// --- B11 share links ---
+
+static const std::string kLink = "/Users/x/Music/NAS/music";
+
+// What readShareLink would report for `link` (synthetic: nothing is read).
+static ShareLinkRead linkRead(const std::string &link, const std::string &target) {
+    ShareLinkRead r;
+    r.status = ShareLinkStatus::Link;
+    r.linkPath = link;
+    r.rawTarget = target;
+    r.resolvedParent = parentDirectory(link);
+    return r;
+}
+
+static std::vector<MountEntry> shareMounts() {
+    return {{"/", "/dev/disk1", "apfs", true},
+            {"/Volumes/music", "//user@lan-host/music", "smbfs", false},
+            {"/Volumes/music-1", "//user@vpn-host/music", "smbfs", false}};
+}
+
+// The link forms of a playlist holding `items`, as Swap notes them at the click.
+static PlaylistLinkForms noted(const std::shared_ptr<const MountAliases> &table, const std::vector<std::string> &items) {
+    PlaylistLinkForms forms;
+    std::string buffer;
+    for (const std::string &item : items) noteLinkForm(forms, table->links(), item, buffer);
+    return forms;
+}
+
+static void testLinkForms() {
+    g_context = "link-forms";
+    const std::vector<MountEntry> mounts = shareMounts();
+    auto lan = MountAliases::build(mounts, {linkRead(kLink, "/Volumes/music")});
+    const std::string item = "file://" + kLink + "/library/Fixture Artist - Other/01.wav";
+    PlaylistLinkForms forms = noted(lan, {"mac-volume://U1/library/x.wav", item, item,
+                                          "file://" + kLink + "/library/Fixture Artist - Third/02.wav"});
+    CHECK(forms.links == std::vector<std::string>({kLink}), "a link-form item notes its link, once");
+    CHECK(forms.items.size() == 2 && forms.items.count(key(item)) && forms.items[key(item)] == item,
+          "each link-form item by match key, with its spelling");
+    CHECK(!forms.empty(), "the playlist uses a link form");
+
+    PlaylistLinkForms none = noted(lan, {"mac-volume://U1/library/x.wav", "file:///Users/x/Music/local/a.wav",
+                                         "file://" + kLink + "2/a.wav", "/Users/x/Music/NAS/music/raw.wav",
+                                         "tidal://track/1"});
+    CHECK(none.empty() && none.items.empty(),
+          "no link form: volume forms, other local files, a name that only starts like the link, a raw path, other "
+          "schemes");
+    CHECK(noted(lan, {"FILE://" + kLink + "/a.wav"}).links.size() == 1, "the scheme ignoring ASCII case");
+    CHECK(noted(lan, {"file:///Users/x/music/NAS/music/a.wav"}).empty(), "the link byte-exact, never ignoring case");
+    CHECK(noted(MountAliases::build(mounts), {item}).empty(), "no link configured: nothing noted");
+
+    auto nested = MountAliases::build(mounts, {linkRead("/Users/x/a", "/Users/x/mirror"),
+                                               linkRead("/Users/x/a/b", "/Volumes/music-1/sub")});
+    CHECK(noted(nested, {"file:///Users/x/a/b/c.wav"}).links == std::vector<std::string>({"/Users/x/a/b"}),
+          "nested links: the longer one, as rewrite() picks");
+    CHECK(noted(nested, {"file:///Users/x/a/c.wav"}).links == std::vector<std::string>({"/Users/x/a"}),
+          "the shorter one elsewhere");
+}
+
+static void testLinkForm() {
+    g_context = "link-form";
+    const std::vector<MountEntry> mounts = shareMounts();
+    const std::string playlistItem = "file://" + kLink + "/library/Fixture Artist - Other/01.wav";
+    const std::vector<std::string> both = {"/Volumes/music/library/Fixture Artist - Album/01.wav",
+                                           "/Volumes/music-1/library/Fixture Artist - Album/01.wav"};
+    const std::string linkForm = "file://" + kLink + "/library/Fixture Artist - Album/01.wav";
+
+    auto lan = MountAliases::build(mounts, {linkRead(kLink, "/Volumes/music")});
+    LinkForm f = linkFormFor(both, lan->links(), noted(lan, {playlistItem}).links);
+    CHECK(f.candidateIndex == 0 && f.path == linkForm,
+          "link -> /Volumes/music, the file found there: that candidate's link form");
+
+    auto vpn = MountAliases::build(mounts, {linkRead(kLink, "/Volumes/music-1")});
+    const std::vector<std::string> vpnForms = noted(vpn, {playlistItem}).links;
+    f = linkFormFor(both, vpn->links(), vpnForms);
+    CHECK(f.candidateIndex == 1 && f.path == linkForm,
+          "link -> /Volumes/music-1, found under /Volumes/music first: the candidate under /Volumes/music-1");
+    CHECK(linkFormFor({both[0]}, vpn->links(), vpnForms).candidateIndex == -1,
+          "the copy only under the mount the link does not lead to: none");
+
+    g_context = "link-off-share";
+    auto mirror = MountAliases::build(mounts, {linkRead(kLink, "/Users/x/mirror/music")});
+    f = linkFormFor(both, mirror->links(), noted(mirror, {playlistItem}).links);
+    CHECK(f.candidateIndex == -1 && f.path.empty(), "link -> mirror: no candidate under it (Swap: LinkOffShare)");
+    auto placeholder = MountAliases::build({mounts[0]}, {linkRead(kLink, "/Volumes/music")});
+    CHECK(linkFormFor({}, placeholder->links(), noted(placeholder, {playlistItem}).links).candidateIndex == -1,
+          "the unmounted placeholder: no library copy was found at all");
+    CHECK(std::string(swapSkipText(SwapSkip::LinkOffShare)) == "the share link does not lead to the library copy",
+          "the skip's text");
+
+    g_context = "link-unused";
+    // The playlist uses no link form: linkFormFor gives none, and Swap keeps
+    // the volume-form rule (chooseCanonicalCandidate).
+    const PlaylistLinkForms unused = noted(lan, {"mac-volume://U1/library/x.wav"});
+    CHECK(unused.empty() && linkFormFor(both, lan->links(), unused.links).candidateIndex == -1,
+          "a link the playlist does not use: no link form");
+
+    g_context = "link-mixed";
+    std::vector<std::string> playlistForms;
+    const std::vector<std::string> mixedItems = {"mac-volume://U1/library/x.wav", playlistItem};
+    for (const std::string &i : mixedItems) noteVolumeForm(playlistForms, i);
+    const PlaylistLinkForms mixed = noted(lan, mixedItems);
+    CHECK(hasVolumeForm(playlistForms, "mac-volume://U1/") && !mixed.empty(),
+          "a mixed playlist: a volume form and a link form");
+    f = linkFormFor(both, lan->links(), mixed.links);
+    CHECK(f.candidateIndex == 0 && f.path == linkForm, "the link form wins");
+
+    g_context = "link-nfd";
+    const std::string nfdCandidate = "/Volumes/music/library/" + kNfd + "/01.wav";
+    f = linkFormFor({nfdCandidate}, lan->links(), mixed.links);
+    CHECK(f.path == "file://" + kLink + "/library/" + kNfd + "/01.wav", "the NFD bytes kept as stat'ed");
+
+    g_context = "link-trailing-slash";
+    const ShareLinkList configured = parseShareLinks(kLink + "/\n");
+    CHECK(configured.links == std::vector<std::string>({kLink}), "the configured line is cleaned");
+    // The read as the loader makes it: the link's folders are local, the
+    // target is a network mount, never read past.
+    std::vector<std::string> reads;
+    LinkReader reader = [&](const std::string &path, std::string &target) {
+        reads.push_back(path);
+        if (path == kLink) {
+            target = "/Volumes/music";
+            return LinkCheck::Link;
+        }
+        return LinkCheck::NotLink;
+    };
+    const ShareLinkRead read = readShareLink(configured.links[0], mounts, reader);
+    CHECK(read.status == ShareLinkStatus::Link && read.linkPath == kLink && read.rawTarget == "/Volumes/music",
+          "read as a link to /Volumes/music");
+    bool onShare = false;
+    for (const std::string &r : reads) onShare = onShare || r.rfind("/Volumes/music", 0) == 0;
+    CHECK(!reads.empty() && !onShare, "nothing on the share was read");
+    auto cleaned = MountAliases::build(mounts, {read});
+    f = linkFormFor(both, cleaned->links(), noted(cleaned, {playlistItem}).links);
+    CHECK(f.path == linkForm, "no double slash after the link");
+    auto dirty = MountAliases::build(mounts, {linkRead(kLink + "/", "/Volumes/music/")});
+    f = linkFormFor(both, dirty->links(), noted(dirty, {playlistItem}).links);
+    CHECK(f.candidateIndex == 0 && f.path == linkForm, "a raw link or target with a trailing slash is cleaned here too");
+
+    g_context = "link-spelled-through";
+    // The prefix pair may already lead into the link (swap_prefix_to = the link).
+    const std::string through = kLink + "/library/Fixture Artist - Album/01.wav";
+    f = linkFormFor({through}, lan->links(), mixed.links);
+    CHECK(f.candidateIndex == 0 && f.path == "file://" + through, "a candidate spelled through the link itself");
+    CHECK(linkFormFor({"/Users/x/Music/NAS/music2/a.wav"}, lan->links(), mixed.links).candidateIndex == -1,
+          "the link matched at a component boundary");
+
+    g_context = "link-target-case";
+    auto upper = MountAliases::build(mounts, {linkRead(kLink, "/Volumes/MUSIC")});
+    f = linkFormFor(both, upper->links(), noted(upper, {playlistItem}).links);
+    CHECK(f.candidateIndex == 0 && f.path == linkForm, "the target compared ignoring ASCII case, as mount points are");
+    CHECK(linkFormFor({"/Volumes/music2/library/a.wav"}, lan->links(), mixed.links).candidateIndex == -1,
+          "the target matched at a component boundary");
+
+    g_context = "link-to-root";
+    auto root = MountAliases::build(mounts, {linkRead(kLink, "/")});
+    f = linkFormFor(both, root->links(), noted(root, {playlistItem}).links);
+    CHECK(f.candidateIndex == 0 && f.path == "file://" + kLink + both[0], "a link to /: the whole path past the link");
+
+    g_context = "link-several";
+    auto two = MountAliases::build(mounts, {linkRead("/Users/x/mirror-link", "/Users/x/mirror"),
+                                            linkRead(kLink, "/Volumes/music-1")});
+    const PlaylistLinkForms twoForms = noted(two, {"file:///Users/x/mirror-link/a.wav", playlistItem});
+    CHECK(twoForms.links.size() == 2, "two links in use");
+    f = linkFormFor(both, two->links(), twoForms.links);
+    CHECK(f.candidateIndex == 1 && f.path == linkForm, "the noted link that leads to a candidate");
+    CHECK(linkFormFor(both, two->links(), {"/Users/x/not-a-link"}).candidateIndex == -1,
+          "a noted key with no entry: none");
+}
+
+static void testLinkSpelling() {
+    g_context = "link-spelling";
+    const std::vector<MountEntry> mounts = shareMounts();
+    auto lan = MountAliases::build(mounts, {linkRead(kLink, "/Volumes/music")});
+    const std::string nfc = "file://" + kLink + "/library/" + kNfc + "/01.wav";
+    const std::string nfd = "file://" + kLink + "/library/" + kNfd + "/01.wav";
+    const PlaylistLinkForms nfdItems = noted(lan, {nfd});
+    CHECK(linkSpellingFor(nfdItems, nfc) == nfd, "an item already spells it NFD: that spelling, not the stat'ed NFC");
+    CHECK(linkSpellingFor(nfdItems, nfd) == nfd, "the same bytes: itself");
+    CHECK(linkSpellingFor(noted(lan, {nfc}), nfd) == nfc, "an NFC item, NFD stat'ed: the NFC spelling");
+    const std::string other = "file://" + kLink + "/library/" + kNfc + "/02.wav";
+    CHECK(linkSpellingFor(nfdItems, other) == other, "no item spells it: the stat'ed bytes");
+    CHECK(linkSpellingFor(PlaylistLinkForms(), nfc) == nfc, "nothing noted: the stat'ed bytes");
+    CHECK(linkSpellingFor(noted(lan, {nfc, nfd}), nfd) == nfc, "both spellings in the playlist: the first one seen");
+}
+
+static void testCensusEntry() {
+    g_context = "census";
+    CHECK(censusEntry(false, false, false) == CensusEntry::Clear, "no income path: clear");
+    CHECK(censusEntry(false, false, true) == CensusEntry::Income, "an income path: an income row");
+    CHECK(censusEntry(true, false, false) == CensusEntry::Unchecked, "not converted: unchecked, never clear");
+    CHECK(censusEntry(false, true, false) == CensusEntry::Unchecked,
+          "under a share link off the share, matching nothing now: unchecked, never clear");
+    CHECK(censusEntry(false, true, true) == CensusEntry::Unchecked,
+          "under the unmounted placeholder, matching an income root by the last snapshot: still unchecked");
+    CHECK(censusEntry(true, true, true) == CensusEntry::Unchecked, "both: unchecked");
 }
 
 int main() {
@@ -455,6 +663,10 @@ int main() {
         testForms();
         testChooseMount();
         testLine();
+        testLinkForms();
+        testLinkForm();
+        testLinkSpelling();
+        testCensusEntry();
     }
     TEST_MAIN_END();
 }
