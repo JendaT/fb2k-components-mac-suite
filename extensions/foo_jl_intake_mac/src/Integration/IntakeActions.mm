@@ -32,6 +32,7 @@
 #include "../Core/IntakeLog.h"
 #include "../Core/IntakeMutationLane.h"
 #include "../Core/IntakeMutationResult.h"
+#include "../Core/IntakeRejectReason.h"
 #include "../Core/IntakeSlowVolumeGuard.h"
 #include "../Core/IntakeView.h"
 
@@ -233,6 +234,64 @@ static NSString *JLIntakeNSString(const std::string &s) {
 
 @end
 
+// The Reject… sheet's reason (IntakeRejectReason): a pop-up of presets
+// above the free-text field. A preset shows its text in the field, which is
+// disabled; "Other…" enables the field (and gives it the focus) for any
+// text, keeping what was typed there in this sheet across preset switches.
+@interface JLIntakeRejectReason : NSObject
+@property(nonatomic, weak) NSPopUpButton *popup;
+@property(nonatomic, weak) NSTextField *field;
+// The field for the pop-up's current choice; call once both are set.
+- (void)start;
+- (void)choiceChanged:(id)sender;
+- (size_t)choice;
+// The reason to send: the preset's text, or the free text trimmed.
+- (std::string)reason;
+@end
+
+@implementation JLIntakeRejectReason {
+    std::string _otherText;  // typed under Other… in this sheet
+    size_t _shown;           // the choice the field shows
+}
+
+- (size_t)choice {
+    const NSInteger index = self.popup.indexOfSelectedItem;
+    return index < 0 ? intake::rejectReasonOtherIndex() : static_cast<size_t>(index);
+}
+
+- (std::string)fieldText {
+    const char *bytes = self.field.stringValue.UTF8String;
+    return bytes ? std::string(bytes) : std::string();
+}
+
+- (void)showChoice:(BOOL)focus {
+    _shown = [self choice];
+    if (intake::rejectChoiceIsOther(_shown)) {
+        self.field.enabled = YES;
+        self.field.stringValue = JLIntakeNSString(_otherText);
+        if (focus && self.field.window != nil) [self.field.window makeFirstResponder:self.field];
+    } else {
+        self.field.enabled = NO;
+        self.field.stringValue = JLIntakeNSString(intake::rejectReasonChoices()[_shown]);
+    }
+}
+
+- (void)start {
+    [self showChoice:NO];
+}
+
+- (void)choiceChanged:(id)sender {
+    if (intake::rejectChoiceIsOther(_shown)) _otherText = [self fieldText];
+    [self showChoice:YES];
+}
+
+- (std::string)reason {
+    const size_t c = [self choice];
+    return intake::rejectReasonFor(c, intake::rejectChoiceIsOther(c) ? [self fieldText] : std::string());
+}
+
+@end
+
 namespace intake {
 
 namespace {
@@ -240,11 +299,6 @@ namespace {
 NSString *NSStr(const std::string &s) {
     NSString *out = [[NSString alloc] initWithBytes:s.data() length:s.size() encoding:NSUTF8StringEncoding];
     return out ?: @"";
-}
-
-std::string StdStr(NSString *s) {
-    const char *c = s.UTF8String;
-    return c ? std::string(c) : std::string();
 }
 
 std::string rootCountText(size_t n) {
@@ -621,7 +675,12 @@ NSWindow *sheetHostWindow() {
     return activeSheetHost();
 }
 
-// Reject…: the confirmation (doc 04 v1.2, confirm_reject).
+// The Reject… sheet's last reason choice, for this session only (no
+// setting): Other… until the first confirmed Reject. Main thread.
+size_t g_lastRejectChoice = SIZE_MAX;
+
+// Reject…: the confirmation (doc 04 v1.2, confirm_reject), with the reason
+// pop-up (IntakeRejectReason) above the free-text field.
 void confirmReject(const ActionEntry &entry) {
     const size_t n = entry.roots.size();
     NSAlert *alert = [[NSAlert alloc] init];
@@ -630,15 +689,35 @@ void confirmReject(const ActionEntry &entry) {
     alert.informativeText = [NSString
         stringWithFormat:@"%@\n\nReject only changes the intake state. No files are deleted.",
                          NSStr(affectedAlbumsText(entry.roots))];
-    [alert addButtonWithTitle:@"Reject"];
-    [alert addButtonWithTitle:@"Cancel"];
-    NSTextField *reasonField = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 320, 22)];
+    [alert addButtonWithTitle:@"Reject"];   // Return
+    [alert addButtonWithTitle:@"Cancel"];   // Escape
+
+    const CGFloat width = 320, popupHeight = 26, gap = 8, fieldHeight = 22;
+    NSView *box = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, popupHeight + gap + fieldHeight)];
+    NSPopUpButton *popup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(-3, fieldHeight + gap, width + 6, popupHeight)
+                                                      pullsDown:NO];
+    for (const std::string &title : rejectReasonChoices()) [popup addItemWithTitle:NSStr(title)];
+    popup.accessibilityLabel = @"Reason";
+    const size_t initial =
+        g_lastRejectChoice < rejectReasonChoices().size() ? g_lastRejectChoice : rejectReasonOtherIndex();
+    [popup selectItemAtIndex:static_cast<NSInteger>(initial)];
+    NSTextField *reasonField = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, width, fieldHeight)];
     reasonField.placeholderString = @"Reason (optional)";
     reasonField.accessibilityLabel = @"Reason for rejecting";
     reasonField.usesSingleLineMode = YES;
-    alert.accessoryView = reasonField;
+    [box addSubview:popup];
+    [box addSubview:reasonField];
+    JLIntakeRejectReason *reason = [[JLIntakeRejectReason alloc] init];
+    reason.popup = popup;
+    reason.field = reasonField;
+    popup.target = reason;
+    popup.action = @selector(choiceChanged:);
+    [reason start];
+    alert.accessoryView = box;
     [alert layout];
-    alert.window.initialFirstResponder = reasonField;
+    // Other…: typing at once; a preset: the pop-up (keyboard navigation
+    // permitting). Return rejects and Escape cancels either way.
+    alert.window.initialFirstResponder = rejectChoiceIsOther(initial) ? (NSView *)reasonField : (NSView *)popup;
 
     const ActionEntry captured = entry;
     void (^finish)(NSModalResponse) = ^(NSModalResponse response) {
@@ -646,11 +725,10 @@ void confirmReject(const ActionEntry &entry) {
             logDebug("reject: cancelled in the confirmation");
             return;
         }
-        NSString *text = [reasonField.stringValue
-            stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        g_lastRejectChoice = [reason choice];
         // runMutation logs an Error line when it cannot start (the lane or
         // the CLI path changed while the alert was open).
-        const std::string what = runMutation(captured, StdStr(text));
+        const std::string what = runMutation(captured, [reason reason]);
         logDebug("reject: " + what);
     };
     if (NSWindow *host = sheetHostWindow()) {

@@ -84,9 +84,14 @@
 //   - Reject…: with confirm_reject on (default), an NSAlert first, as a
 //     sheet on the window under the pointer (where the menu was opened),
 //     else the main, key or foobar2000 main window, else app-modal; it lists
-//     up to 10 albums ("and N more") with an optional reason field; off:
-//     at once, no reason (the item then has no ellipsis). Only when the
-//     CLI has `reject`. No alert when the call could not start anyway.
+//     up to 10 albums ("and N more") and has a reason pop-up ("Already in
+//     library", "Lower quality than library copy", "Not wanted", "Other…";
+//     IntakeRejectReason) above a free-text field. A preset's text is the
+//     reason and the field shows it, disabled; "Other…" enables the field
+//     (empty: no reason). The last choice is kept for the session only
+//     (Other… at first). Return rejects, Escape cancels. Off: at once, no
+//     reason (the item then has no ellipsis). Only when the CLI has
+//     `reject`. No alert when the call could not start anyway.
 //   - Execute placement… (B8): describe, then confirm. The sheet's window
 //     is chosen at the click, as for the picker. `execute <ids> --dry-run
 //     --json` runs on the lane (class ExecuteDryRun: no E_CLI_TIMEOUT,
