@@ -779,6 +779,47 @@ static void testIncomeAndWatchSet() {
           "the page names the failure");
 }
 
+// The income-folder root guard: a root at an income folder itself is left
+// out of the load while `income` answers, and back when it fails.
+static void testIncomeFolderGuard() {
+    g_context = "income-folder-guard";
+    clearLog();
+    std::string state = mock::setupState("default");
+    const std::string root = state + "/root";
+    CHECK(mock::writeFile(state + "/responses/status.d/itk_000000ff.json",
+                          "{\"id\":\"itk_000000ff\",\"root_path\":\"" + root +
+                              "/income/dump\",\"status\":\"resolved\",\"needs_review\":false,\"cluster\":"
+                              "{\"albumartist\":null,\"album\":null},\"proposal\":null,\"placed\":null}\n"),
+          "a root at the income folder itself");
+    auto h = std::make_shared<Harness>();
+    h->setMounts({kLocalRoot});
+    IntakeLoader loader(settingsFor(state, h));
+    loader.reload(true);
+    CHECK(waitFinished(*h, 1) && h->lastFinished().state == LoaderState::Ready, "first load");
+    Published first = h->lastPublished();
+    ViewScratch scratch;
+    CHECK(first.view && first.view->snapshot().size() == 16 &&
+              first.view->snapshot().recordForId("itk_000000ff") == nullptr,
+          "the income-folder root is not in the view");
+    CHECK(first.view && first.view->recordFor(root + "/income/dump/Stray Track.wav", scratch) == nullptr,
+          "a stray row at the folder's top level maps to nothing");
+    CHECK(first.view && first.view->visualFor(newAlbum(root), scratch) != nullptr, "a root inside it still decorates");
+    CHECK_EQ(logCount("root itk_000000ff is the income folder dump itself; ignored (loose files at its top level)"), 1,
+             "one Info line");
+    loader.reload(true);
+    CHECK(waitFinished(*h, 2), "a recheck finishes");
+    CHECK_EQ(logCount("root itk_000000ff is the income folder dump itself"), 1, "once per session");
+
+    g_context = "income-folder-guard-off";
+    mock::setMode(state, "income", "exit2");
+    loader.reload(true);
+    CHECK(waitFinished(*h, 3), "a recheck with a failing income finishes");
+    Published unguarded = h->lastPublished();
+    CHECK(unguarded.view && unguarded.view->snapshot().recordForId("itk_000000ff") != nullptr,
+          "income failed: no guard, the root is back");
+    clearMode(state, "income");
+}
+
 static void testIncomeNotOffered() {
     g_context = "income-not-offered";
     std::string state = mock::setupState("cli-0.2.1");
@@ -1678,6 +1719,7 @@ int main(void) {
         testMountAliases();
         testShutdown();
         testIncomeAndWatchSet();
+        testIncomeFolderGuard();
         testIncomeNotOffered();
         testNetworkWatchSet();
         testChangeCoalescing();

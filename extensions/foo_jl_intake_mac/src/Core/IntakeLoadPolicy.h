@@ -17,6 +17,8 @@
 //     else is one invalidate-all.
 //   - applyMountAliases: re-derives every record's rootKey from its rootPath
 //     through the alias table, at load and when the mount table changes.
+//   - dropIncomeFolderRoots: the income-folder root guard (a root that is an
+//     income folder itself is left out of the load).
 //   - remountChangesRows: the invalidation diff of a mount table change.
 //   - carryOverUnreadable: a partial `status` that could not read a sidecar
 //     keeps the last record of that root (PLAN.md 3.5, risk 7).
@@ -70,6 +72,31 @@ bool rendersAlike(const IntakeSnapshot &a, const IntakeSnapshot &b);
 // rootKey = aliases.rewrite(normalize(rootPath)) for every record; a record
 // whose rootPath does not normalize gets an empty key (matches nothing).
 void applyMountAliases(std::vector<IntakeRecord> &records, const MountAliases &aliases);
+
+// The income-folder root guard. A loose audio file directly in an income
+// folder makes `scan` write <income>/.intake.json, so the income folder
+// becomes a root and every stray row under it (dead rows of moved files
+// included) would decorate as that root and offer its actions. Such a root
+// is removed from `records` before the members are read and the snapshot
+// is built: no member entries, no decoration, tooltip, badge or menu
+// action. A root matches when its rootKey (after applyMountAliases) equals
+// an income folder's key built the same way: IntakePath normalisation
+// (lexical, NFC), then `aliases` (two mounts of one share meet); exact and
+// case-sensitive otherwise. A root in a subfolder is kept. With no income
+// folders (income not offered, or its last call failed: the caller passes
+// none) nothing is removed. Returns the removed roots with the income
+// folder's name (its path when the name is empty), in record order.
+struct IgnoredIncomeRoot {
+    std::string id;
+    std::string incomeName;
+};
+std::vector<IgnoredIncomeRoot> dropIncomeFolderRoots(std::vector<IntakeRecord> &records,
+                                                     const std::vector<IncomeFolder> &income,
+                                                     const MountAliases &aliases);
+
+// The Info line for one ignored root: "root <id> is the income folder
+// <name> itself; ignored (loose files at its top level)".
+std::string ignoredIncomeRootLine(const IgnoredIncomeRoot &root);
 
 // A mount table change (PLAN.md risk 5): the alias table went from `before`
 // to `after` and the last load's keys were rebuilt from `oldSnapshot`

@@ -138,6 +138,40 @@ UnreadableSidecars carryOverUnreadable(std::vector<IntakeRecord> &records, const
     return out;
 }
 
+std::vector<IgnoredIncomeRoot> dropIncomeFolderRoots(std::vector<IntakeRecord> &records,
+                                                     const std::vector<IncomeFolder> &income,
+                                                     const MountAliases &aliases) {
+    std::vector<IgnoredIncomeRoot> dropped;
+    if (income.empty() || records.empty()) return dropped;
+    std::vector<std::pair<std::string, std::string>> keys;  // income key -> name
+    std::string normalized;
+    for (const IncomeFolder &f : income) {
+        if (normalizePath(f.path, normalized) != PathStatus::Ok) continue;
+        keys.emplace_back(aliases.rewritten(normalized), f.name.empty() ? f.path : f.name);
+    }
+    if (keys.empty()) return dropped;
+    auto incomeName = [&keys](const std::string &rootKey) -> const std::string * {
+        for (const auto &k : keys) {
+            if (k.first == rootKey) return &k.second;
+        }
+        return nullptr;
+    };
+    // Erase in place, keeping the order of the rest.
+    records.erase(std::remove_if(records.begin(), records.end(),
+                                 [&](const IntakeRecord &r) {
+                                     const std::string *name = r.rootKey.empty() ? nullptr : incomeName(r.rootKey);
+                                     if (name) dropped.push_back({r.id, *name});
+                                     return name != nullptr;
+                                 }),
+                  records.end());
+    return dropped;
+}
+
+std::string ignoredIncomeRootLine(const IgnoredIncomeRoot &root) {
+    return "root " + root.id + " is the income folder " + root.incomeName +
+           " itself; ignored (loose files at its top level)";
+}
+
 bool remountChangesRows(const IntakeSnapshot &oldSnapshot, const MountAliases &before,
                         const IntakeSnapshot &newSnapshot, const MountAliases &after) {
     if (!rendersAlike(oldSnapshot, newSnapshot)) return true;
