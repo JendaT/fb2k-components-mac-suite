@@ -49,19 +49,33 @@
 //     window, or, when it can no longer take one, on the main, key or
 //     foobar2000 main window, else app-modal (started from a run-loop callout, never inside
 //     a main-queue block, so the main queue keeps draining while it is
-//     up). It has an NSComboBox (type-ahead completion) listing the
-//     collection names in the CLI's order and the albums it applies to (up
-//     to 10, then "and N more"; for one root also its current target).
-//     Nothing is preselected: the field starts empty, so an engine proposal
-//     is never turned into a user choice by Return. "Assign" is enabled
-//     only while the text stands for a listed name (case-sensitive; a
+//     up). It has a search field over a list visible from the start
+//     (JLIntakeCollectionPicker, IntakeCollectionSearch), in sections:
+//     "Suggested" (the selected roots' proposal.ranked[0]: one when they
+//     agree, else their distinct values, up to 3; left out when none),
+//     "Recent" (the last five collections assigned to, the hidden
+//     recent_collections key, names no longer listed dropped) and "All
+//     collections" in the CLI's order; headers are not choosable and a name
+//     may repeat across sections. Above it, the albums it applies to (up to
+//     10, then "and N more"; for one root also its current target).
+//     Nothing is highlighted at first, so an engine proposal is never
+//     turned into a user choice by Return. Typing filters the list live
+//     into one ranked list (substring, ignoring case, diacritics and the
+//     square brackets: "folk" finds "[Folktronica & Ezo techno]") and
+//     highlights the first match. Keys stay in the field: Up and Down, or a
+//     click, highlight a row and show its name in the field. The
+//     highlighted row is the choice: Return or a double-click assigns it;
+//     Escape or Cancel runs nothing. "Assign" is enabled while a name is
+//     highlighted, or the field holds a listed name (case-sensitive; a
 //     spelling that differs only in Unicode normalisation counts, and the
 //     listed name's own bytes go to the CLI: IntakeCollections
-//     listedCollectionFor). Cancel or Escape runs nothing.
+//     listedCollectionFor). Confirming moves the name to the front of
+//     Recent.
 //     Assign checks the lane and the configuration again, then runs
 //     `assign <ids> --collection <name> --by user` on the roots the menu
-//     captured, followed by `propose` as for Assign to X. One picker flow at a time: a request while `collections`
-//     runs or the sheet is open logs one Info line and does nothing. A
+//     captured, followed by `propose` as for Assign to X. One picker flow
+//     at a time: a request while `collections` runs or the sheet is open
+//     logs one Info line and does nothing. A
 //     failed `collections` (an E_* error, a timeout, a reply that is not
 //     an envelope or whose data is not an array or has more than 10000
 //     entries, a partial reply) or an empty list logs one Error line and

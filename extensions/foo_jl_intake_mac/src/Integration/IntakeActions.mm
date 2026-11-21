@@ -14,6 +14,7 @@
 
 #include "IntakeActions.h"
 
+#include "IntakeConfig.h"
 #include "IntakeDecoratorProvider.h"
 #include "IntakeNativePath.h"
 #include "IntakeService.h"
@@ -22,6 +23,7 @@
 #include "../Core/IntakeActionTable.h"
 #include "../Core/IntakeAssignPropose.h"
 #include "../Core/IntakeCliRunner.h"
+#include "../Core/IntakeCollectionSearch.h"
 #include "../Core/IntakeCollections.h"
 #include "../Core/IntakeErrorMap.h"
 #include "../Core/IntakeExecutePlan.h"
@@ -40,57 +42,193 @@
 #include <unordered_map>
 #include <unordered_set>
 
-// The picker's combo box delegate (B7): "Assign" is enabled only while the
-// text stands for one of the listed names (IntakeCollections
-// listedCollectionFor). ObjC classes share one namespace in the process,
-// hence the component prefix.
-@interface JLIntakeCollectionPicker : NSObject <NSComboBoxDelegate>
-@property(nonatomic, weak) NSComboBox *combo;
+// The picker's search field and list (B7; search, sections and Recent since
+// B13-lite). The list is visible from the start: "Suggested" (the selected
+// roots' ranked[0]), "Recent" and "All collections" (IntakeCollectionSearch
+// pickerRows); nothing is highlighted then, so no choice is made for the
+// user. Typing filters it live into one ranked list and highlights the
+// first match (pickerHighlight); the field keeps the typed text. Up and Down
+// (keys stay in the field: the table never takes focus) or a click
+// highlight a row and show its name in the field, selected, so typing
+// replaces it. The highlighted row is the choice: Return or a double-click
+// assigns it. "Assign" is enabled while a name row is highlighted, or the
+// field holds a listed name (IntakeCollections listedCollectionFor);
+// Escape cancels. ObjC classes share one namespace in the process, hence
+// the component prefix.
+static NSString *JLIntakeNSString(const std::string &s) {
+    NSString *out = [[NSString alloc] initWithBytes:s.data() length:s.size() encoding:NSUTF8StringEncoding];
+    return out ?: @"";
+}
+
+@interface JLIntakeCollectionPicker : NSObject <NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate>
+@property(nonatomic, weak) NSTextField *field;
+@property(nonatomic, weak) NSTableView *table;
 @property(nonatomic, weak) NSButton *okButton;
-- (instancetype)initWithNames:(const std::vector<std::string> &)names;
-- (BOOL)isListed:(NSString *)text;
-- (void)update;
+@property(nonatomic, weak) NSButton *cancelButton;
+- (instancetype)initWithNames:(const std::vector<std::string> &)names
+                    suggested:(const std::vector<std::string> &)suggested
+                       recent:(const std::vector<std::string> &)recent;
+// Rebuilds the list for the field's text, highlights, updates Assign.
+- (void)refresh;
+// The choice: the highlighted name, else the listed name the field holds,
+// else "".
+- (std::string)chosenName;
+- (void)rowDoubleClicked:(id)sender;
 @end
 
 @implementation JLIntakeCollectionPicker {
     std::vector<std::string> _names;
+    std::vector<std::string> _suggested;
+    std::vector<std::string> _recent;
+    std::vector<intake::PickerRow> _rows;
+    BOOL _selecting;  // the highlight is being moved from code, not by a click
 }
 
-- (instancetype)initWithNames:(const std::vector<std::string> &)names {
-    if ((self = [super init])) _names = names;
+- (instancetype)initWithNames:(const std::vector<std::string> &)names
+                    suggested:(const std::vector<std::string> &)suggested
+                       recent:(const std::vector<std::string> &)recent {
+    if ((self = [super init])) {
+        _names = names;
+        _suggested = suggested;
+        _recent = recent;
+    }
     return self;
 }
 
-- (BOOL)isListed:(NSString *)text {
-    const char *bytes = text.UTF8String;
-    return bytes != nullptr && intake::listedCollectionFor(_names, std::string(bytes)) != nullptr;
+- (std::string)fieldText {
+    const char *bytes = self.field.stringValue.UTF8String;
+    return bytes ? std::string(bytes) : std::string();
 }
 
-- (void)update {
-    self.okButton.enabled = [self isListed:self.combo.stringValue];
+- (BOOL)isNameRow:(NSInteger)row {
+    return row >= 0 && static_cast<size_t>(row) < _rows.size() && !_rows[static_cast<size_t>(row)].header;
 }
 
-// Again on the next main-queue turn: the text may still change after the
-// notification (the type-ahead completion, a pick from the list).
-- (void)updateSoon {
-    __weak JLIntakeCollectionPicker *weakSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [weakSelf update];
-    });
+- (std::string)chosenName {
+    const NSInteger row = self.table.selectedRow;
+    if ([self isNameRow:row]) return _rows[static_cast<size_t>(row)].text;
+    const std::string *exact = intake::listedCollectionFor(_names, [self fieldText]);
+    return exact ? *exact : std::string();
 }
 
-// Typing (the type-ahead completion is part of the value).
+- (void)updateOk {
+    self.okButton.enabled = !self.chosenName.empty();
+}
+
+// Highlights `row` (none when it is not a name row). `showName`: the
+// field shows the name, selected, so typing replaces it (a click, the
+// arrows); a text change keeps the typed text.
+- (void)highlightRow:(NSInteger)row showName:(BOOL)showName {
+    _selecting = YES;
+    if ([self isNameRow:row]) {
+        [self.table selectRowIndexes:[NSIndexSet indexSetWithIndex:static_cast<NSUInteger>(row)]
+                byExtendingSelection:NO];
+        [self.table scrollRowToVisible:row];
+    } else {
+        [self.table deselectAll:nil];
+    }
+    _selecting = NO;
+    if (showName && [self isNameRow:row]) {
+        self.field.stringValue = JLIntakeNSString(_rows[static_cast<size_t>(row)].text);
+        if (NSText *editor = [self.field currentEditor]) {
+            editor.selectedRange = NSMakeRange(0, self.field.stringValue.length);
+        }
+    }
+    [self updateOk];
+}
+
+- (void)refresh {
+    const std::string text = [self fieldText];
+    _rows = intake::pickerRows(_suggested, _recent, _names, text);
+    _selecting = YES;
+    [self.table reloadData];
+    _selecting = NO;
+    [self highlightRow:intake::pickerHighlight(_rows, _names, text) showName:NO];
+}
+
+- (void)moveHighlightBy:(NSInteger)step {
+    const NSInteger count = static_cast<NSInteger>(_rows.size());
+    const NSInteger row = self.table.selectedRow;
+    for (NSInteger next = (row < 0 ? (step > 0 ? -1 : count) : row) + step; next >= 0 && next < count;
+         next += step) {
+        if ([self isNameRow:next]) {
+            [self highlightRow:next showName:YES];
+            return;
+        }
+    }
+}
+
+// --- the field ---
+
 - (void)controlTextDidChange:(NSNotification *)notification {
-    [self update];
-    [self updateSoon];
+    [self refresh];
 }
 
-// A pick from the list. stringValue still holds the old text when this
-// arrives, so the selected item decides now and the text once it is set.
-- (void)comboBoxSelectionDidChange:(NSNotification *)notification {
-    id selected = self.combo.objectValueOfSelectedItem;
-    if ([selected isKindOfClass:[NSString class]]) self.okButton.enabled = [self isListed:selected];
-    [self updateSoon];
+- (BOOL)control:(NSControl *)control textView:(NSTextView *)textView doCommandBySelector:(SEL)command {
+    if (command == @selector(moveDown:)) {
+        [self moveHighlightBy:1];
+        return YES;
+    }
+    if (command == @selector(moveUp:)) {
+        [self moveHighlightBy:-1];
+        return YES;
+    }
+    if (command == @selector(insertNewline:)) {
+        if (self.okButton.enabled) [self.okButton performClick:nil];
+        return YES;  // nothing chosen: Return does nothing
+    }
+    if (command == @selector(cancelOperation:)) {
+        [self.cancelButton performClick:nil];
+        return YES;
+    }
+    return NO;
+}
+
+// --- the list ---
+
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
+    return static_cast<NSInteger>(_rows.size());
+}
+
+- (BOOL)tableView:(NSTableView *)tableView isGroupRow:(NSInteger)row {
+    return row >= 0 && static_cast<size_t>(row) < _rows.size() && _rows[static_cast<size_t>(row)].header;
+}
+
+- (BOOL)tableView:(NSTableView *)tableView shouldSelectRow:(NSInteger)row {
+    return [self isNameRow:row];
+}
+
+- (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
+    if (row < 0 || static_cast<size_t>(row) >= _rows.size()) return nil;
+    const intake::PickerRow &r = _rows[static_cast<size_t>(row)];
+    NSString *identifier = r.header ? @"JLIntakePickerHeader" : @"JLIntakePickerName";
+    NSTextField *label = [tableView makeViewWithIdentifier:identifier owner:self];
+    if (label == nil) {
+        label = [NSTextField labelWithString:@""];
+        label.identifier = identifier;
+        label.lineBreakMode = NSLineBreakByTruncatingTail;
+        if (r.header) {
+            label.font = [NSFont boldSystemFontOfSize:[NSFont smallSystemFontSize]];
+            label.textColor = [NSColor secondaryLabelColor];
+        }
+    }
+    label.stringValue = JLIntakeNSString(r.text);
+    return label;
+}
+
+// A click (the table never has focus and the code's own moves are flagged,
+// so nothing else reaches here): its row is the choice.
+- (void)tableViewSelectionDidChange:(NSNotification *)notification {
+    if (_selecting) return;
+    [self highlightRow:self.table.selectedRow showName:YES];
+}
+
+// A double-click on a name row assigns it.
+- (void)rowDoubleClicked:(id)sender {
+    const NSInteger row = self.table.clickedRow;
+    if (![self isNameRow:row]) return;
+    [self highlightRow:row showName:YES];
+    if (self.okButton.enabled) [self.okButton performClick:nil];
 }
 
 @end
@@ -555,6 +693,16 @@ std::string assignChosen(const ActionEntry &entry, const std::string &collection
     return runMutation(chosen, std::string());
 }
 
+// The user confirmed Assign to `chosen`: it goes to the front of the
+// hidden recent_collections list (IntakeCollectionSearch), which drops the
+// names no longer listed and keeps at most five.
+void rememberRecentCollection(const std::string &chosen, const std::vector<std::string> &names) {
+    const std::vector<std::string> stored =
+        parseRecentCollections(config::getString(config::kRecentCollections, ""));
+    config::setString(config::kRecentCollections,
+                      formatRecentCollections(updateRecentCollections(stored, chosen, names)));
+}
+
 void showPicker(const std::shared_ptr<PickerFlow> &flow) {
     const ActionEntry &entry = flow->entry;
     const size_t n = entry.roots.size();
@@ -568,38 +716,73 @@ void showPicker(const std::shared_ptr<PickerFlow> &flow) {
     }
     alert.informativeText = NSStr(info);
     NSButton *ok = [alert addButtonWithTitle:@"Assign"];
-    [alert addButtonWithTitle:@"Cancel"];  // Escape (NSAlert's Cancel rule)
+    NSButton *cancel = [alert addButtonWithTitle:@"Cancel"];  // Escape (NSAlert's Cancel rule)
 
-    NSMutableArray<NSString *> *items = [NSMutableArray arrayWithCapacity:flow->names.size()];
-    for (const std::string &name : flow->names) [items addObject:NSStr(name)];
-    NSComboBox *combo = [[NSComboBox alloc] initWithFrame:NSMakeRect(0, 0, 320, 26)];
-    combo.usesDataSource = NO;
-    [combo addItemsWithObjectValues:items];
-    combo.completes = YES;  // type-ahead
-    combo.numberOfVisibleItems = std::min<NSInteger>(15, std::max<NSInteger>(1, items.count));
-    combo.placeholderString = @"Collection";
-    combo.accessibilityLabel = @"Collection to assign to";
+    // A search field over the list (NSComboBox completes by prefix only,
+    // and every collection name starts with "[").
+    const CGFloat width = 380, fieldHeight = 24, gap = 8, listHeight = 12 * 22 + 4;  // about 12 rows
+    NSView *box = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, fieldHeight + gap + listHeight)];
+    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, listHeight + gap, width, fieldHeight)];
+    field.placeholderString = @"Search collections";
+    field.accessibilityLabel = @"Search collections";
+    field.usesSingleLineMode = YES;
+    field.cell.wraps = NO;
+    field.cell.scrollable = YES;
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, width, listHeight)];
+    scroll.hasVerticalScroller = YES;
+    scroll.autohidesScrollers = YES;
+    scroll.borderType = NSBezelBorder;
+    NSTableView *table = [[NSTableView alloc] initWithFrame:scroll.contentView.bounds];
+    NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:@"name"];
+    column.resizingMask = NSTableColumnAutoresizingMask;
+    column.width = width - 4;
+    [table addTableColumn:column];
+    table.headerView = nil;
+    table.style = NSTableViewStylePlain;
+    table.rowHeight = 20;
+    table.columnAutoresizingStyle = NSTableViewUniformColumnAutoresizingStyle;
+    table.refusesFirstResponder = YES;  // keys stay in the field
+    table.allowsEmptySelection = YES;
+    table.accessibilityLabel = @"Collections";
+    scroll.documentView = table;
+    [box addSubview:field];
+    [box addSubview:scroll];
 
-    JLIntakeCollectionPicker *helper = [[JLIntakeCollectionPicker alloc] initWithNames:flow->names];
-    helper.combo = combo;
+    std::vector<std::string> topRanked;
+    for (const ActionRoot &r : entry.roots) topRanked.push_back(r.topRanked);
+    const std::vector<std::string> suggested = suggestedCollections(topRanked, flow->names);
+    const std::vector<std::string> recent = shownRecentCollections(
+        parseRecentCollections(config::getString(config::kRecentCollections, "")), flow->names);
+    JLIntakeCollectionPicker *helper = [[JLIntakeCollectionPicker alloc] initWithNames:flow->names
+                                                                             suggested:suggested
+                                                                                recent:recent];
+    helper.field = field;
+    helper.table = table;
     helper.okButton = ok;
-    combo.delegate = helper;
-    alert.accessoryView = combo;
+    helper.cancelButton = cancel;
+    field.delegate = helper;
+    table.dataSource = helper;
+    table.delegate = helper;
+    table.target = helper;
+    table.doubleAction = @selector(rowDoubleClicked:);
+    alert.accessoryView = box;
     [alert layout];
-    alert.window.initialFirstResponder = combo;
-    [helper update];  // empty text: Assign starts disabled
+    alert.window.initialFirstResponder = field;
+    [helper refresh];  // empty field: the sections, nothing highlighted, Assign disabled
     flow->alert = alert;
     flow->helper = helper;
 
     std::shared_ptr<PickerFlow> current = flow;
     void (^finish)(NSModalResponse) = ^(NSModalResponse response) {
-        const std::string text = StdStr(combo.stringValue);
+        // The highlighted name, else the listed name the field holds.
+        const std::string text = [helper chosenName];
         endPicker(current);
         if (actionsState().stopped) return;  // quit started: drop it
         if (response != NSAlertFirstButtonReturn) {
             logDebug("assign-other: cancelled in the picker");
         } else if (const std::string *listed = listedCollectionFor(current->names, text)) {
             // The listed name's own bytes, never the typed text.
+            rememberRecentCollection(*listed, current->names);
             logDebug("assign-other: " + assignChosen(current->entry, *listed));
         } else {
             // Assign is disabled for anything else; never pass an unlisted

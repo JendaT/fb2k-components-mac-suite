@@ -687,6 +687,14 @@ static void testAssignOtherMixed() {
               actionRootFor(pending).targetPath.empty() && actionRootFor(older).targetPath.empty() &&
               actionRootFor(n).targetPath.empty(),
           "and its target_path only when set (errors naming the target go to it)");
+    IntakeRecord ranked = withProposal(rec("itk_00000013", IntakeStatus::Proposed));
+    ranked.proposal.rankedState = RankedState::Present;
+    ranked.proposal.ranked = {{"Test Collection B", 0.7, true}, {"Test Collection A", 0.2, true}};
+    IntakeRecord userOnly = withProposal(rec("itk_00000014", IntakeStatus::Proposed));
+    userOnly.proposal.rankedState = RankedState::Empty;
+    CHECK(actionRootFor(ranked).topRanked == "Test Collection B" && actionRootFor(userOnly).topRanked.empty() &&
+              actionRootFor(n).topRanked.empty(),
+          "and the engine's ranked[0] for the picker's Suggested, when ranked has one");
 }
 
 static void testAssignArgv() {

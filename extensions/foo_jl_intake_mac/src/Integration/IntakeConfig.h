@@ -35,6 +35,10 @@
 //   - decor_stats (int, 0 or 1): the hidden decorate counters (B3
 //     "INTAKE_DECOR_STATS"); default 0.
 //   - log_file (int, 0 or 1): mirror log lines to a file.
+//   - recent_collections (string): the "Assign to other collection…"
+//     picker's Recent list, one name per line, most recent first (at most
+//     five; IntakeCollectionSearch). Written by the picker when the user
+//     confirms Assign, read when it opens; not part of load().
 //
 //  load() reads every key: once in on_init, and again in IntakeService
 //  whenever the preferences page posts IntakeSettingsDidChangeNotification.
@@ -87,6 +91,8 @@ inline constexpr const char *kSwapPrefixFrom = "swap_prefix_from";
 inline constexpr const char *kSwapPrefixTo = "swap_prefix_to";
 inline constexpr const char *kConfirmReject = "confirm_reject";
 inline constexpr const char *kConfirmGc = "confirm_gc";
+// Hidden, not a setting: the picker's Recent list (IntakeCollectionSearch).
+inline constexpr const char *kRecentCollections = "recent_collections";
 
 // The preferences page's GUID (Tools > Intake, Main.mm get_guid).
 // {B5B6AB95-DB13-45D9-A9F1-A85E014C08C8}

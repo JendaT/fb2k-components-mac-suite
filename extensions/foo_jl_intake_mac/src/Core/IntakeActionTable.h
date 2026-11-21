@@ -173,6 +173,7 @@ struct ActionRoot {
     std::string targetPath;        // proposal.target_path when set (CLI 0.3.0+); empty otherwise
     bool placedVerified = false;   // placed.verified (B9)
     std::string placedTargetPath;  // placed.target_path; empty without one (B9)
+    std::string topRanked;         // proposal.ranked[0].collection; empty without one (the picker's Suggested)
 };
 
 ActionRoot actionRootFor(const IntakeRecord &record);
