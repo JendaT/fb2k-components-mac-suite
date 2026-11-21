@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Assign picker**: "Assign to other collection…" shows the list at once (Suggested, Recent, All collections) and filters it as you type, by any part of the name, ignoring case, accents and brackets.
 - **Reject reasons**: The Reject sheet offers preset reasons (Already in library, Lower quality than library copy, Not wanted) or Other… for your own text; the last choice is kept until quit.
 - **Background execute**: Execute and Resume keep running when foobar2000 quits and are picked up at the next start.
+- **Execute follow-ups**: The Execute sheet offers to swap playlist rows to the library copies when the placement ends, then delete the local copies; the choice also applies after a restart.
 - **Live updates**: Income folders are watched with FSEvents; a sidecar change or a finished command reloads the status.
 - **Income folder guard**: A release root that is an income folder itself (loose files at its top level) is ignored, so stray rows under the folder are not tinted or acted on.
 - **Network shares**: `mac-volume://` rows match, also when a share is mounted twice; a stalled volume is skipped instead of blocking.

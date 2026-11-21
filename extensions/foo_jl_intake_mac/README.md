@@ -104,7 +104,7 @@ qualify. "(2 of 3)" in a title means it runs on only some of them.
 | Assign to other collection… | `collections`, then `assign` with the collection picked | new, resolved, proposed, approved |
 | Approve | `approve` | proposed with a target |
 | Reject… | `reject`, with a reason picked from presets (Already in library, Lower quality than library copy, Not wanted) or typed under Other… | new, resolved, proposed, approved |
-| Execute placement… | `execute --dry-run`, then a sheet, then `execute` in the background | approved with a target |
+| Execute placement… | `execute --dry-run`, then a sheet, then `execute` in the background; when it ends, Swap to library paths and, if ticked in the sheet, `gc` | approved with a target |
 | Resume placement | `execute --resume` in the background | placing, when no run is going on it |
 | Swap to library paths | no CLI call: points the playlist rows at the library copies | placed and verified |
 | Delete local copy… | `gc` | placed and verified |
@@ -116,7 +116,7 @@ qualify. "(2 of 3)" in a title means it runs on only some of them.
   are disabled; during an Execute their titles say "(execute running)".
   Swap to library paths and Refresh stay available.
 - An Execute keeps running when foobar2000 quits. The next start picks it
-  up again.
+  up again, with the swap and delete chosen in its sheet.
 
 How commands are run, timed out and watched is described in
 [`docs/runtime-notes.md`](docs/runtime-notes.md). The settings, including

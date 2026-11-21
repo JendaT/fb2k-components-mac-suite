@@ -334,7 +334,40 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
   roots; on confirm `execute <ids> --json` runs detached, with its output
   and a run file (pid, start time, ids) in the cache folder. Progress comes
   from FSEvents; at init a live leftover run is adopted and a dead one
-  finished.
+  finished. Confirm first leaves out roots that changed while the sheet was
+  open (no longer `approved`, another target, or a null `target_path` now:
+  "slot pending" on a singles root, "cannot be placed" on any other, the
+  tooltip's rule), one Error line each.
+- **Execute follow-ups** (user request 2026-11-21): the sheet has two
+  checkboxes, "Swap playlist rows to the library copies when done" (default
+  on) and "Then delete the local copies" (default off, enabled only while
+  the first is ticked, shown unticked while disabled). The last confirmed
+  choice is kept in two hidden configInts, `execute_swap_after` and
+  `execute_delete_after`. It goes into the run file when the run starts
+  (`swap_after`, `delete_after`), so it applies when the run ends, whoever
+  finishes it: this session, a later one that adopts the live run, or one
+  that finds it ended at init (both log one Info line "run <stem>:
+  swap/delete as chosen at its start"). A run file without the fields (an
+  older build, a resume) gets no follow-ups. When the run ends: its result
+  as above, then the reload that follows (one that fails stops the
+  follow-ups, one Info line). **Swap:** the run's roots now `placed` with
+  `placed.verified`, their rows in every playlist, through the Swap path
+  below (no lane). **Delete**, when ticked, after the swap: the lane is
+  taken, the Delete census counts the playlist entries still on the income
+  paths of those roots (swapped rows now count as library rows), and gc runs
+  for the roots that pass the gc guard (re-checked against the reloaded
+  records) and whose census is clear. The ticked checkbox is the
+  `confirm_gc` confirmation for exactly those roots: no second sheet, and
+  nothing modal appears. A root is kept, with one Info line and a tooltip
+  (as a per-root error, baseline its status then), when it fails the guard,
+  still has entries on its income paths (no library copy, a locked playlist,
+  a swap that did not start), or when any entry anywhere could not be
+  checked (slow volume: such entries cannot be attributed to a root, so
+  every root is kept). A census that cannot run (inert, no data, the lane
+  busy) keeps every root. The other roots go ahead. The lane is held only
+  from the census to gc's exit and released on every path; one chain runs at
+  a time. A quit between the run's end and its follow-ups drops them:
+  nothing is deleted, and Swap and Delete local copy… stay in the menu.
 - **Resume** on `placing` roots runs detached like execute (never killed,
   holds the lane). A root that ends `approved` (resume reverted it) counts as
   a per-root failure.
@@ -386,7 +419,8 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
   entry anywhere points at an income path and none is unchecked (slow
   volume); otherwise one Error line and nothing is deleted. On confirm the
   roots are rechecked against the current snapshot (still `placed` and
-  verified). `confirm_gc` 0 skips the sheet: gc at once.
+  verified). `confirm_gc` 0 skips the sheet: gc at once. The Execute
+  follow-up's delete (above) has no sheet either: its checkbox confirms.
 
 - **Reject…** (with `confirm_reject` on) confirms in a sheet listing the
   albums, with a reason pop-up above the free-text field: "Already in
