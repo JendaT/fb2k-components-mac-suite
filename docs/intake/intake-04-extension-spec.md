@@ -376,6 +376,14 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
   roots are rechecked against the current snapshot (still `placed` and
   verified). `confirm_gc` 0 skips the sheet: gc at once.
 
+- **Reject…** (with `confirm_reject` on) confirms in a sheet listing the
+  albums, with a reason pop-up above the free-text field: "Already in
+  library", "Lower quality than library copy", "Not wanted", "Other…". A
+  preset's text is the reason (`reject --reason`, unchanged contract) and
+  shows in the disabled field; "Other…" enables the field (empty: no
+  reason). The last choice is remembered for the session only (no setting;
+  "Other…" at first). `confirm_reject` 0 skips the sheet: no reason.
+
 The picker, Reject… and Delete local copy… sheets pick their window the same
 way.
 

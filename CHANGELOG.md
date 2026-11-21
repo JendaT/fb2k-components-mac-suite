@@ -1004,6 +1004,7 @@ First release, contributed by @Scannou (#56).
 - **Context actions**: Propose, Assign (to a candidate or any collection), Approve, Reject, Execute placement, Resume placement, Swap to library paths, Delete local copy, Refresh.
 - **Assign then propose**: Assigning a resolved release to a collection also proposes it, so it is ready to approve.
 - **Assign picker**: "Assign to other collection…" shows the list at once (Suggested, Recent, All collections) and filters it as you type, by any part of the name, ignoring case, accents and brackets.
+- **Reject reasons**: The Reject sheet offers preset reasons (Already in library, Lower quality than library copy, Not wanted) or Other… for your own text; the last choice is kept until quit.
 - **Background execute**: Execute and Resume keep running when foobar2000 quits and are picked up at the next start.
 - **Live updates**: Income folders are watched with FSEvents; a sidecar change or a finished command reloads the status.
 - **Income folder guard**: A release root that is an income folder itself (loose files at its top level) is ignored, so stray rows under the folder are not tinted or acted on.

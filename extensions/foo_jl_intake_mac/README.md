@@ -100,7 +100,7 @@ qualify. "(2 of 3)" in a title means it runs on only some of them.
 | Assign to *X* | `assign --collection X --by user` | one release that has other candidates (up to 4 shown) |
 | Assign to other collection… | `collections`, then `assign` with the collection picked | new, resolved, proposed, approved |
 | Approve | `approve` | proposed with a target |
-| Reject… | `reject`, with an optional reason | new, resolved, proposed, approved |
+| Reject… | `reject`, with a reason picked from presets (Already in library, Lower quality than library copy, Not wanted) or typed under Other… | new, resolved, proposed, approved |
 | Execute placement… | `execute --dry-run`, then a sheet, then `execute` in the background | approved with a target |
 | Resume placement | `execute --resume` in the background | placing, when no run is going on it |
 | Swap to library paths | no CLI call: points the playlist rows at the library copies | placed and verified |
