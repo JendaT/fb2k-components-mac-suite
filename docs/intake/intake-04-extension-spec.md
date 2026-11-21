@@ -242,9 +242,11 @@ resolved or proposed and is sticky until `approve`.
      collection folder is found by `target_collection` (the folder name,
      bracketed or not; also the CLI's sanitized spelling), NFC on both
      sides; when it is not in the path, the last four components. A null
-     `target_path` on new, resolved, proposed or approved:
-     `Target: <collection> · slot pending`. No `target_path` member (CLI
-     0.2.1): `Target: <collection>`. A resolved root with no proposal:
+     `target_path` on new, resolved, proposed or approved: on a singles
+     root `Target: <collection> · slot pending`; on any other root
+     `Target: none, cannot be placed (see intake status)`, whoever assigned
+     it (tier `reject`, no album name: a target that can never be built).
+     No `target_path` member (CLI 0.2.1): `Target: <collection>`. A resolved root with no proposal:
      `No target yet: Propose (or Assign to a collection first)`.
   4. With a proposal: `Assigned by you` (`assigned_by` user), `Assigned by
      the engine (confidence 0.91)`, or `Confidence 0.91` when `assigned_by`
@@ -266,9 +268,19 @@ belongs to one `proposed` or `approved` root:
   `→ [Collection A] · 0.61 (alt: [Collection B])`; no hint without `ranked`.
   The amber badge uses the review colour at full opacity at any tint alpha
   (the group header is not tinted); `tint_review` 0 gives the host's colour.
-- Null `target_path`: `→ [Collection A] · slot pending`, amber. From CLI
-  0.3.0 compilations get a target (amendment 003), leaving the singles slot;
-  tier `reject` is also null, and its wording is not specified.
+- Null `target_path`: on a singles root `→ [Collection A] · slot pending`,
+  on any other root `→ [Collection A] · cannot be placed`; amber, no hint,
+  whoever assigned it. From CLI 0.3.0 compilations get a target (amendment
+  003), leaving the singles slot; tier `reject`, a missing album name and
+  an unconfigured tier are null for good.
+- **Root kind is the only signal:** `status --json` carries no tier,
+  `structure_slot` or reason for a null target. A singles root is one whose
+  named sidecar (`.intake.<id>.json`, read for its `files[]` anyway) has
+  `"singles": true` (doc 01); a lone root whose sidecar is not read counts
+  as singles when its `cluster.album` is null (singles always have none).
+  The coordinator is requesting summary fields for amendment 004
+  (`target_null_reason`, `quality.*`) through the overseer; with them the
+  wording can name the reason.
 
 ### Context actions (selection mapped to sidecar roots)
 A flat `jl_context_action` list (API v1: no submenus, no tooltip);

@@ -71,9 +71,12 @@ Rows are matched to intake releases (roots) by their file path.
 
 - **Row tooltip.** Hovering a tinted row shows, one line each: the status
   (`Intake: Proposed · needs review`), the target folder from the tier on
-  (`Target: music.hq/[Collection A]/Artist/Release`), or
-  `Target: [Collection A] · slot pending`, or, for a resolved release with
-  no proposal, `No target yet: Propose (or Assign to a collection first)`;
+  (`Target: music.hq/[Collection A]/Artist/Release`), or for a single
+  waiting for its slot `Target: [Collection A] · slot pending`, or for a
+  release that can never be placed (for example graded tier reject)
+  `Target: none, cannot be placed (see intake status)`, or, for a resolved
+  release with no proposal, `No target yet: Propose (or Assign to a
+  collection first)`;
   then who assigned it (`Assigned by you`, `Assigned by the engine
   (confidence 0.91)`). The CLI reports only that a release needs review,
   not why.
