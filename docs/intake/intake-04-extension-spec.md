@@ -221,8 +221,32 @@ resolved or proposed and is sticky until `approve`.
   other icon does. A tint of 0 draws no background and leaves its icon in
   the label colour; a colour with alpha 0 draws no background but still
   colours those icons.
-- A null `proposal.target_path` adds the tooltip "slot pending"; a
-  per-command error adds the root's last error until its status changes.
+- **Row tooltip (B13):** every row that gets a visual has a tooltip, one
+  line each (joined with `\n`; SimPlaylist shows a plain string), a line
+  left out when it has nothing to say:
+  1. `Intake: <Status>` (New, Resolved, Proposed, Approved, Placing,
+     Placed, Rejected), plus ` · needs review` when `needs_review` is set
+     on a new, resolved or proposed root. `status --json` carries only the
+     flag, so no reasons are shown; reasons need a contract change (doc 03).
+  2. `placing — see intake status` on placing.
+  3. The target: `Target: <tier>/<collection>/<rest>` from
+     `proposal.target_path`, relative to the tier root's parent (e.g.
+     `music.hq/[Psytrance & Goa]/Logic Bomb/Logic Bomb [2000] Headware`). The
+     collection folder is found by `target_collection` (the folder name,
+     bracketed or not; also the CLI's sanitized spelling), NFC on both
+     sides; when it is not in the path, the last four components. A null
+     `target_path` on new, resolved, proposed or approved:
+     `Target: <collection> · slot pending`. No `target_path` member (CLI
+     0.2.1): `Target: <collection>`. A resolved root with no proposal:
+     `No target yet: Propose (or Assign to a collection first)`.
+  4. With a proposal: `Assigned by you` (`assigned_by` user), `Assigned by
+     the engine (confidence 0.91)`, or `Confidence 0.91` when `assigned_by`
+     is absent.
+  5. The root's last per-command error, kept until its status changes.
+
+  A root whose status renders nothing (placed unverified, gc_done,
+  unknown) gets only its last error as a tooltip-only visual, if it has
+  one; the inert state keeps its single line (see Failure behavior).
 - `gc_done` renders nothing: the local copy is gone, and rows swapped to
   library paths match no income root (library rows are not intake rows).
 

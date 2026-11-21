@@ -59,17 +59,24 @@ Rows are matched to intake releases (roots) by their file path.
 | Status | Tint (default) | Icon | Notes |
 |---|---|---|---|
 | new, resolved | blue | ○ | |
-| new with needs review | blue | ○ | tooltip "needs review" |
-| resolved with needs review | amber | ⚠ | tooltip "needs review" |
+| new with needs review | blue | ○ | "needs review" in the tooltip |
+| resolved with needs review | amber | ⚠ | "needs review" in the tooltip |
 | proposed | teal | ◐ | |
-| proposed with needs review | amber | ◐ | tooltip "needs review", also after your own Assign |
+| proposed with needs review | amber | ◐ | "needs review" in the tooltip, also after your own Assign |
 | approved | teal | ◑ | |
-| placing (during Execute) | teal | → | tooltip "placing — see intake status" |
+| placing (during Execute) | teal | → | "placing — see intake status" in the tooltip |
 | placed and verified | green | ● | |
 | placed unverified, gc_done | none | none | the local copy is gone or unconfirmed |
 | rejected | grey | ✕ | struck through |
 
-- A proposal without a target slot adds the tooltip "slot pending".
+- **Row tooltip.** Hovering a tinted row shows, one line each: the status
+  (`Intake: Proposed · needs review`), the target folder from the tier on
+  (`Target: music.hq/[Collection A]/Artist/Release`), or
+  `Target: [Collection A] · slot pending`, or, for a resolved release with
+  no proposal, `No target yet: Propose (or Assign to a collection first)`;
+  then who assigned it (`Assigned by you`, `Assigned by the engine
+  (confidence 0.91)`). The CLI reports only that a release needs review,
+  not why.
 - A failed command adds its error to the release's tooltip until the
   release's status changes.
 - While intake is inactive (the CLI cannot run, or it reports an

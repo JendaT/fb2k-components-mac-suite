@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Row tints**: SimPlaylist rows of intake releases get a tint and icon by status: new, resolved, proposed, approved, placing, placed, rejected.
 - **Review marker**: Resolved and proposed releases that need review show amber with a "needs review" tooltip (warning icon on resolved); new ones get the tooltip only.
+- **Row tooltip**: Hovering an intake row shows its status, the target folder from the tier on, who assigned it with the confidence, or what is still missing.
 - **Group badge**: A group of one proposed or approved release shows the target collection and confidence; amber when it needs review or is below 0.6.
 - **Context actions**: Propose, Assign (to a candidate or any collection), Approve, Reject, Execute placement, Resume placement, Swap to library paths, Delete local copy, Refresh.
 - **Background execute**: Execute and Resume keep running when foobar2000 quits and are picked up at the next start.
