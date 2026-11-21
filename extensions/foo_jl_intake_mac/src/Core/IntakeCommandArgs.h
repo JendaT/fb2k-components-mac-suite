@@ -14,8 +14,15 @@
 //  every income folder (commands-p3.ts:491-493; from 0.3.0, contract v1.2,
 //  it is E_BAD_ARGS without --all), and `execute --approved` places every
 //  approved root.
+//  scan (B12) takes no ids: it names exactly one income folder
+//  (CliRequest::income), and one without is refused (the only other form
+//  is `scan --all`). The argument is the income's name, or its absolute
+//  path from `income --json` when the name starts with "-": the CLI's
+//  parseArgs would take "--all" or "--json" as a flag (cli.ts:89-92), and
+//  it matches an income by name or by that path (commands.ts:181). No dry
+//  run is built for scan.
 //  For the same reason this module never emits --all-resolved, --approved,
-//  --all or a bare `gc`, and it only accepts sidecar ids
+//  --all or a bare `gc` or `scan`, and it only accepts sidecar ids
 //  (^itk_[0-9a-f]{8}$, commands-p2.ts:30): a directory would select every
 //  virtual root in it (commands-p2.ts:62-73), and a value starting with "-"
 //  would be parsed as a flag. Duplicate ids are passed once (the CLI answers
@@ -84,23 +91,27 @@ enum class CliCommand {
     Execute,
     Resume, // intake execute <ids...> --resume
     Gc,
+    Scan,   // intake scan <income> (B12); feature-detect with cliSupportsCommand
 };
 
 // The CLI command word ("execute" for Resume too).
 const char *cliCommandWord(CliCommand command);
 // A distinct name for logs ("resume" for Resume).
 const char *cliCommandName(CliCommand command);
-// Propose, Assign, Approve, Reject, Execute, Resume and Gc. Version, Status,
-// Collections and Income are read-only.
+// Propose, Assign, Approve, Reject, Execute, Resume, Gc and Scan. Version,
+// Status, Collections and Income are read-only.
 bool isMutatingCommand(CliCommand command);
 
 struct CliRequest {
     CliCommand command = CliCommand::Version;
-    std::vector<std::string> ids;   // sidecar ids; required for mutating commands
-    bool dryRun = false;            // mutating commands only
+    std::vector<std::string> ids;   // sidecar ids; required for mutating commands but Scan
+    bool dryRun = false;            // mutating commands only (not Scan)
     std::string collection;         // Assign: required; sent as --collection <name> --by user
     std::string reason;             // Reject: optional --reason <text>
     std::vector<std::pair<std::string, std::string>> filters; // Status: --filter key=value
+    std::string income;             // Scan: required, the income name from `income --json`
+    std::string incomePath;         // Scan: that income's absolute path; required (and sent
+                                    // instead of the name) when the name starts with "-"
 };
 
 struct CliConfig {
@@ -130,9 +141,9 @@ struct CliConfig {
 enum class CommandClass {
     ReadOnly,      // version, status, collections, income: pipes, killed at
                    // the budget
-    Mutating,      // propose, assign, approve, reject, gc, dry runs included:
-                   // output files, reported at the budget, killed only at
-                   // the 15-minute hard cap
+    Mutating,      // propose, assign, approve, reject, gc, scan, dry runs
+                   // included: output files, reported at the budget, killed
+                   // only at the 15-minute hard cap
     ExecuteDryRun, // execute or resume with --dry-run: output files, no
                    // E_CLI_TIMEOUT (doc 03 excepts execute), a lane release
                    // at the budget, never killed (execute is never killed)

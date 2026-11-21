@@ -206,6 +206,7 @@ ActionContext liveContext(const IntakeView *view) {
     // live run found there takes the lane).
     c.laneBusy = st.lane.busy() || !st.runScanDone;
     c.executeRunning = st.lane.executeRunning();
+    c.scanRunning = st.lane.scanRunning();
     c.liveRunIds = st.tracker.liveRunIds();
     c.confirmReject = info.confirmReject;
     c.confirmGc = info.confirmGc;
@@ -221,8 +222,9 @@ std::string whyNotStartable() {
     if (!info.running || !info.cliConfigured) return "intake is not running or has no CLI path";
     if (!st.runScanDone) return "intake is still checking for an execute run left by an earlier session";
     if (st.lane.busy()) {
-        return st.lane.executeRunning() ? "another intake command is still running (execute)"
-                                        : "another intake command is still running";
+        if (st.lane.executeRunning()) return "another intake command is still running (execute)";
+        if (st.lane.scanRunning()) return "a background scan is running";
+        return "another intake command is still running";
     }
     return std::string();
 }
@@ -350,6 +352,7 @@ std::string runMutation(const ActionEntry &entry, const std::string &reason) {
     const std::string name = cliCommandName(request.command);
     const uint64_t token = st.lane.acquire(laneHolderFor(request));
     if (token == 0) {
+        if (st.lane.scanRunning()) return notRun(entry.action, "a background scan is running");
         return notRun(entry.action, st.lane.executeRunning() ? "another intake command is still running (execute)"
                                                              : "another intake command is still running");
     }

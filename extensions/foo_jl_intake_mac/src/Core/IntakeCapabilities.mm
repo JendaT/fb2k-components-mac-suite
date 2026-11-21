@@ -47,6 +47,8 @@ bool cliSupportsCommand(const CliVersionInfo &info, CliCommand command) {
         case CliCommand::Reject: return cliSupportsReject(info.cli);
         case CliCommand::Resume: return cliSupportsPerRootResume(info.cli);
         case CliCommand::Income: return false;
+        // B12 runs scan only on a CLI that lists it (contract v1.2).
+        case CliCommand::Scan: return false;
         case CliCommand::Version:
         case CliCommand::Status:
         case CliCommand::Collections:

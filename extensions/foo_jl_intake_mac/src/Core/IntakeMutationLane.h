@@ -17,6 +17,8 @@
 //     unkilled.
 //   - execute and resume (detached) hold it until they exit, and are
 //     reported as "execute running" so menus can say why they are disabled.
+//   - B12's background scan (`scan <income>`, class Mutating) holds it like
+//     a real mutating call, and is reported as "scan running".
 //  Mutating menu items are disabled while the lane is busy.
 //
 //  Each acquire returns a token; budget reports and exits name it, so an
@@ -40,11 +42,12 @@ enum class LaneHolder {
     Mutating, // a real propose, assign, approve, reject or gc
     DryRun,   // any --dry-run (released at its 10 s report)
     Execute,  // execute or resume (detached)
+    Scan,     // B12's background scan
 };
 
 // The holder kind a request takes: DryRun for any dry run, Execute for a
-// real execute or resume, Mutating for the other mutating commands, None
-// for read-only commands (they never take the lane).
+// real execute or resume, Scan for scan, Mutating for the other mutating
+// commands, None for read-only commands (they never take the lane).
 LaneHolder laneHolderFor(const CliRequest &request);
 
 class MutationLane {
@@ -52,6 +55,7 @@ public:
     bool busy() const { return holder_ != LaneHolder::None; }
     LaneHolder holder() const { return holder_; }
     bool executeRunning() const { return holder_ == LaneHolder::Execute; }
+    bool scanRunning() const { return holder_ == LaneHolder::Scan; }
 
     // Takes the lane for a call of `kind`; 0 when it is busy (or kind is
     // None).

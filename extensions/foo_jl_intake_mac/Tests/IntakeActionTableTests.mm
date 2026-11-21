@@ -5,7 +5,8 @@
 //  Unit tests for IntakeActionTable: the doc 04 v1.2 enable rule for every
 //  action and status, the table rules (no CLI path, Refresh, inert, empty
 //  selections, mixed selections and "(n of m)", Reject feature detection,
-//  the busy lane and "(execute running)", the ellipsis last and only when
+//  the busy lane, "(execute running)" and "(scan running)" (B12), the
+//  ellipsis last and only when
 //  a dialog follows), quick-assign alternates, the
 //  argv each action builds (through IntakeCommandArgs, never with zero ids),
 //  album labels for the Reject confirmation, and action_id encoding.
@@ -308,6 +309,61 @@ static void testLane() {
     CHECK(e.entries[0].title == "Propose (execute running)", "execute holds the lane: said so");
     CHECK(e.entries[2].title == "Reject (execute running)" + kEllipsis, "on every mutating item, the ellipsis last");
     CHECK(e.entries.back().title == "Refresh intake status", "not on Refresh");
+
+    // B12: a background scan holds the lane.
+    ActionContext scanning = ctx();
+    scanning.laneBusy = true;
+    scanning.scanRunning = true;
+    ActionTable s = buildActionTable({&r}, scanning, b6Actions());
+    CHECK(!s.entries[0].enabled && s.entries[0].title == "Propose (scan running)", "a background scan: said so");
+    CHECK(s.entries[2].title == "Reject (scan running)" + kEllipsis, "on every mutating item, the ellipsis last");
+    CHECK(s.entries.back().enabled && s.entries.back().title == "Refresh intake status", "not on Refresh");
+    ActionContext stale = ctx();
+    stale.scanRunning = true;  // a holder flag without a busy lane names nothing
+    CHECK(buildActionTable({&r}, stale, b6Actions()).entries[0].title == "Propose", "only while the lane is busy");
+}
+
+static void testScanRunning() {
+    g_context = "scan-running";
+    IntakeRecord approved = withProposal(rec("itk_00000010", IntakeStatus::Approved));
+    IntakeRecord placing = withProposal(rec("itk_00000011", IntakeStatus::Placing));
+    IntakeRecord proposed = withProposal(rec("itk_0000000d", IntakeStatus::Proposed));
+    IntakeRecord placed = rec("itk_00000012", IntakeStatus::Placed);
+    placed.hasPlaced = true;
+    placed.placedVerified = true;
+    ActionContext scanning = ctx();
+    scanning.laneBusy = true;
+    scanning.scanRunning = true;
+    ActionTable busy = buildActionTable({&approved, &placing, &proposed, &placed}, scanning);
+    bool allDisabled = true, allLabelled = true, noExecuteLabel = true;
+    for (const ActionEntry &entry : busy.entries) {
+        noExecuteLabel = noExecuteLabel && entry.title.find("(execute running)") == std::string::npos;
+        if (entry.action == IntakeAction::Refresh || entry.action == IntakeAction::Swap) continue;
+        allDisabled = allDisabled && !entry.enabled;
+        allLabelled = allLabelled && entry.title.find(" (scan running)") != std::string::npos;
+    }
+    CHECK(allDisabled && allLabelled, "every mutating item disabled, \"(scan running)\" in each title");
+    CHECK(noExecuteLabel, "never \"(execute running)\" for a scan");
+    CHECK(findEntry(busy, IntakeAction::Execute)->title == "Execute placement (1 of 4) (scan running)" + kEllipsis,
+          "title order: base, (n of m), (scan running), ellipsis");
+    const ActionEntry *swap = findEntry(busy, IntakeAction::Swap);
+    CHECK(swap != nullptr && swap->enabled && swap->title == "Swap to library paths (1 of 4)",
+          "Swap (no CLI call) stays enabled and unlabelled");
+    CHECK(busy.entries.back().enabled && busy.entries.back().title == "Refresh intake status",
+          "Refresh stays enabled, unlabelled");
+
+    ActionTable one = buildActionTable({&proposed}, scanning);
+    const ActionEntry *quick = findEntry(one, IntakeAction::AssignTo);
+    CHECK(quick != nullptr && !quick->enabled && quick->title == "Assign to Test Collection B (scan running)",
+          "quick assign: disabled, said so, no ellipsis");
+    CHECK(findEntry(one, IntakeAction::AssignOther)->title == "Assign to other collection (scan running)" + kEllipsis,
+          "assign other: said so, the ellipsis last");
+
+    // An execute and a scan never hold the lane together; should both flags
+    // be set, the execute is named.
+    scanning.executeRunning = true;
+    CHECK(findEntry(buildActionTable({&proposed}, scanning), IntakeAction::Approve)->title == "Approve (execute running)",
+          "execute wins");
 }
 
 static void testAllActionsExposed() {
@@ -969,6 +1025,7 @@ int main() {
         testTableRules();
         testMixed();
         testLane();
+        testScanRunning();
         testAllActionsExposed();
         testArgv();
         testMenuActions();

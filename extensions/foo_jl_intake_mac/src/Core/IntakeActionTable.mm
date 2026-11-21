@@ -29,6 +29,14 @@ bool targetNotNull(const IntakeRecord &r) {
     return !(r.hasProposal && r.proposal.targetPathState == TargetPathState::Null);
 }
 
+// Why a busy lane disables the mutating items, when the menu names it.
+const char *laneBusySuffix(const ActionContext &c) {
+    if (!c.laneBusy) return "";
+    if (c.executeRunning) return " (execute running)";
+    if (c.scanRunning) return " (scan running)";
+    return "";
+}
+
 bool hasLiveRun(const ActionContext &c, const std::string &id) {
     return std::find(c.liveRunIds.begin(), c.liveRunIds.end(), id) != c.liveRunIds.end();
 }
@@ -252,7 +260,7 @@ ActionTable buildActionTable(const std::vector<const IntakeRecord *> &roots, con
                     e.title = actionBaseTitle(action, collection);
                     e.roots.push_back(actionRootFor(*roots[0]));
                     e.enabled = !c.laneBusy;
-                    if (c.laneBusy && c.executeRunning) e.title += " (execute running)";
+                    e.title += laneBusySuffix(c);
                     table.entries.push_back(std::move(e));
                 }
                 continue;
@@ -275,7 +283,7 @@ ActionTable buildActionTable(const std::vector<const IntakeRecord *> &roots, con
             if (n > 0 && n < m) e.title += " (" + std::to_string(n) + " of " + std::to_string(m) + ")";
             if (actionIsMutating(action) && c.laneBusy) {
                 e.enabled = false;
-                if (c.executeRunning) e.title += " (execute running)";
+                e.title += laneBusySuffix(c);
             }
             if (actionAsksFirst(action, c)) e.title += kEllipsis;
             table.entries.push_back(std::move(e));

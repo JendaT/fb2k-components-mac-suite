@@ -34,7 +34,7 @@ bool supports(const char *versionData, CliCommand command) {
 const CliCommand kAll[] = {CliCommand::Version, CliCommand::Status, CliCommand::Collections,
                            CliCommand::Income,  CliCommand::Propose, CliCommand::Assign,
                            CliCommand::Approve, CliCommand::Reject,  CliCommand::Execute,
-                           CliCommand::Resume,  CliCommand::Gc};
+                           CliCommand::Resume,  CliCommand::Gc,      CliCommand::Scan};
 
 // The real CLI's dispatch table (feature/intake-cli cli.ts COMMANDS), as the
 // mock's default scenario reports it.
@@ -85,6 +85,8 @@ int main(void) {
         CHECK(!supports(noIncome, CliCommand::Reject), "reject not listed: unsupported, whatever cli says");
         CHECK(!supports(noIncome, CliCommand::Gc), "even an old command is unsupported when not listed");
         CHECK(supports(noIncome, CliCommand::Resume), "resume follows execute");
+        CHECK(supports(kV12, CliCommand::Scan), "scan listed: supported (B12)");
+        CHECK(!supports(noIncome, CliCommand::Scan), "scan not listed: unsupported");
 
         // The list wins over the version: a pre-release that the strict
         // semver rejects still gets what it lists.
@@ -100,6 +102,7 @@ int main(void) {
         CHECK(supports(v021, CliCommand::Reject), "0.2.1: reject");
         CHECK(supports(v021, CliCommand::Resume), "0.2.1: per-root resume");
         CHECK(!supports(v021, CliCommand::Income), "0.2.1: no income");
+        CHECK(!supports(v021, CliCommand::Scan), "0.2.1: no automatic scan (only a CLI that lists scan)");
         CHECK(supports(v021, CliCommand::Gc) && supports(v021, CliCommand::Collections), "0.2.1: the rest");
 
         const char *v020 = R"({"cli":"0.2.0","schema":1,"engine":"0.2.0"})";
@@ -114,6 +117,7 @@ int main(void) {
         // A later version without the array still never gets income: only
         // the array announces it.
         CHECK(!supports(R"({"cli":"0.4.0","schema":1})", CliCommand::Income), "no array: income never");
+        CHECK(!supports(R"({"cli":"0.4.0","schema":1})", CliCommand::Scan), "no array: scan never");
         CHECK(supports(R"({"cli":"0.4.0","schema":1})", CliCommand::Reject), "no array, 0.4.0: reject");
 
         const char *garbage = R"({"cli":"0.2.1-beta","schema":1})";

@@ -3,9 +3,11 @@
 //  foo_jl_intake_mac
 //
 //  Unit tests for IntakeCommandArgs: argv shapes, the zero-id invariant,
-//  id validation, the forbidden flags, bun resolution, the environment, and
-//  one real run of a built argv against Tests/mock-cli/intake-mock to show
-//  "[A & B]" arrives literally (calls.log).
+//  id validation, the forbidden flags, scan's one-income rule (B12: by
+//  name, by path for a name starting with "-", refusals), bun resolution,
+//  the environment, and one real run of a built argv against
+//  Tests/mock-cli/intake-mock to show "[A & B]" arrives literally
+//  (calls.log).
 //
 //  Compiled standalone under ASan+UBSan; see Scripts/run_tests.sh.
 //
@@ -307,6 +309,83 @@ int main(void) {
         listed.cliVersion.clear();
         CHECK(intake::buildInvocation(listed, dryResume).status == BuildStatus::Ok,
               "and on a CLI that lists commands without a cli string");
+
+        // --- scan (B12): one income, by name, or by path for a name
+        // starting with "-"; never with ids, never bare, never --all ---
+        g_context = "scan";
+        CliRequest scan = req(CliCommand::Scan);
+        scan.income = "local";
+        scan.incomePath = "/Users/x/Music/fixture-income";
+        inv = intake::buildInvocation(plainConfig(), scan);
+        CHECK(inv.status == BuildStatus::Ok && args(inv) == v({"/opt/intake/bin/intake", "scan", "local", "--json"}),
+              "scan <name> --json");
+        scan.incomePath.clear();
+        CHECK(args(intake::buildInvocation(plainConfig(), scan)) ==
+                  v({"/opt/intake/bin/intake", "scan", "local", "--json"}),
+              "the path is optional for an ordinary name");
+        scan.income = "[A & B] 2024";
+        CHECK(args(intake::buildInvocation(plainConfig(), scan)) ==
+                  v({"/opt/intake/bin/intake", "scan", "[A & B] 2024", "--json"}),
+              "a name with spaces and shell characters arrives as one literal argument");
+        bool byPath = true, noFlag = true;
+        for (const char *dash : {"--all", "-x", "--json", "--force", "--filter", "-"}) {
+            CliRequest r = req(CliCommand::Scan);
+            r.income = dash;
+            r.incomePath = "/Users/x/Music/fixture-income";
+            CliInvocation i = intake::buildInvocation(plainConfig(), r);
+            if (args(i) != v({"/opt/intake/bin/intake", "scan", "/Users/x/Music/fixture-income", "--json"})) byPath = false;
+            for (const std::string &a : i.arguments) {
+                if (a == dash || a == "--all") noFlag = false;
+            }
+        }
+        CHECK(byPath, "a name starting with '-' is sent as the income's absolute path");
+        CHECK(noFlag, "so neither the name nor --all ever reaches the CLI as a flag");
+        CliRequest dashNoPath = req(CliCommand::Scan);
+        dashNoPath.income = "--all";
+        CHECK(refusedFor(dashNoPath), "a name starting with '-' without its path is refused");
+        CliRequest bareScan = req(CliCommand::Scan);
+        CHECK(refusedFor(bareScan), "scan with no income is refused (the only other form is --all)");
+        CHECK(intake::buildInvocation(plainConfig(), bareScan).message.find("--all") != std::string::npos,
+              "the refusal says why");
+        CliRequest scanIds = req(CliCommand::Scan, {"itk_0000000b"});
+        scanIds.income = "local";
+        CHECK(refusedFor(scanIds), "scan takes no ids");
+        CliRequest scanDry = req(CliCommand::Scan);
+        scanDry.income = "local";
+        scanDry.dryRun = true;
+        CHECK(refusedFor(scanDry), "no scan dry run is built");
+        CliRequest scanNul = req(CliCommand::Scan);
+        scanNul.income = std::string("lo\0cal", 6);
+        CHECK(refusedFor(scanNul), "a NUL byte in the income name is refused");
+        CliRequest scanRelative = req(CliCommand::Scan);
+        scanRelative.income = "-x";
+        scanRelative.incomePath = "Music/fixture-income";
+        CHECK(refusedFor(scanRelative), "a relative income path is refused");
+        scanRelative.income = "local";
+        CHECK(refusedFor(scanRelative), "also when the name would be sent");
+        CliRequest scanPathNul = req(CliCommand::Scan);
+        scanPathNul.income = "-x";
+        scanPathNul.incomePath = std::string("/Users/x/\0intake", 16);
+        CHECK(refusedFor(scanPathNul), "a NUL byte in the income path is refused");
+        CliRequest strayIncome = req(CliCommand::Status);
+        strayIncome.income = "local";
+        CHECK(refusedFor(strayIncome), "an income on another command is refused");
+        CliRequest strayIncomePath = req(CliCommand::Approve, {"itk_0000000d"});
+        strayIncomePath.incomePath = "/Users/x/Music/fixture-income";
+        CHECK(refusedFor(strayIncomePath), "an income path on another command is refused");
+        CliRequest scanCollection = scan;
+        scanCollection.collection = "X";
+        CHECK(refusedFor(scanCollection), "scan takes no collection");
+        CHECK(intake::isMutatingCommand(CliCommand::Scan), "scan is mutating");
+        CHECK(intake::commandClass(scan) == CommandClass::Mutating,
+              "scan: class Mutating (reported at 10 s, killed only at the 15-minute cap)");
+        CHECK(std::string(intake::cliCommandWord(CliCommand::Scan)) == "scan" &&
+                  std::string(intake::cliCommandName(CliCommand::Scan)) == "scan",
+              "sent and logged as scan");
+        CliConfig unconfigured = plainConfig();
+        unconfigured.cliPath.clear();
+        CHECK(intake::buildInvocation(unconfigured, bareScan).status == BuildStatus::Refused,
+              "request checks come first: a bare scan is refused even when unconfigured");
 
         // --- configuration problems are NoCli, never a spawn ---
         g_context = "no-cli";

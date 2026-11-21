@@ -6,7 +6,9 @@
 //  holder kind per request, single flight, a real mutating call keeping the
 //  lane through its 10 s report, the dry-run release at the report with its
 //  late result discarded, stale tokens, and the busy lane disabling the
-//  mutating menu items (IntakeActionTable) until it is free again.
+//  mutating menu items (IntakeActionTable) until it is free again. B12: the
+//  background scan's own holder, kept through its 10 s report, named
+//  "(scan running)" in the menu.
 //
 // TEST_DEPS: src/Core/IntakeCommandArgs.mm src/Core/IntakeSemver.mm src/Core/IntakeSettingsParse.mm
 // TEST_DEPS: src/Core/IntakeActionTable.mm src/Core/IntakeCapabilities.mm src/Core/IntakeReviewRule.mm
@@ -41,6 +43,25 @@ static void testHolderKinds() {
     CHECK(laneHolderFor(req(CliCommand::Execute, true)) == LaneHolder::DryRun, "execute --dry-run: dry run");
     CHECK(laneHolderFor(req(CliCommand::Execute)) == LaneHolder::Execute, "execute: execute");
     CHECK(laneHolderFor(req(CliCommand::Resume)) == LaneHolder::Execute, "resume: execute");
+    CliRequest scan;
+    scan.command = CliCommand::Scan;
+    scan.income = "local";
+    CHECK(laneHolderFor(scan) == LaneHolder::Scan, "scan: its own holder");
+}
+
+static void testScan() {
+    g_context = "scan";
+    MutationLane lane;
+    const uint64_t s = lane.acquire(LaneHolder::Scan);
+    CHECK(s != 0 && lane.busy() && lane.scanRunning() && !lane.executeRunning(), "a background scan holds the lane");
+    CHECK(lane.acquire(LaneHolder::Mutating) == 0 && lane.acquire(LaneHolder::Execute) == 0 &&
+              lane.acquire(LaneHolder::Scan) == 0,
+          "nothing else starts while it runs, another scan neither");
+    CHECK(!lane.reportBudget(s) && lane.scanRunning(), "it keeps the lane at its 10 s report (a real mutating call)");
+    CHECK(lane.finish(s) && !lane.busy() && !lane.scanRunning(), "free after its exit");
+    const uint64_t m = lane.acquire(LaneHolder::Mutating);
+    CHECK(m != 0 && !lane.scanRunning(), "another holder is not a scan");
+    lane.finish(m);
 }
 
 static void testSingleFlight() {
@@ -121,6 +142,17 @@ static void testMenuWhileBusy() {
     CHECK(findEntry(table(), IntakeAction::Propose)->title == "Propose (execute running)",
           "execute running is named");
     lane.finish(e);
+    const uint64_t s = lane.acquire(LaneHolder::Scan);
+    c.scanRunning = lane.scanRunning();
+    ActionTable scanning = table();
+    CHECK(!findEntry(scanning, IntakeAction::Propose)->enabled &&
+              findEntry(scanning, IntakeAction::Propose)->title == "Propose (scan running)",
+          "a background scan is named");
+    lane.finish(s);
+    c.scanRunning = lane.scanRunning();
+    CHECK(findEntry(table(), IntakeAction::Propose)->enabled &&
+              findEntry(table(), IntakeAction::Propose)->title == "Propose",
+          "enabled and unlabelled again after it");
 }
 
 int main() {
@@ -129,6 +161,7 @@ int main() {
         testSingleFlight();
         testDryRun();
         testExecute();
+        testScan();
         testMenuWhileBusy();
     }
     TEST_MAIN_END();

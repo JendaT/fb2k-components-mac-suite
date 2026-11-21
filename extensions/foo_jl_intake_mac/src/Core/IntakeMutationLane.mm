@@ -11,6 +11,7 @@ LaneHolder laneHolderFor(const CliRequest &request) {
     if (!isMutatingCommand(request.command)) return LaneHolder::None;
     if (request.dryRun) return LaneHolder::DryRun;
     if (request.command == CliCommand::Execute || request.command == CliCommand::Resume) return LaneHolder::Execute;
+    if (request.command == CliCommand::Scan) return LaneHolder::Scan;
     return LaneHolder::Mutating;
 }
 

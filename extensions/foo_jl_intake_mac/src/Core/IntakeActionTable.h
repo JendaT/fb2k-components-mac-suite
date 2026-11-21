@@ -51,11 +51,13 @@
 //     when 0 < n < m. Roots go by id: no entry ever runs with zero ids, and
 //     no all-roots form exists here (IntakeCommandArgs refuses both too).
 //   - Mutating items are disabled while the mutation lane is busy, with
-//     " (execute running)" while an execute holds it. Swap runs no CLI
-//     command (it edits the playlist; files untouched), so it stays enabled
-//     and unlabelled while the lane is busy, an execute included.
-//   - Title: base, " (n of m)", " (execute running)", then "…" when the
-//     action asks first (actionAsksFirst): "Reject (4 of 5)…".
+//     " (execute running)" while an execute holds it and " (scan running)"
+//     while B12's background scan does. Swap runs no CLI command (it edits
+//     the playlist; files untouched), so it stays enabled and unlabelled
+//     while the lane is busy, an execute or a scan included.
+//   - Title: base, " (n of m)", " (execute running)" or " (scan running)",
+//     then "…" when the action asks first (actionAsksFirst):
+//     "Reject (4 of 5)…".
 //   - Order: the fixed doc 04 order (kOrder), Refresh last, except that
 //     "Assign to other collection…" is the first item when the review rule
 //     (IntakeReviewRule, amber) fires on a selected root it runs on (doc 04
@@ -135,6 +137,7 @@ struct ActionContext {
     CliVersionInfo cli;         // the last passing `version` (feature detection)
     bool laneBusy = false;
     bool executeRunning = false;           // the lane holder is an execute or resume
+    bool scanRunning = false;              // the lane holder is B12's background scan
     std::vector<std::string> liveRunIds;   // roots of a live execute or resume run (B8)
     bool confirmReject = true;             // confirm_reject: Reject asks first
     bool confirmGc = true;                 // confirm_gc (B9): Delete local copy asks first

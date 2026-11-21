@@ -83,7 +83,23 @@ std::string checkRequest(const CliRequest &request) {
     const std::string name = cliCommandName(cmd);
     const bool mutating = isMutatingCommand(cmd);
 
-    if (mutating && request.ids.empty()) {
+    // scan names one income folder instead of ids (see the invariant).
+    if (cmd == CliCommand::Scan) {
+        if (!request.ids.empty()) return "scan takes no ids";
+        if (request.dryRun) return "scan: no dry run is built";
+        if (request.income.empty()) return "refusing scan with no income: the CLI would need --all";
+        if (hasNul(request.income)) return "scan: income name contains a NUL byte";
+        if (!request.incomePath.empty() && (request.incomePath[0] != '/' || hasNul(request.incomePath))) {
+            return "scan: the income path must be absolute: " + request.incomePath;
+        }
+        if (request.income[0] == '-' && request.incomePath.empty()) {
+            return "scan: income " + request.income + " starts with '-' and needs its absolute path";
+        }
+    } else if (!request.income.empty() || !request.incomePath.empty()) {
+        return name + " takes no income";
+    }
+
+    if (mutating && cmd != CliCommand::Scan && request.ids.empty()) {
         return "refusing " + name + " with no ids: the CLI would act on every root";
     }
     if (!mutating && !request.ids.empty()) return name + " takes no ids";
@@ -131,6 +147,7 @@ const char *cliCommandWord(CliCommand command) {
         case CliCommand::Execute: return "execute";
         case CliCommand::Resume: return "execute";
         case CliCommand::Gc: return "gc";
+        case CliCommand::Scan: return "scan";
     }
     return "version";
 }
@@ -153,6 +170,7 @@ bool isMutatingCommand(CliCommand command) {
         case CliCommand::Execute:
         case CliCommand::Resume:
         case CliCommand::Gc:
+        case CliCommand::Scan:
             return true;
     }
     return true;
@@ -245,9 +263,12 @@ CliInvocation buildInvocation(const CliConfig &config, const CliRequest &request
         inv.arguments = {cli};
     }
 
-    // Command word, ids, then options, then --json.
+    // Command word, the income (scan) or ids, then options, then --json.
     std::vector<std::string> &args = inv.arguments;
     args.push_back(cliCommandWord(request.command));
+    if (request.command == CliCommand::Scan) {
+        args.push_back(request.income[0] == '-' ? request.incomePath : request.income);
+    }
     std::unordered_set<std::string> seenIds;
     for (const std::string &id : request.ids) {
         if (seenIds.insert(id).second) args.push_back(id);

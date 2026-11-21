@@ -12,7 +12,8 @@
 //     roots (the all-roots form is `execute --resume` without roots).
 //   - Without a `commands` array (CLI 0.2.1 and older), the `cli` semver
 //     decides (IntakeSemver): Reject from 0.2.0, per-root Resume from 0.2.1,
-//     Income never (it is new in 0.3.0). Every other command exists since
+//     Income never (it is new in 0.3.0), Scan never (B12's automatic scan
+//     runs only on a CLI that lists it). Every other command exists since
 //     CLI 0.1.0. An unparseable `cli` never satisfies a minimum, so Reject
 //     and Resume stay off.
 //  A `commands` member that is not an array counts as absent; entries that
