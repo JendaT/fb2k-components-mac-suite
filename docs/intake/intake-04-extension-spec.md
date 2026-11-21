@@ -277,8 +277,8 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
 | Action | Enabled on roots in | Runs |
 |---|---|---|
 | Propose | `resolved` | `propose <ids>` |
-| Assign to X (≤ 4 alternates) | one root: `new`, `resolved`, `proposed`, `approved`; non-empty `ranked` | `assign <id> --collection X --by user` |
-| Assign to other collection… | `new`, `resolved`, `proposed`, `approved` | picker, then `assign` |
+| Assign to X (≤ 4 alternates) | one root: `new`, `resolved`, `proposed`, `approved`; non-empty `ranked` | `assign <id> --collection X --by user`, then `propose` (see below) |
+| Assign to other collection… | `new`, `resolved`, `proposed`, `approved` | picker, then `assign`, then `propose` (see below) |
 | Approve | `proposed`, non-null `target_path` | `approve <ids>` |
 | Reject… | `new`, `resolved`, `proposed`, `approved`; if detected | `reject <ids> [--reason]` |
 | Execute placement… | `approved`, non-null `target_path` | dry run, sheet, `execute <ids>` |
@@ -286,6 +286,12 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
 | Swap to library paths | `placed` with `placed.verified` | playlist operation |
 | Delete local copy… | `placed` with `placed.verified` | `gc <ids>` |
 
+- **Assign, then propose:** after a successful assign (either item),
+  `propose <ids>` runs in the same lane run for the roots that were
+  `resolved` at menu time and that the assign did not fail; new, proposed
+  and approved roots are skipped (one Debug line), and an assign that fails
+  entirely (exit 2) proposes nothing. The lane is held across both calls and
+  released on every path; one reload after the last call.
 - **Alternates** only from `ranked` minus the target (no sidecar fallback).
   **Assign to other collection…** (first when amber) opens a picker fed by
   `intake collections --json`. Approve over a multi-selection is the batch.

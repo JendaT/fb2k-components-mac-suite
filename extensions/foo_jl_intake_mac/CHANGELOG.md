@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Row tooltip**: Hovering an intake row shows its status, the target folder from the tier on, who assigned it with the confidence, or what is still missing.
 - **Group badge**: A group of one proposed or approved release shows the target collection and confidence; amber when it needs review or is below 0.6.
 - **Context actions**: Propose, Assign (to a candidate or any collection), Approve, Reject, Execute placement, Resume placement, Swap to library paths, Delete local copy, Refresh.
+- **Assign then propose**: Assigning a resolved release to a collection also proposes it, so it is ready to approve.
 - **Background execute**: Execute and Resume keep running when foobar2000 quits and are picked up at the next start.
 - **Live updates**: Income folders are watched with FSEvents; a sidecar change or a finished command reloads the status.
 - **Network shares**: `mac-volume://` rows match, also when a share is mounted twice; a stalled volume is skipped instead of blocking.
