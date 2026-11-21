@@ -147,6 +147,13 @@ commands, never writes files, tags, sidecars or the journal.
 - **Load:** one full `intake status --json` into an immutable snapshot, swapped
   in under a short lock. Rows lacking `id`, `root_path` or `status` are dropped
   and logged; unknown statuses render nothing. State follows `status`.
+- **Income-folder guard:** a root whose `root_path` is an income folder
+  itself (a loose audio file at the folder's top level made `scan` write
+  `<income>/.intake.json`) is ignored: no members, decoration, tooltip,
+  badge or menu action, so stray rows under the folder do not act on it.
+  Compared with the root-matching key (normalisation, NFC, mount aliases)
+  against `intake income --json`; no guard when income is not offered or
+  its last call failed. One Info line per root per session.
 - **Members:** virtual roots and singles (named sidecar
   `<root_path>/.intake.<id>.json`, doc 01) match only their `files[]`; other
   roots match every file under `root_path`. A named sidecar that fails to
