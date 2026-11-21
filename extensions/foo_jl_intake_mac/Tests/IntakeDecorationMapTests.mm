@@ -79,6 +79,13 @@ static const std::string kEngine = "Assigned by the engine (confidence 0.80)";
 static const std::string kUser = "Assigned by you";
 static const std::string kNoTarget = "No target yet: Propose (or Assign to a collection first)";
 static const std::string kPending = "Target: Test Collection A" + kDot + "slot pending";
+static const std::string kCannot = "Target: none, cannot be placed (see intake status)";
+
+// A singles root (IntakeSnapshot sets the flag from its sidecar).
+static IntakeRecord single(IntakeRecord r) {
+    r.singlesRoot = true;
+    return r;
+}
 
 static bool is(const IntakeRowVisual &v, IntakeRgba tint, IntakeIcon icon, IntakeRgba iconColor,
                const std::string &tooltip, bool strike) {
@@ -142,37 +149,64 @@ static void testTable() {
 
 static void testTooltips() {
     g_context = "slot-pending";
-    CHECK(rowVisualFor(proposed(IntakeStatus::Resolved, false, AssignedBy::Engine, TargetPathState::Null)).tooltip ==
-              lines({"Intake: Resolved", kPending, kEngine}),
-          "resolved with a null target_path: the collection, slot pending");
-    CHECK(rowVisualFor(proposed(IntakeStatus::Proposed, false, AssignedBy::Engine, TargetPathState::Null)).tooltip ==
-              lines({"Intake: Proposed", kPending, kEngine}),
-          "proposed with a null target_path: slot pending");
-    CHECK(rowVisualFor(proposed(IntakeStatus::Approved, false, AssignedBy::User, TargetPathState::Null)).tooltip ==
-              lines({"Intake: Approved", kPending, kUser}),
-          "approved with a null target_path: slot pending");
+    // A singles root waits for its slot.
+    CHECK(rowVisualFor(single(proposed(IntakeStatus::Resolved, false, AssignedBy::Engine, TargetPathState::Null)))
+                  .tooltip == lines({"Intake: Resolved", kPending, kEngine}),
+          "singles, resolved, null target_path: the collection, slot pending");
+    CHECK(rowVisualFor(single(proposed(IntakeStatus::Proposed, false, AssignedBy::Engine, TargetPathState::Null)))
+                  .tooltip == lines({"Intake: Proposed", kPending, kEngine}),
+          "singles, proposed: slot pending");
+    CHECK(rowVisualFor(single(proposed(IntakeStatus::Approved, false, AssignedBy::User, TargetPathState::Null)))
+                  .tooltip == lines({"Intake: Approved", kPending, kUser}),
+          "singles, approved, user-assigned: slot pending");
     // assign is legal from new and keeps the status (contract v1.2): a new
     // single assigned by the user has a null target.
-    CHECK(is(rowVisualFor(proposed(IntakeStatus::New, false, AssignedBy::User, TargetPathState::Null)), kBlue,
+    CHECK(is(rowVisualFor(single(proposed(IntakeStatus::New, false, AssignedBy::User, TargetPathState::Null))), kBlue,
              IntakeIcon::CircleOpen, 0, lines({"Intake: New", kPending, kUser}), false),
-          "new with a null target_path: blue, slot pending");
-    CHECK(rowVisualFor(proposed(IntakeStatus::New, true, AssignedBy::User, TargetPathState::Null)).tooltip ==
+          "singles, new: blue, slot pending");
+    CHECK(rowVisualFor(single(proposed(IntakeStatus::New, true, AssignedBy::User, TargetPathState::Null))).tooltip ==
               lines({"Intake: New" + kReview, kPending, kUser}),
-          "new + needs_review with a null target_path: both");
+          "singles, new + needs_review: both");
     CHECK(rowVisualFor(proposed(IntakeStatus::New, false, AssignedBy::User)).tooltip ==
               lines({"Intake: New", kTarget, kUser}),
           "new with a target: the target, no slot pending");
     IntakeRowVisual amberPending =
-        rowVisualFor(proposed(IntakeStatus::Proposed, true, AssignedBy::Engine, TargetPathState::Null));
+        rowVisualFor(single(proposed(IntakeStatus::Proposed, true, AssignedBy::Engine, TargetPathState::Null)));
     CHECK(amberPending.bgTint == kAmber && amberPending.tooltip == lines({"Intake: Proposed" + kReview, kPending, kEngine}),
           "amber and slot pending together");
-    CHECK(rowVisualFor(proposed(IntakeStatus::Rejected, false, AssignedBy::Engine, TargetPathState::Null)).tooltip ==
-              lines({"Intake: Rejected", kEngine}),
+    CHECK(rowVisualFor(single(proposed(IntakeStatus::Rejected, false, AssignedBy::Engine, TargetPathState::Null)))
+                  .tooltip == lines({"Intake: Rejected", kEngine}),
           "rejected: no slot pending");
-    IntakeRecord noCollection = proposed(IntakeStatus::Proposed, false, AssignedBy::Engine, TargetPathState::Null);
+    IntakeRecord noCollection =
+        single(proposed(IntakeStatus::Proposed, false, AssignedBy::Engine, TargetPathState::Null));
     noCollection.proposal.targetCollection.clear();
     CHECK(rowVisualFor(noCollection).tooltip == lines({"Intake: Proposed", "Target: slot pending", kEngine}),
           "slot pending without a collection");
+
+    g_context = "cannot-be-placed";
+    // Any other root with a null target (tier reject, no album name) can
+    // never be placed, whoever assigned it.
+    CHECK(rowVisualFor(proposed(IntakeStatus::Proposed, false, AssignedBy::User, TargetPathState::Null)).tooltip ==
+              lines({"Intake: Proposed", kCannot, kUser}),
+          "not singles, user-assigned: cannot be placed");
+    CHECK(rowVisualFor(proposed(IntakeStatus::Proposed, false, AssignedBy::Engine, TargetPathState::Null)).tooltip ==
+              lines({"Intake: Proposed", kCannot, kEngine}),
+          "not singles, engine-assigned: cannot be placed");
+    CHECK(rowVisualFor(proposed(IntakeStatus::Resolved, true, AssignedBy::User, TargetPathState::Null)).tooltip ==
+              lines({"Intake: Resolved" + kReview, kCannot, kUser}),
+          "not singles, resolved + needs_review: cannot be placed");
+    CHECK(rowVisualFor(proposed(IntakeStatus::Approved, false, AssignedBy::Engine, TargetPathState::Null)).tooltip ==
+              lines({"Intake: Approved", kCannot, kEngine}),
+          "not singles, approved: cannot be placed");
+    CHECK(rowVisualFor(proposed(IntakeStatus::New, false, AssignedBy::User, TargetPathState::Null)).tooltip ==
+              lines({"Intake: New", kCannot, kUser}),
+          "not singles, new: cannot be placed");
+    CHECK(rowVisualFor(proposed(IntakeStatus::Rejected, false, AssignedBy::User, TargetPathState::Null)).tooltip ==
+              lines({"Intake: Rejected", kUser}),
+          "rejected: no target line either way");
+    CHECK(rowVisualFor(single(proposed(IntakeStatus::Proposed, false, AssignedBy::Engine))).tooltip ==
+              lines({"Intake: Proposed", kTarget, kEngine}),
+          "a singles root with a target shows it");
 
     g_context = "missing-fields";
     // CLI 0.2.1: no target_path and no assigned_by.

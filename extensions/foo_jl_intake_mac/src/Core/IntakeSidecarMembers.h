@@ -132,6 +132,10 @@ struct RootMembers {
     MemberKind kind = MemberKind::WholeDirectory;
     MemberSource source = MemberSource::Assumed;
     std::vector<std::string> relativePaths;  // files[].path, for Members
+    // Members only: the named sidecar says "singles": true (doc 01: a
+    // singles-queue entry, a per-file virtual sidecar). Read with files[],
+    // no extra I/O.
+    bool singles = false;
 };
 
 // By root id.
@@ -191,8 +195,9 @@ bool isSafeRelativePath(std::string_view path);
 bool isShareUnreachableError(int error);
 
 // The `files[].path` list of a sidecar document; false when the document is
-// not acceptable (see above). Unknown fields are ignored.
-bool parseSidecarMemberPaths(std::string_view json, std::vector<std::string> &paths);
+// not acceptable (see above). Unknown fields are ignored. `singles`
+// (optional): set to whether `singles` is the JSON boolean true.
+bool parseSidecarMemberPaths(std::string_view json, std::vector<std::string> &paths, bool *singles = nullptr);
 
 // Classifies every record (one entry per record id). `needsMembers` decides
 // which roots are worth I/O; an empty function means every root. `previous`

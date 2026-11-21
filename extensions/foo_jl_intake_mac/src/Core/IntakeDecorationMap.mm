@@ -18,6 +18,7 @@ const char *const kTooltipSlotPending = "slot pending";
 const char *const kTooltipStatusPrefix = "Intake: ";
 const char *const kTooltipTargetPrefix = "Target: ";
 const char *const kTooltipNoTarget = "No target yet: Propose (or Assign to a collection first)";
+const char *const kTooltipCannotBePlaced = "Target: none, cannot be placed (see intake status)";
 
 namespace {
 
@@ -55,6 +56,9 @@ std::string targetLine(const IntakeRecord &record) {
         }
         case TargetPathState::Null:
             if (!canBeSlotPending(record.status)) return std::string();
+            // Only a singles root waits for a slot; any other null target
+            // (tier reject, no album name, a tier not configured) is final.
+            if (!record.singlesRoot) return std::string(kTooltipCannotBePlaced);
             if (p.targetCollection.empty()) return std::string(kTooltipTargetPrefix) + kTooltipSlotPending;
             return std::string(kTooltipTargetPrefix) + p.targetCollection + kDot + kTooltipSlotPending;
         case TargetPathState::Unknown:

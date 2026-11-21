@@ -66,6 +66,19 @@
 
 namespace intake {
 
+// Whether `record` is a singles root, for the null-target wording
+// (IntakeDecorationMap, IntakeGroupBadge). `members` is its entry, or null.
+//  - Members: the named sidecar's `singles` flag (RootMembers::singles).
+//  - Whole-directory from a listing (Listed, Reused): no named sidecar, so
+//    an `.intake.json` root, never a single.
+//  - Kind not verified (Assumed, Previous whole-directory, no entry: a lone
+//    root whose sidecar is not read): a singles root always has a null
+//    cluster.album (doc 01), so an empty album counts as singles. A
+//    non-singles root with no album name keeps "slot pending" then, as
+//    before.
+//  - None: false (it renders nothing).
+bool singlesRootFor(const IntakeRecord &record, const RootMembers *members);
+
 class IntakeSnapshot {
 public:
     // Takes the records and the member table, computes every record's visual

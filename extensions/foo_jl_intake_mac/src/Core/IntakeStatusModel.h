@@ -129,6 +129,10 @@ struct IntakeRecord {
     // Derived and runtime state, not parsed from the row:
     IntakeRowVisual visual; // set by IntakeSnapshot::build (IntakeDecorationMap)
     IntakeBadge badge;      // set by IntakeSnapshot::build (IntakeGroupBadge)
+    // A singles root (IntakeSnapshot.h singlesRootFor), set by
+    // IntakeSnapshot::build before the visual and badge: its null
+    // target_path is "slot pending", any other root's "cannot be placed".
+    bool singlesRoot = false;
     // A per-command error, set before the snapshot is built
     // (LoaderSettings::annotateRecords, IntakeRootErrors) and kept until
     // the root's status changes.

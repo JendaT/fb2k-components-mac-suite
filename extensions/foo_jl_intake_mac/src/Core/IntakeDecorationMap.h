@@ -37,10 +37,15 @@
 //   3. The target, from the proposal:
 //      - target_path set: "Target: " + displayTargetPath (IntakeTargetPath:
 //        from the tier folder on, "music.hq/[Collection]/Artist/Release");
-//      - target_path null, on new, resolved, proposed or approved:
-//        "Target: <collection> \u00B7 slot pending" ("Target: slot pending"
-//        without a collection). From CLI 0.3.0 null means the singles slot
-//        or tier `reject` (compilations get a target, amendment 003);
+//      - target_path null, on new, resolved, proposed or approved: on a
+//        singles root (IntakeRecord::singlesRoot) "Target: <collection>
+//        \u00B7 slot pending" ("Target: slot pending" without a
+//        collection); on any other root kTooltipCannotBePlaced, "Target:
+//        none, cannot be placed (see intake status)", whoever assigned it.
+//        From CLI 0.3.0 null means the singles slot, or a target that can
+//        never be built (tier `reject`, no album name, a tier not
+//        configured); status --json carries no tier or slot, so the root
+//        kind is the only signal (compilations get a target, amendment 003);
 //      - target_path absent (CLI 0.2.1): "Target: <collection>";
 //      - no proposal on a resolved root: kTooltipNoTarget.
 //   4. Who assigned, when there is a proposal: "Assigned by you"
@@ -125,6 +130,8 @@ extern const char *_Nonnull const kTooltipStatusPrefix;  // "Intake: "
 extern const char *_Nonnull const kTooltipTargetPrefix;  // "Target: "
 // "No target yet: Propose (or Assign to a collection first)"
 extern const char *_Nonnull const kTooltipNoTarget;
+// "Target: none, cannot be placed (see intake status)"
+extern const char *_Nonnull const kTooltipCannotBePlaced;
 
 enum class IntakeStatus;
 

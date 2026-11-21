@@ -56,8 +56,9 @@ IntakeBadge recordBadge(const IntakeRecord &record, const IntakePalette &palette
 
     std::string text = std::string(kArrow) + " " + p.targetCollection;
     if (p.targetPathState == TargetPathState::Null) {
+        // Singles wait for a slot; any other null target is final.
         text += kSep;
-        text += "slot pending";
+        text += record.singlesRoot ? "slot pending" : "cannot be placed";
         badge.amber = true;
     } else {
         if (p.assignedBy == AssignedBy::User) {

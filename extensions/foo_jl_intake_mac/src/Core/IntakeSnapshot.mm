@@ -10,6 +10,21 @@
 
 namespace intake {
 
+bool singlesRootFor(const IntakeRecord &record, const RootMembers *members) {
+    if (members != nullptr) {
+        switch (members->kind) {
+            case MemberKind::Members:
+                return members->singles;
+            case MemberKind::None:
+                return false;
+            case MemberKind::WholeDirectory:
+                if (members->source == MemberSource::Listed || members->source == MemberSource::Reused) return false;
+                break;
+        }
+    }
+    return record.album.empty();
+}
+
 std::shared_ptr<const IntakeSnapshot> IntakeSnapshot::build(std::vector<IntakeRecord> records,
                                                             MemberTable members,
                                                             const IntakePalette &palette) {
@@ -39,12 +54,13 @@ std::shared_ptr<const IntakeSnapshot> IntakeSnapshot::build(std::vector<IntakeRe
     std::string normalized;
     for (uint32_t i = 0; i < recs.size(); i++) {
         IntakeRecord &r = recs[i];
+        auto found = s.members_.find(r.id);
+        r.singlesRoot = singlesRootFor(r, found == s.members_.end() ? nullptr : &found->second);
         r.visual = rowVisualFor(r, palette);
         r.badge = recordBadge(r, palette);
         s.byId_.try_emplace(r.id, i);  // parseStatusRows already dropped repeats
         if (r.rootKey.empty()) continue;
 
-        auto found = s.members_.find(r.id);
         const MemberKind kind = found == s.members_.end() ? MemberKind::WholeDirectory : found->second.kind;
         switch (kind) {
             case MemberKind::WholeDirectory:
