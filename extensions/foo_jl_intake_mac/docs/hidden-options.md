@@ -36,7 +36,8 @@ confirmations apply immediately, from the next context menu). They are
 described below because in-app checks set them with `sqlite3` while
 foobar2000 is quit.
 
-**Hidden (config store only):** `decor_stats` and `log_file`.
+**Hidden (config store only):** `decor_stats`, `log_file` and
+`recent_collections` (kept by the picker, not a setting).
 
 # Keys on the preferences page
 
@@ -263,6 +264,20 @@ console (after the `log_level` filter, plus the `decor_stats` lines) is also
 appended, timestamped, to `~/Library/Logs/foobar2000/jl_intake.log`. For
 in-app checks that cannot open the console window. The file is never
 truncated or rotated; delete it by hand.
+
+## foo_jl_intake.recent_collections
+
+`configStrings`, default empty. The "Recent" section of the "Assign to other
+collection…" picker: the last five collections the user confirmed Assign
+for, one name per line, most recent first. The picker writes it when Assign
+is confirmed and reads it when it opens; names the CLI no longer lists are
+left out of the section and dropped at the next write. Not a preference: to
+clear the list, delete the row while foobar2000 is quit:
+
+```bash
+sqlite3 ~/Library/foobar2000-v2/config.sqlite \
+  "DELETE FROM configStrings WHERE name='foo_jl_intake.recent_collections';"
+```
 
 # Execute run files
 

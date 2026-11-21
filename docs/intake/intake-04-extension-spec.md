@@ -301,7 +301,18 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
   released on every path; one reload after the last call.
 - **Alternates** only from `ranked` minus the target (no sidecar fallback).
   **Assign to other collection…** (first when amber) opens a picker fed by
-  `intake collections --json`. Approve over a multi-selection is the batch.
+  `intake collections --json`: a search field over a list visible from
+  the start, in sections "Suggested" (the selected roots' `ranked[0]`: one
+  when they agree, else up to 3 distinct; omitted when none), "Recent"
+  (last 5 chosen, hidden `recent_collections` key) and "All collections".
+  Typing filters live into one ranked list (substring, ignoring case,
+  diacritics and `[ ]`: "folk" finds `[Folktronica & Ezo techno]`; prefix
+  and word-start matches first) and highlights the first match. Arrows or a
+  click highlight a row and show its name in the field; the highlighted row
+  is the choice, assigned by Return or a double-click; nothing is
+  highlighted when the sheet opens. Assign is enabled while a name is
+  highlighted or the field holds an exact listed name; Escape cancels.
+  Approve over a multi-selection is the batch.
 - **Execute**, describe then confirm: `execute <ids> --dry-run --json` (rows
   `{id, root_path, target_path, dry_run, files, artifacts, skipped_shadows}`,
   fields optional; refused roots only in `errors[]`); a sheet on the window
