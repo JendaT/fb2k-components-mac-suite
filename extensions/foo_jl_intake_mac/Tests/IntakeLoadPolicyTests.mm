@@ -13,6 +13,7 @@
 // TEST_DEPS: src/Core/IntakeReviewRule.mm src/Core/IntakeMountAliases.mm src/Core/IntakeDecorStats.mm
 // TEST_DEPS: src/Core/IntakeWatchFilter.mm
 // TEST_DEPS: src/Core/IntakeGroupBadge.mm
+// TEST_DEPS: src/Core/IntakeTargetPath.mm
 //
 
 #import <Foundation/Foundation.h>
@@ -136,10 +137,13 @@ static void testRendersAlike() {
 
     std::vector<IntakeRecord> sameVisual = base;
     sameVisual[0].album = "Another Album";
-    sameVisual[0].hasProposal = true;
-    sameVisual[0].proposal.targetCollection = "Test Collection A";
-    sameVisual[0].proposal.rankedState = RankedState::Present;
+    sameVisual[0].albumartist = "Another Artist";
     CHECK(rendersAlike(*a, *IntakeSnapshot::build(sameVisual, table)), "fields that do not render do not count");
+    std::vector<IntakeRecord> proposalShown = base;
+    proposalShown[0].hasProposal = true;
+    proposalShown[0].proposal.targetCollection = "Test Collection A";
+    CHECK(!rendersAlike(*a, *IntakeSnapshot::build(proposalShown, table)),
+          "B13: a proposal shows in the row tooltip, so it differs");
 
     // B6: the group badge renders too, so a change that leaves the row
     // visual alone (a new confidence or target) still invalidates.
@@ -150,12 +154,23 @@ static void testRendersAlike() {
     badged[2].proposal.hasConfidence = true;
     auto withBadge = IntakeSnapshot::build(badged, table);
     CHECK(withBadge->recordForId("itk_00000003")->badge.shown(), "build computes the badge");
+    // The amber badge names the first alternate, which the row tooltip
+    // does not show (B13): a new alternate changes the badge only.
+    std::vector<IntakeRecord> amberBadge = badged;
+    amberBadge[2].proposal.confidence = 0.5;
+    amberBadge[2].proposal.rankedState = RankedState::Present;
+    amberBadge[2].proposal.ranked = {{"Test Collection A", 0.5, true}, {"Test Collection B", 0.3, true}};
+    auto withAlt = IntakeSnapshot::build(amberBadge, table);
+    std::vector<IntakeRecord> newAlt = amberBadge;
+    newAlt[2].proposal.ranked[1].collection = "Test Collection C";
+    auto other = IntakeSnapshot::build(newAlt, table);
+    CHECK(other->recordForId("itk_00000003")->visual == withAlt->recordForId("itk_00000003")->visual &&
+              other->recordForId("itk_00000003")->badge != withAlt->recordForId("itk_00000003")->badge,
+          "same row visual, another badge");
+    CHECK(!rendersAlike(*withAlt, *other), "a badge-only change differs");
     std::vector<IntakeRecord> newConfidence = badged;
     newConfidence[2].proposal.confidence = 0.85;
-    auto other = IntakeSnapshot::build(newConfidence, table);
-    CHECK(other->recordForId("itk_00000003")->visual == withBadge->recordForId("itk_00000003")->visual,
-          "same row visual");
-    CHECK(!rendersAlike(*withBadge, *other), "a badge-only change differs");
+    CHECK(!rendersAlike(*withBadge, *IntakeSnapshot::build(newConfidence, table)), "a new confidence differs");
     std::vector<IntakeRecord> newTarget = badged;
     newTarget[2].proposal.targetCollection = "Test Collection B";
     CHECK(!rendersAlike(*withBadge, *IntakeSnapshot::build(newTarget, table)), "a new target differs");

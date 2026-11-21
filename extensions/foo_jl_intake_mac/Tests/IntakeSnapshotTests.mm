@@ -14,6 +14,7 @@
 // TEST_DEPS: src/Core/IntakeVersionGate.mm src/Core/IntakeCapabilities.mm
 // TEST_DEPS: src/Core/IntakeCommandArgs.mm src/Core/IntakeSemver.mm src/Core/IntakeSettingsParse.mm
 // TEST_DEPS: src/Core/IntakeGroupBadge.mm
+// TEST_DEPS: src/Core/IntakeTargetPath.mm
 //
 
 #import <Foundation/Foundation.h>
@@ -414,8 +415,8 @@ static void testMockDefault() {
 
     const IntakeRecord *b1 = s->lookup(shop + "Loose Tracks/Fixture Artist B - Loose One.wav");
     CHECK(b1 && b1->id == "itk_00000016", "a virtual root's member");
-    CHECK(b1 && b1->visual.bgTint == 0x4A90D938 && b1->visual.tooltip == "needs review",
-          "new + needs_review: blue with the tooltip");
+    CHECK(b1 && b1->visual.bgTint == 0x4A90D938 && b1->visual.tooltip == "Intake: New \xC2\xB7 needs review",
+          "new + needs_review: blue, needs review on the status line");
     const IntakeRecord *c1 = s->lookup(shop + "Loose Tracks/Fixture Artist C - Other One.wav");
     CHECK(c1 && c1->id == "itk_00000017" && c1->visual.icon == IntakeIcon::CircleOpen,
           "the other virtual root in the same folder");
@@ -424,8 +425,8 @@ static void testMockDefault() {
               f->visual.icon == IntakeIcon::CircleLeftHalf,
           "user-assigned proposal with needs_review: amber half circle");
     const IntakeRecord *c = s->lookup(dump + "Fixture Artist - Unsure Album/02 - Test Track Two.wav");
-    CHECK(c && c->visual.icon == IntakeIcon::Warning && c->visual.tooltip == kTooltipNeedsReview,
-          "resolved + needs_review without a proposal: amber warning, tooltip \"needs review\"");
+    CHECK(c && c->visual.icon == IntakeIcon::Warning && c->visual.tooltip == std::string("Intake: Resolved \xC2\xB7 needs review\n") + kTooltipNoTarget,
+          "resolved + needs_review without a proposal: amber warning, needs review, no target yet");
     const IntakeRecord *e = s->lookup(dump + "Fixture Artist - Close Call/01 - Test Track One.wav");
     CHECK(e && e->visual.bgTint == 0xE5A50A38, "engine proposal with needs_review: amber");
     const IntakeRecord *d = s->lookup(dump + "Fixture Artist - Proposed Album/01 - Test Track One.wav");
@@ -433,8 +434,10 @@ static void testMockDefault() {
     const IntakeRecord *ap = s->lookup(dump + "Fixture Artist - Approved Album/01 - Test Track One.wav");
     CHECK(ap && ap->visual.icon == IntakeIcon::CircleRightHalf, "approved: right half circle");
     const IntakeRecord *pl = s->lookup(dump + "Fixture Artist - Placing Album/01 - Test Track One.wav");
-    CHECK(pl && pl->visual.icon == IntakeIcon::ArrowRight && pl->visual.tooltip == kTooltipPlacing,
-          "placing: arrow and tooltip");
+    CHECK(pl && pl->visual.icon == IntakeIcon::ArrowRight && pl->visual.tooltip == std::string("Intake: Placing\n") + kTooltipPlacing +
+                                           "\nTarget: music.hq/Test Collection B/Fixture Artist/Fixture Artist - 2026 - "
+                                           "Placing Album\nAssigned by the engine (confidence 0.84)",
+          "placing: arrow, the placing line, target and engine");
     const IntakeRecord *pd = s->lookup(dump + "Fixture Artist - Placed Album/01 - Test Track One.wav");
     CHECK(pd && pd->visual.icon == IntakeIcon::CircleFilled && pd->visual.bgTint == 0x3FB95038, "placed: green");
     const IntakeRecord *gc = s->lookup(dump + "Fixture Artist - Collected Album/01 - Test Track One.wav");
@@ -443,11 +446,14 @@ static void testMockDefault() {
     CHECK(rj && rj->visual.strikethrough && rj->visual.icon == IntakeIcon::Cross, "rejected: struck, cross");
     const IntakeRecord *va = s->lookup(dump + "Various Artists - Test Compilation/01 - Test Track One.wav");
     CHECK(va && va->proposal.targetPathState == TargetPathState::Set &&
-              va->proposal.targetPath.find("/[Compilations]/") != std::string::npos && va->visual.tooltip.empty(),
+              va->proposal.targetPath.find("/[Compilations]/") != std::string::npos &&
+              va->visual.tooltip == "Intake: Resolved\nTarget: music.hq/Fixture Downtempo/[Compilations]/Various "
+                                    "Artists - 2026 - Test Compilation\nAssigned by the engine (confidence 0.72)",
           "Various Artists (CLI 0.3.0): a [Compilations] target, no slot pending");
     const IntakeRecord *single = s->lookup(shop + "Loose Tracks/Fixture Artist E - Single Track.wav");
     CHECK(single && single->id == "itk_00000019" && single->visual.icon == IntakeIcon::Warning &&
-              single->visual.bgTint == 0xE5A50A38 && single->visual.tooltip == "needs review \xC2\xB7 slot pending",
+              single->visual.bgTint == 0xE5A50A38 && single->visual.tooltip == "Intake: Resolved \xC2\xB7 needs review\nTarget: Test Collection A \xC2\xB7 slot "
+                                        "pending\nAssigned by the engine (confidence 0.64)",
           "the single (null target, needs_review): amber warning, needs review and slot pending");
     CHECK(s->lookup(p.root + "/library/music.hq/Test Collection A/Fixture Artist/"
                              "Fixture Artist - 2026 - Placed Album/01 - Test Track One.wav") == nullptr,
@@ -474,7 +480,8 @@ static void testMockOld() {
     auto s = IntakeSnapshot::build(p.status.records, table);
     const std::string dump = p.root + "/income/dump/";
     const IntakeRecord *va = s->lookup(dump + "Various Artists - Test Compilation/01 - Test Track One.wav");
-    CHECK(va && va->visual.tooltip.empty(), "0.2.1: no target_path, so no slot pending tooltip");
+    CHECK(va && va->visual.tooltip == "Intake: Resolved\nTarget: Fixture Downtempo\nConfidence 0.72",
+          "0.2.1: no target_path or assigned_by: the collection and the confidence, no slot pending");
     const IntakeRecord *f = s->lookup(dump + "Fixture Artist - Overridden Album/01 - Test Track One.wav");
     CHECK(f && f->proposal.assignedBy == AssignedBy::Unknown && f->visual.bgTint == 0xE5A50A38,
           "0.2.1: assigned_by unknown, the needs_review override is amber");

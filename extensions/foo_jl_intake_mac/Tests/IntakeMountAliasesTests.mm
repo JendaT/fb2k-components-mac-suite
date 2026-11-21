@@ -16,6 +16,7 @@
 // TEST_DEPS: src/Core/IntakeGroupBadge.mm
 // TEST_DEPS: src/Core/IntakeLibraryIndex.mm src/Core/IntakeSwapPlanner.mm src/Core/IntakeSidecarMembers.mm
 // TEST_DEPS: src/Core/IntakeSettingsParse.mm
+// TEST_DEPS: src/Core/IntakeTargetPath.mm
 //
 
 #import <Foundation/Foundation.h>

@@ -48,6 +48,7 @@
 // TEST_DEPS: src/Core/IntakeSettingsParse.mm
 // TEST_DEPS: src/Core/IntakeGroupBadge.mm src/Core/IntakeRootErrors.mm
 // TEST_DEPS: src/Core/IntakeLibraryIndex.mm src/Core/IntakeSwapPlanner.mm
+// TEST_DEPS: src/Core/IntakeTargetPath.mm
 //
 
 #import <Foundation/Foundation.h>
@@ -382,12 +383,13 @@ static void testDefaultLoad() {
     CHECK(blue && blue->icon == IntakeIcon::CircleOpen && blue->bgTint == 0x4A90D938, "new: blue, open circle");
     const IntakeRowVisual *single =
         first.view->visualFor(root + "/income/shop/Loose Tracks/Fixture Artist E - Single Track.wav", scratch);
-    CHECK(single && single->bgTint == 0xE5A50A38 && single->tooltip == "needs review \xC2\xB7 slot pending",
+    CHECK(single && single->bgTint == 0xE5A50A38 && single->tooltip == "Intake: Resolved \xC2\xB7 needs review\nTarget: Test Collection A \xC2\xB7 slot "
+                                                                 "pending\nAssigned by the engine (confidence 0.64)",
           "the single: amber, needs review and slot pending");
     const IntakeRowVisual *member =
         first.view->visualFor(root + "/income/shop/Loose Tracks/Fixture Artist C - Other Two.wav", scratch);
-    CHECK(member && member->icon == IntakeIcon::CircleOpen && member->tooltip.empty(),
-          "a virtual root's member (resolved, no review)");
+    CHECK(member && member->icon == IntakeIcon::CircleOpen && member->tooltip == "Intake: Resolved\nNo target yet: Propose (or Assign to a collection first)",
+          "a virtual root's member (resolved, no review, no proposal)");
     CHECK(first.view->visualFor(root + "/income/dump/Fixture Artist - Collected Album/01 - Test Track One.wav",
                                 scratch) == nullptr,
           "gc_done renders nothing");
@@ -413,7 +415,8 @@ static void testDefaultLoad() {
     Published changed = h->lastPublished();
     CHECK(changed.invalidate, "a visual change invalidates all");
     const IntakeRowVisual *amber = changed.view ? changed.view->visualFor(newAlbum(root), scratch) : nullptr;
-    CHECK(amber && amber->bgTint == 0xE5A50A38 && amber->tooltip == "needs review", "the row is amber now");
+    CHECK(amber && amber->bgTint == 0xE5A50A38 && amber->tooltip == "Intake: Resolved \xC2\xB7 needs review\nNo target yet: Propose (or Assign to a collection first)",
+          "the row is amber now");
 
     g_context = "default-logs";
     CHECK(logCount("[intake] loaded 16 roots (CLI 0.3.0)") == 1, "one Info line for the first load");
@@ -636,7 +639,7 @@ static void testMountAliases() {
     const IntakeRowVisual *memberViaAlias =
         p.view ? p.view->visualFor(alias + "/income/shop/Loose Tracks/Fixture Artist B - Loose One.wav", scratch)
                : nullptr;
-    CHECK(memberViaAlias && memberViaAlias->tooltip == "needs review",
+    CHECK(memberViaAlias && memberViaAlias->tooltip == "Intake: New \xC2\xB7 needs review",
           "a virtual root's member through the alias (members follow the alias key)");
 
     g_context = "mount-lost";
@@ -1409,7 +1412,8 @@ static void testAnnotateAndBadges() {
     Published withError = h->lastPublished();
     CHECK(withError.invalidate, "a new per-root error invalidates");
     const IntakeRowVisual *errorVisual = withError.view ? withError.view->visualFor(resolvedRow, scratch) : nullptr;
-    CHECK(errorVisual && errorVisual->tooltip == "propose: No target collection", "the error is in the tooltip");
+    CHECK(errorVisual && errorVisual->tooltip == "Intake: Resolved\nNo target yet: Propose (or Assign to a collection first)\npropose: No target collection",
+          "the error is the tooltip's last line");
 
     loader.reload(false);
     CHECK(waitFinished(*h, 3), "reload, same status");
@@ -1422,7 +1426,7 @@ static void testAnnotateAndBadges() {
     CHECK(waitFinished(*h, 4), "reload after the status change");
     Published moved = h->lastPublished();
     const IntakeRowVisual *movedVisual = moved.view ? moved.view->visualFor(resolvedRow, scratch) : nullptr;
-    CHECK(moved.invalidate && movedVisual && movedVisual->tooltip.empty() && store->size() == 0,
+    CHECK(moved.invalidate && movedVisual && movedVisual->tooltip == "Intake: Proposed" && store->size() == 0,
           "the status changed: the error is gone");
 }
 

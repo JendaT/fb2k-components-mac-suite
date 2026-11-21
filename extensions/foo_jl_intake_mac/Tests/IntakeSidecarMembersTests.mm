@@ -11,6 +11,7 @@
 //
 // TEST_DEPS: src/Core/IntakeEnvelope.mm src/Core/IntakePath.mm src/Core/IntakeLog.mm
 // TEST_DEPS: src/Core/IntakeDecorationMap.mm src/Core/IntakeReviewRule.mm
+// TEST_DEPS: src/Core/IntakeTargetPath.mm src/Core/IntakeGroupBadge.mm
 //
 
 #import <Foundation/Foundation.h>

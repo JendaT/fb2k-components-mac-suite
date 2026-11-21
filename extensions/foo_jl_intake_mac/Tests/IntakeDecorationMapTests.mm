@@ -3,10 +3,11 @@
 //  foo_jl_intake_mac
 //
 //  Unit tests for IntakeDecorationMap: every row of doc 04 v1.2's "Row
-//  decorations" table, the tooltip additions, palette overrides and the
-//  mirrored icon enum. Synthetic records only.
+//  decorations" table, the B13 tooltip (per status, per missing field),
+//  palette overrides and the mirrored icon enum. Synthetic records only.
 //
 // TEST_DEPS: src/Core/IntakeReviewRule.mm
+// TEST_DEPS: src/Core/IntakeTargetPath.mm src/Core/IntakeGroupBadge.mm
 //
 
 #import <Foundation/Foundation.h>
@@ -15,6 +16,7 @@
 #include "../src/Core/IntakeStatusModel.h"
 #include "TestHarness.h"
 
+#include <initializer_list>
 #include <string>
 
 using namespace intake;
@@ -46,7 +48,9 @@ static IntakeRecord proposed(IntakeStatus status, bool needsReview, AssignedBy b
     r.proposal.confidence = by == AssignedBy::User ? 1.0 : 0.8;
     r.proposal.assignedBy = by;
     r.proposal.targetPathState = target;
-    if (target == TargetPathState::Set) r.proposal.targetPath = "/library/Test Collection A/Fixture Artist - Test Album";
+    if (target == TargetPathState::Set) {
+        r.proposal.targetPath = "/library/music.hq/Test Collection A/Fixture Artist/Fixture Artist - Test Album";
+    }
     return r;
 }
 
@@ -58,6 +62,24 @@ static IntakeRecord placed(bool verified) {
     return r;
 }
 
+// Tooltip lines, joined as rowVisualFor joins them.
+static std::string lines(std::initializer_list<std::string> parts) {
+    std::string out;
+    for (const std::string &part : parts) {
+        if (!out.empty()) out += '\n';
+        out += part;
+    }
+    return out;
+}
+
+static const std::string kDot = " \xC2\xB7 ";
+static const std::string kReview = kDot + "needs review";
+static const std::string kTarget = "Target: music.hq/Test Collection A/Fixture Artist/Fixture Artist - Test Album";
+static const std::string kEngine = "Assigned by the engine (confidence 0.80)";
+static const std::string kUser = "Assigned by you";
+static const std::string kNoTarget = "No target yet: Propose (or Assign to a collection first)";
+static const std::string kPending = "Target: Test Collection A" + kDot + "slot pending";
+
 static bool is(const IntakeRowVisual &v, IntakeRgba tint, IntakeIcon icon, IntakeRgba iconColor,
                const std::string &tooltip, bool strike) {
     return v.bgTint == tint && v.icon == icon && v.iconColor == iconColor && v.tooltip == tooltip &&
@@ -66,98 +88,148 @@ static bool is(const IntakeRowVisual &v, IntakeRgba tint, IntakeIcon icon, Intak
 
 static void testTable() {
     g_context = "table";
-    CHECK(is(rowVisualFor(record(IntakeStatus::New)), kBlue, IntakeIcon::CircleOpen, 0, "", false),
-          "new: blue, open circle");
-    CHECK(is(rowVisualFor(record(IntakeStatus::New, true)), kBlue, IntakeIcon::CircleOpen, 0, "needs review", false),
-          "new + needs_review: blue, open circle, tooltip \"needs review\"");
-    CHECK(is(rowVisualFor(record(IntakeStatus::Resolved)), kBlue, IntakeIcon::CircleOpen, 0, "", false),
-          "resolved: blue, open circle");
+    CHECK(is(rowVisualFor(record(IntakeStatus::New)), kBlue, IntakeIcon::CircleOpen, 0, "Intake: New", false),
+          "new: blue, open circle, the status");
+    CHECK(is(rowVisualFor(record(IntakeStatus::New, true)), kBlue, IntakeIcon::CircleOpen, 0,
+             "Intake: New" + kReview, false),
+          "new + needs_review: blue, open circle, \"needs review\" on the status line");
+    CHECK(is(rowVisualFor(record(IntakeStatus::Resolved)), kBlue, IntakeIcon::CircleOpen, 0,
+             lines({"Intake: Resolved", kNoTarget}), false),
+          "resolved: blue, open circle, no target yet");
     CHECK(is(rowVisualFor(record(IntakeStatus::Resolved, true)), kAmber, IntakeIcon::Warning, kAmberIcon,
-             "needs review", false),
-          "resolved + needs_review (no proposal): amber, warning, tooltip \"needs review\"");
+             lines({"Intake: Resolved" + kReview, kNoTarget}), false),
+          "resolved + needs_review (no proposal): amber, warning, needs review, no target yet");
     CHECK(is(rowVisualFor(proposed(IntakeStatus::Proposed, false, AssignedBy::Engine)), kTeal,
-             IntakeIcon::CircleLeftHalf, 0, "", false),
-          "proposed: teal, left half circle");
+             IntakeIcon::CircleLeftHalf, 0, lines({"Intake: Proposed", kTarget, kEngine}), false),
+          "proposed: teal, left half circle, target and engine");
     CHECK(is(rowVisualFor(proposed(IntakeStatus::Proposed, true, AssignedBy::Engine)), kAmber,
-             IntakeIcon::CircleLeftHalf, kAmberIcon, "needs review", false),
-          "proposed + needs_review: amber, left half circle, tooltip \"needs review\"");
+             IntakeIcon::CircleLeftHalf, kAmberIcon, lines({"Intake: Proposed" + kReview, kTarget, kEngine}), false),
+          "proposed + needs_review: amber, left half circle, needs review");
     CHECK(is(rowVisualFor(proposed(IntakeStatus::Proposed, true, AssignedBy::User)), kAmber,
-             IntakeIcon::CircleLeftHalf, kAmberIcon, "needs review", false),
-          "proposed + needs_review, user-assigned: still amber with the tooltip (v1.2)");
+             IntakeIcon::CircleLeftHalf, kAmberIcon, lines({"Intake: Proposed" + kReview, kTarget, kUser}), false),
+          "proposed + needs_review, user-assigned: still amber with needs review (v1.2), assigned by you");
     CHECK(is(rowVisualFor(proposed(IntakeStatus::Resolved, true, AssignedBy::User)), kAmber, IntakeIcon::Warning,
-             kAmberIcon, "needs review", false),
-          "resolved + needs_review with a user proposal: amber, warning, tooltip");
+             kAmberIcon, lines({"Intake: Resolved" + kReview, kTarget, kUser}), false),
+          "resolved + needs_review with a user proposal: amber, warning, its target");
     CHECK(is(rowVisualFor(proposed(IntakeStatus::Proposed, false, AssignedBy::User)), kTeal,
-             IntakeIcon::CircleLeftHalf, 0, "", false),
+             IntakeIcon::CircleLeftHalf, 0, lines({"Intake: Proposed", kTarget, kUser}), false),
           "user-assigned without needs_review: teal");
     CHECK(is(rowVisualFor(proposed(IntakeStatus::Approved, false, AssignedBy::Engine)), kTeal,
-             IntakeIcon::CircleRightHalf, 0, "", false),
+             IntakeIcon::CircleRightHalf, 0, lines({"Intake: Approved", kTarget, kEngine}), false),
           "approved: teal, right half circle");
     CHECK(is(rowVisualFor(proposed(IntakeStatus::Approved, true, AssignedBy::Engine)), kTeal,
-             IntakeIcon::CircleRightHalf, 0, "", false),
+             IntakeIcon::CircleRightHalf, 0, lines({"Intake: Approved", kTarget, kEngine}), false),
           "approved ignores a stray needs_review");
     CHECK(is(rowVisualFor(proposed(IntakeStatus::Placing, false, AssignedBy::Engine)), kTeal, IntakeIcon::ArrowRight,
-             0, "placing \xE2\x80\x94 see intake status", false),
-          "placing: teal, arrow, tooltip");
-    CHECK(is(rowVisualFor(placed(true)), kGreen, IntakeIcon::CircleFilled, kGreenIcon, "", false),
+             0, lines({"Intake: Placing", "placing \xE2\x80\x94 see intake status", kTarget, kEngine}), false),
+          "placing: teal, arrow, the kept placing line");
+    CHECK(is(rowVisualFor(placed(true)), kGreen, IntakeIcon::CircleFilled, kGreenIcon,
+             lines({"Intake: Placed", kTarget, kEngine}), false),
           "placed verified: green, filled circle");
     CHECK(rowVisualFor(placed(false)).isNone(), "placed verified false: nothing");
     CHECK(rowVisualFor(record(IntakeStatus::Placed)).isNone(), "placed without a placed object: nothing");
     CHECK(rowVisualFor(record(IntakeStatus::GcDone)).isNone(), "gc_done: nothing");
+    CHECK(rowVisualFor(proposed(IntakeStatus::GcDone, false, AssignedBy::Engine)).isNone(),
+          "gc_done with a proposal: still nothing, no tooltip");
     CHECK(rowVisualFor(record(IntakeStatus::Unknown)).isNone(), "unknown status: nothing");
     CHECK(rowVisualFor(record(IntakeStatus::Unknown, true)).isNone(), "unknown status with needs_review: nothing");
     CHECK(is(rowVisualFor(proposed(IntakeStatus::Rejected, false, AssignedBy::Engine)), kGrey, IntakeIcon::Cross, 0,
-             "", true),
+             lines({"Intake: Rejected", kTarget, kEngine}), true),
           "rejected: grey, cross, strikethrough");
+    CHECK(is(rowVisualFor(record(IntakeStatus::Rejected)), kGrey, IntakeIcon::Cross, 0, "Intake: Rejected", true),
+          "rejected without a proposal: the status only");
 }
 
 static void testTooltips() {
     g_context = "slot-pending";
     CHECK(rowVisualFor(proposed(IntakeStatus::Resolved, false, AssignedBy::Engine, TargetPathState::Null)).tooltip ==
-              "slot pending",
-          "resolved with a null target_path: slot pending");
+              lines({"Intake: Resolved", kPending, kEngine}),
+          "resolved with a null target_path: the collection, slot pending");
     CHECK(rowVisualFor(proposed(IntakeStatus::Proposed, false, AssignedBy::Engine, TargetPathState::Null)).tooltip ==
-              "slot pending",
+              lines({"Intake: Proposed", kPending, kEngine}),
           "proposed with a null target_path: slot pending");
     CHECK(rowVisualFor(proposed(IntakeStatus::Approved, false, AssignedBy::User, TargetPathState::Null)).tooltip ==
-              "slot pending",
+              lines({"Intake: Approved", kPending, kUser}),
           "approved with a null target_path: slot pending");
     // assign is legal from new and keeps the status (contract v1.2): a new
     // single assigned by the user has a null target.
     CHECK(is(rowVisualFor(proposed(IntakeStatus::New, false, AssignedBy::User, TargetPathState::Null)), kBlue,
-             IntakeIcon::CircleOpen, 0, "slot pending", false),
+             IntakeIcon::CircleOpen, 0, lines({"Intake: New", kPending, kUser}), false),
           "new with a null target_path: blue, slot pending");
     CHECK(rowVisualFor(proposed(IntakeStatus::New, true, AssignedBy::User, TargetPathState::Null)).tooltip ==
-              "needs review \xC2\xB7 slot pending",
-          "new + needs_review with a null target_path: both tooltips");
-    CHECK(rowVisualFor(proposed(IntakeStatus::New, false, AssignedBy::User)).tooltip.empty(),
-          "new with a target: no slot pending");
+              lines({"Intake: New" + kReview, kPending, kUser}),
+          "new + needs_review with a null target_path: both");
+    CHECK(rowVisualFor(proposed(IntakeStatus::New, false, AssignedBy::User)).tooltip ==
+              lines({"Intake: New", kTarget, kUser}),
+          "new with a target: the target, no slot pending");
     IntakeRowVisual amberPending =
         rowVisualFor(proposed(IntakeStatus::Proposed, true, AssignedBy::Engine, TargetPathState::Null));
-    CHECK(amberPending.bgTint == kAmber && amberPending.tooltip == "needs review \xC2\xB7 slot pending",
-          "amber and slot pending together: needs review first");
-    CHECK(rowVisualFor(proposed(IntakeStatus::Proposed, false, AssignedBy::Unknown, TargetPathState::Unknown))
-              .tooltip.empty(),
-          "target_path unknown (CLI 0.2.1): no slot pending");
-    CHECK(rowVisualFor(proposed(IntakeStatus::Rejected, false, AssignedBy::Engine, TargetPathState::Null))
-              .tooltip.empty(),
+    CHECK(amberPending.bgTint == kAmber && amberPending.tooltip == lines({"Intake: Proposed" + kReview, kPending, kEngine}),
+          "amber and slot pending together");
+    CHECK(rowVisualFor(proposed(IntakeStatus::Rejected, false, AssignedBy::Engine, TargetPathState::Null)).tooltip ==
+              lines({"Intake: Rejected", kEngine}),
           "rejected: no slot pending");
+    IntakeRecord noCollection = proposed(IntakeStatus::Proposed, false, AssignedBy::Engine, TargetPathState::Null);
+    noCollection.proposal.targetCollection.clear();
+    CHECK(rowVisualFor(noCollection).tooltip == lines({"Intake: Proposed", "Target: slot pending", kEngine}),
+          "slot pending without a collection");
+
+    g_context = "missing-fields";
+    // CLI 0.2.1: no target_path and no assigned_by.
+    CHECK(rowVisualFor(proposed(IntakeStatus::Proposed, false, AssignedBy::Unknown, TargetPathState::Unknown))
+                  .tooltip == lines({"Intake: Proposed", "Target: Test Collection A", "Confidence 0.80"}),
+          "target_path and assigned_by absent: the collection and the confidence");
+    IntakeRecord bare = proposed(IntakeStatus::Proposed, false, AssignedBy::Unknown, TargetPathState::Unknown);
+    bare.proposal.targetCollection.clear();
+    bare.proposal.hasConfidence = false;
+    CHECK(rowVisualFor(bare).tooltip == "Intake: Proposed", "a proposal with nothing in it: the status only");
+    IntakeRecord noConfidence = proposed(IntakeStatus::Proposed, false, AssignedBy::Engine);
+    noConfidence.proposal.hasConfidence = false;
+    CHECK(rowVisualFor(noConfidence).tooltip == lines({"Intake: Proposed", kTarget, "Assigned by the engine"}),
+          "engine without a confidence");
+    IntakeRecord other = proposed(IntakeStatus::Approved, false, AssignedBy::Other);
+    other.proposal.assignedByText = "curator";
+    CHECK(rowVisualFor(other).tooltip == lines({"Intake: Approved", kTarget, "Assigned by curator (confidence 0.80)"}),
+          "another assigned_by string is shown as given");
+    IntakeRecord userHalf = proposed(IntakeStatus::Proposed, false, AssignedBy::User);
+    userHalf.proposal.confidence = 0.5;
+    CHECK(rowVisualFor(userHalf).tooltip == lines({"Intake: Proposed", kTarget, kUser}),
+          "assigned by you never shows a confidence");
+    IntakeRecord lostCollection = proposed(IntakeStatus::Proposed, false, AssignedBy::Engine);
+    lostCollection.proposal.targetCollection = "Somewhere Else";
+    lostCollection.proposal.targetPath = "/volume1/music/music.hq/Test Collection A/Fixture Artist/Fixture Album";
+    CHECK(rowVisualFor(lostCollection).tooltip ==
+              lines({"Intake: Proposed", "Target: music.hq/Test Collection A/Fixture Artist/Fixture Album", kEngine}),
+          "a collection not in the path: the last four components");
+    IntakeRecord example = proposed(IntakeStatus::Proposed, false, AssignedBy::Engine);
+    example.proposal.targetCollection = "[Psytrance & Goa]";
+    example.proposal.confidence = 0.91;
+    example.proposal.targetPath = "/volume1/music/music.hq/[Psytrance & Goa]/Logic Bomb/Logic Bomb [2000] Headware";
+    CHECK(rowVisualFor(example).tooltip ==
+              lines({"Intake: Proposed", "Target: music.hq/[Psytrance & Goa]/Logic Bomb/Logic Bomb [2000] Headware",
+                     "Assigned by the engine (confidence 0.91)"}),
+          "the user's example");
 
     g_context = "last-error";
     IntakeRecord withError = record(IntakeStatus::New, true);
     withError.lastError = "E_BAD_STATUS: cannot propose from status new";
-    CHECK(rowVisualFor(withError).tooltip == "needs review \xC2\xB7 E_BAD_STATUS: cannot propose from status new",
-          "the last error follows the other tooltip parts");
+    CHECK(rowVisualFor(withError).tooltip ==
+              lines({"Intake: New" + kReview, "E_BAD_STATUS: cannot propose from status new"}),
+          "the last error is the last line");
     IntakeRecord goneError = record(IntakeStatus::GcDone);
     goneError.lastError = "E_VERIFY: mismatch";
     IntakeRowVisual tooltipOnly = rowVisualFor(goneError);
     CHECK(!tooltipOnly.isNone() && tooltipOnly.bgTint == 0 && tooltipOnly.icon == IntakeIcon::None &&
               tooltipOnly.tooltip == "E_VERIFY: mismatch",
-          "a last error on a root that renders nothing is tooltip-only");
+          "a last error on a root that renders nothing is tooltip-only, the error alone");
+    IntakeRecord unverifiedError = placed(false);
+    unverifiedError.lastError = "gc: E_VERIFY: mismatch";
+    CHECK(rowVisualFor(unverifiedError).tooltip == "gc: E_VERIFY: mismatch",
+          "placed unverified with an error: the error alone");
 
     g_context = "amber-tooltip";
-    // doc 04 v1.2: every amber row carries "needs review", and only amber
-    // rows (plus new + needs_review) do.
+    // doc 04 v1.2: every amber row says "needs review", and only amber rows
+    // (plus new + needs_review) do.
     const IntakeStatus all[] = {IntakeStatus::New, IntakeStatus::Resolved, IntakeStatus::Proposed,
                                 IntakeStatus::Approved, IntakeStatus::Placing, IntakeStatus::Placed,
                                 IntakeStatus::GcDone, IntakeStatus::Rejected, IntakeStatus::Unknown};
@@ -169,7 +241,8 @@ static void testTooltips() {
             r.placedVerified = true;
             const IntakeRowVisual v = rowVisualFor(r);
             const bool amber = v.bgTint == kAmber;
-            const bool says = v.tooltip.rfind("needs review", 0) == 0;
+            const std::string first = v.tooltip.substr(0, v.tooltip.find('\n'));
+            const bool says = first.find(kReview) != std::string::npos;
             const bool expectSays = amber || (st == IntakeStatus::New && flag == 1);
             total++;
             if (says == expectSays) agree++;
@@ -178,8 +251,21 @@ static void testTooltips() {
     CHECK_EQ(agree, total, "\"needs review\" exactly on amber rows and on new + needs_review");
     IntakeRecord amberError = record(IntakeStatus::Resolved, true);
     amberError.lastError = "E_BAD_STATUS: cannot propose from status resolved";
-    CHECK(rowVisualFor(amberError).tooltip == "needs review \xC2\xB7 E_BAD_STATUS: cannot propose from status resolved",
-          "an amber row's last error follows \"needs review\"");
+    CHECK(rowVisualFor(amberError).tooltip ==
+              lines({"Intake: Resolved" + kReview, kNoTarget, "E_BAD_STATUS: cannot propose from status resolved"}),
+          "an amber row's last error comes last");
+
+    g_context = "labels";
+    CHECK(std::string(intakeStatusLabel(IntakeStatus::New)) == "New" &&
+              std::string(intakeStatusLabel(IntakeStatus::Resolved)) == "Resolved" &&
+              std::string(intakeStatusLabel(IntakeStatus::Proposed)) == "Proposed" &&
+              std::string(intakeStatusLabel(IntakeStatus::Approved)) == "Approved" &&
+              std::string(intakeStatusLabel(IntakeStatus::Placing)) == "Placing" &&
+              std::string(intakeStatusLabel(IntakeStatus::Placed)) == "Placed" &&
+              std::string(intakeStatusLabel(IntakeStatus::GcDone)) == "Local copy deleted" &&
+              std::string(intakeStatusLabel(IntakeStatus::Rejected)) == "Rejected" &&
+              std::string(intakeStatusLabel(IntakeStatus::Unknown)) == "Unknown",
+          "status labels");
 }
 
 static void testPalette() {
