@@ -20,6 +20,7 @@
 #include "IntakeSwap.h"
 
 #include "../Core/IntakeActionTable.h"
+#include "../Core/IntakeAssignPropose.h"
 #include "../Core/IntakeCliRunner.h"
 #include "../Core/IntakeCollections.h"
 #include "../Core/IntakeErrorMap.h"
@@ -228,6 +229,55 @@ std::string whyNotStartable() {
 
 // --- results (main) ---
 
+// Where a call stands in its lane run. An assign from "Assign to X" or the
+// picker is followed by `propose` for the roots that were resolved
+// (IntakeAssignPropose), on the same lane token: the lane is held from the
+// assign's start to the propose's end, and released on every other path.
+enum class LaneRun {
+    Single,             // one call: its finish releases the lane and refreshes
+    AssignThenPropose,  // an assign; its finish may start the propose
+    ProposeAfterAssign, // that propose; its finish (or refusal) ends the run
+};
+
+void startOnQueue(uint64_t token, std::shared_ptr<const CliConfig> config, std::shared_ptr<const CliRequest> request,
+                  std::shared_ptr<const std::vector<MutationRoot>> roots, LaneRun run = LaneRun::Single);
+
+// The assign of an AssignThenPropose run finished (its errors and console
+// line are already out): starts the propose on `token`, or releases the
+// lane and refreshes once when there is nothing to propose or it cannot
+// start.
+void proposeAfterAssignOrEnd(uint64_t token, const std::vector<MutationRoot> &assigned, const CliResult &result,
+                             const MutationOutcome &outcome) {
+    ActionsState &st = actionsState();
+    const AssignFollowUp next =
+        proposeAfterAssign(assigned, result.envelope.outcome, outcome, result.envelope.errors);
+    if (!next.skippedLine.empty()) logDebug(next.skippedLine);
+    auto endRun = [&st, token] {
+        st.lane.finish(token);
+        serviceRefreshAfterCommand();
+    };
+    if (next.propose.empty()) {
+        endRun();
+        return;
+    }
+    CliConfig config;
+    if (!serviceMutationConfig(config)) {
+        logError("propose: not run after assign: intake is not running or has no CLI path");
+        endRun();
+        return;
+    }
+    CliRequest request;
+    request.command = CliCommand::Propose;
+    request.ids = next.propose;
+    logInfo("propose: starting after assign for " + rootCountText(request.ids.size()) + ": " + idList(request.ids));
+    auto sharedConfig = std::make_shared<const CliConfig>(std::move(config));
+    auto sharedRequest = std::make_shared<const CliRequest>(std::move(request));
+    auto sharedRoots = std::make_shared<const std::vector<MutationRoot>>(next.roots);
+    dispatch_async(st.queue, ^{
+        startOnQueue(token, sharedConfig, sharedRequest, sharedRoots, LaneRun::ProposeAfterAssign);
+    });
+}
+
 void onBudget(uint64_t token, CliCommand command, const std::vector<MutationRoot> &roots, CliBudgetEvent event) {
     ActionsState &st = actionsState();
     if (st.stopped) return;
@@ -251,12 +301,20 @@ void onBudget(uint64_t token, CliCommand command, const std::vector<MutationRoot
     }
 }
 
-void onFinished(uint64_t token, CliCommand command, const std::vector<MutationRoot> &roots, const CliResult &result) {
+void onFinished(uint64_t token, CliCommand command, const std::vector<MutationRoot> &roots, const CliResult &result,
+                LaneRun run = LaneRun::Single) {
     ActionsState &st = actionsState();
-    if (st.stopped) return;
+    if (st.stopped) {
+        // A run of two calls lets go of the lane here: no propose after quit.
+        if (run != LaneRun::Single) st.lane.finish(token);
+        return;
+    }
     const std::string name = cliCommandName(command);
     logCliResult(result);
-    if (!st.lane.finish(token)) {
+    // The assign of a two-call run keeps the lane for its propose (a real
+    // assign is never released early: only dry runs are).
+    const bool proposeNext = run == LaneRun::AssignThenPropose && command == CliCommand::Assign;
+    if (!proposeNext && !st.lane.finish(token)) {
         logInfo(name + ": a late dry-run result was ignored");
         return;
     }
@@ -284,22 +342,28 @@ void onFinished(uint64_t token, CliCommand command, const std::vector<MutationRo
     } else {
         logInfo(outcome.consoleLine);
     }
+    if (proposeNext) {
+        proposeAfterAssignOrEnd(token, roots, result, outcome);  // one refresh, after the propose
+        return;
+    }
     serviceRefreshAfterCommand();
 }
 
-void onRefused(uint64_t token, CliCommand command, const std::string &refusal) {
+void onRefused(uint64_t token, CliCommand command, const std::string &refusal, LaneRun run = LaneRun::Single) {
     ActionsState &st = actionsState();
     st.lane.finish(token);
     if (st.stopped) return;
     // The only console line for it (IntakeCliRunner logs it at Debug);
     // a caller bug, not a root's error, so no tooltip.
     logError(std::string(cliCommandName(command)) + ": not started (" + refusal + ")");
+    // The assign before it did run: show what it changed.
+    if (run == LaneRun::ProposeAfterAssign) serviceRefreshAfterCommand();
 }
 
 // --- start (queue) ---
 
 void startOnQueue(uint64_t token, std::shared_ptr<const CliConfig> config, std::shared_ptr<const CliRequest> request,
-                  std::shared_ptr<const std::vector<MutationRoot>> roots) {
+                  std::shared_ptr<const std::vector<MutationRoot>> roots, LaneRun run) {
     ActionsState &st = actionsState();
     CliRunOptions options;
     options.outputDirectory = st.outputDirectory;
@@ -312,16 +376,16 @@ void startOnQueue(uint64_t token, std::shared_ptr<const CliConfig> config, std::
                 onBudget(token, command, *roots, event);
             });
         },
-        [token, command, roots](CliResult &&result) {
+        [token, command, roots, run](CliResult &&result) {
             auto shared = std::make_shared<CliResult>(std::move(result));
             dispatch_async(dispatch_get_main_queue(), ^{
-                onFinished(token, command, *roots, *shared);
+                onFinished(token, command, *roots, *shared, run);
             });
         },
         &refusal);
     if (!started) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            onRefused(token, command, refusal);
+            onRefused(token, command, refusal, run);
         });
     }
 }
@@ -371,8 +435,10 @@ std::string runMutation(const ActionEntry &entry, const std::string &reason) {
     auto sharedConfig = std::make_shared<const CliConfig>(std::move(config));
     auto sharedRequest = std::make_shared<const CliRequest>(request);
     std::shared_ptr<const std::vector<MutationRoot>> sharedRoots = roots;
+    // Assign to X and the picker's Assign: propose follows for resolved roots.
+    const LaneRun run = request.command == CliCommand::Assign ? LaneRun::AssignThenPropose : LaneRun::Single;
     dispatch_async(st.queue, ^{
-        startOnQueue(token, sharedConfig, sharedRequest, sharedRoots);
+        startOnQueue(token, sharedConfig, sharedRequest, sharedRoots, run);
     });
     return "started for " + rootCountText(request.ids.size());
 }

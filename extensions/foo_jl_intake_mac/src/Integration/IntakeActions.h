@@ -33,6 +33,14 @@
 //   - Propose, Approve: run at once.
 //   - Assign to X (B7): runs at once, `assign <id> --collection X --by
 //     user`, X being the collection the menu showed (kept in the entry).
+//     Then `propose` (B13-lite) for the roots that were resolved at menu
+//     time and that the assign did not fail (IntakeAssignPropose; exit 2
+//     proposes nothing; new, proposed and approved roots are skipped with
+//     one Debug line). The lane is held from the assign's start to the
+//     propose's end, and released on every other path (nothing to
+//     propose, the propose refused or failed, quit); one refresh after the
+//     last call. Propose errors show as usual (tooltip, console line); a
+//     root whose propose fails keeps its assignment.
 //   - Assign to other collection… (B7): the picker. The sheet's window is
 //     chosen at the click, as for Reject. `collections --json` runs first,
 //     off the main thread (read-only: E_CLI_TIMEOUT at 10 s and killed,
@@ -52,7 +60,7 @@
 //     listedCollectionFor). Cancel or Escape runs nothing.
 //     Assign checks the lane and the configuration again, then runs
 //     `assign <ids> --collection <name> --by user` on the roots the menu
-//     captured. One picker flow at a time: a request while `collections`
+//     captured, followed by `propose` as for Assign to X. One picker flow at a time: a request while `collections`
 //     runs or the sheet is open logs one Info line and does nothing. A
 //     failed `collections` (an E_* error, a timeout, a reply that is not
 //     an envelope or whose data is not an array or has more than 10000
