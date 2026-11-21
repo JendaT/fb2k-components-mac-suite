@@ -113,6 +113,14 @@ std::string fromNS(NSString *s) {
     return c ? std::string(c) : std::string();
 }
 
+// A JSON boolean (true or false), not a number.
+bool jsonBool(id value, bool &out) {
+    if (![value isKindOfClass:[NSNumber class]]) return false;
+    if (CFGetTypeID((__bridge CFTypeRef)value) != CFBooleanGetTypeID()) return false;
+    out = [value boolValue];
+    return true;
+}
+
 // An integral JSON number (not a boolean, not a float) in [min, max].
 bool jsonInteger(id value, long long min, long long max, long long &out) {
     if (![value isKindOfClass:[NSNumber class]]) return false;
@@ -211,6 +219,10 @@ std::string formatRunFile(const RunFile &file) {
             dict[@"root_paths"] = paths;
         }
         dict[@"output"] = toNS(file.output);
+        if (file.followUps.recorded) {
+            dict[@"swap_after"] = file.followUps.swap ? @YES : @NO;
+            dict[@"delete_after"] = file.followUps.swap && file.followUps.deleteLocal ? @YES : @NO;
+        }
         NSData *data = [NSJSONSerialization dataWithJSONObject:dict
                                                        options:NSJSONWritingSortedKeys |
                                                                NSJSONWritingWithoutEscapingSlashes
@@ -293,6 +305,13 @@ bool parseRunFile(std::string_view text, RunFile &out, std::string &error) {
             return false;
         }
         f.output = fromNS(output);
+        // Optional: both booleans, or no follow-ups (an older build's file).
+        bool swapAfter = false, deleteAfter = false;
+        if (jsonBool(d[@"swap_after"], swapAfter) && jsonBool(d[@"delete_after"], deleteAfter)) {
+            f.followUps.recorded = true;
+            f.followUps.swap = swapAfter;
+            f.followUps.deleteLocal = swapAfter && deleteAfter;
+        }
         out = std::move(f);
         return true;
     }
@@ -600,7 +619,7 @@ const TrackedRun *ExecuteTracker::find(const std::string &stem) const {
 }
 
 bool ExecuteTracker::begin(const std::string &stem, CliCommand command, std::vector<std::string> ids,
-                           std::vector<std::string> rootPaths) {
+                           std::vector<std::string> rootPaths, RunFollowUps followUps) {
     if (stem.empty() || ids.empty() || find(stem) != nullptr) return false;
     TrackedRun r;
     r.stem = stem;
@@ -608,6 +627,7 @@ bool ExecuteTracker::begin(const std::string &stem, CliCommand command, std::vec
     r.state = RunState::Starting;
     r.ids = std::move(ids);
     if (rootPaths.size() == r.ids.size()) r.rootPaths = std::move(rootPaths);
+    r.followUps = followUps;
     runs_.push_back(std::move(r));
     return true;
 }
@@ -631,6 +651,7 @@ bool ExecuteTracker::adopt(const std::string &stem, const RunFile &file) {
     r.start = file.start;
     r.ids = file.ids;
     if (file.rootPaths.size() == file.ids.size()) r.rootPaths = file.rootPaths;
+    r.followUps = file.followUps;
     runs_.push_back(std::move(r));
     return true;
 }

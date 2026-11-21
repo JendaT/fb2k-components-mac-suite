@@ -43,10 +43,12 @@
 //
 //  Re-check at Execute (recheckPlaceable): the lane is free while the sheet
 //  is up, so a root may change meanwhile. A placeable root whose current
-//  record is no longer `approved`, has no target any more, or whose
-//  target_path differs from the dry run's row (both known; compared as
-//  IntakePath keys, else byte for byte) is left out with why; a root the
-//  lookup does not find is kept (the CLI checks it again).
+//  record is no longer `approved`, has no target any more (a null
+//  target_path: "slot pending" on a singles root, "cannot be placed" on any
+//  other, as the tooltip says), or whose target_path differs from the dry
+//  run's row (both known; compared as IntakePath keys, else byte for byte)
+//  is left out with why; a root the lookup does not find is kept (the CLI
+//  checks it again).
 //
 //  Thread-safety: pure functions (Foundation objects are only read).
 //

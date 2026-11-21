@@ -26,6 +26,7 @@
 #include "../Core/IntakeCollectionSearch.h"
 #include "../Core/IntakeCollections.h"
 #include "../Core/IntakeErrorMap.h"
+#include "../Core/IntakeExecuteFollowUp.h"
 #include "../Core/IntakeExecutePlan.h"
 #include "../Core/IntakeExecuteTracker.h"
 #include "../Core/IntakeGcPlan.h"
@@ -39,6 +40,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <deque>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -292,6 +294,73 @@ static NSString *JLIntakeNSString(const std::string &s) {
 
 @end
 
+// The Execute sheet's follow-ups (IntakeExecuteFollowUp), its accessory
+// view: "Swap playlist rows to the library copies when done" and, indented
+// under it, "Then delete the local copies", enabled only while the first is
+// ticked and shown unticked while disabled (followUpCheckboxes); ticking
+// the first again brings back the second's tick.
+@interface JLIntakeExecuteFollowUps : NSObject
+@property(nonatomic, strong, readonly) NSView *view;
+- (instancetype)initWithSwap:(BOOL)swap deleteLocal:(BOOL)deleteLocal;
+- (void)swapChanged:(id)sender;
+- (void)deleteChanged:(id)sender;
+// The choice the run records (chosenFollowUps).
+- (intake::RunFollowUps)choice;
+@end
+
+@implementation JLIntakeExecuteFollowUps {
+    NSButton *_swapBox;
+    NSButton *_deleteBox;
+    BOOL _deleteWanted;  // the delete tick, kept while swap is unticked
+}
+
+- (instancetype)initWithSwap:(BOOL)swap deleteLocal:(BOOL)deleteLocal {
+    if ((self = [super init])) {
+        _deleteWanted = deleteLocal;
+        _swapBox = [NSButton checkboxWithTitle:@"Swap playlist rows to the library copies when done"
+                                        target:self
+                                        action:@selector(swapChanged:)];
+        _deleteBox = [NSButton checkboxWithTitle:@"Then delete the local copies"
+                                          target:self
+                                          action:@selector(deleteChanged:)];
+        [_swapBox sizeToFit];
+        [_deleteBox sizeToFit];
+        const CGFloat indent = 18, gap = 6;
+        const CGFloat swapHeight = NSHeight(_swapBox.frame), deleteHeight = NSHeight(_deleteBox.frame);
+        const CGFloat width = MAX(NSWidth(_swapBox.frame), indent + NSWidth(_deleteBox.frame));
+        _view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, swapHeight + gap + deleteHeight)];
+        [_swapBox setFrameOrigin:NSMakePoint(0, deleteHeight + gap)];
+        [_deleteBox setFrameOrigin:NSMakePoint(indent, 0)];
+        [_view addSubview:_swapBox];
+        [_view addSubview:_deleteBox];
+        _swapBox.state = swap ? NSControlStateValueOn : NSControlStateValueOff;
+        [self show];
+    }
+    return self;
+}
+
+- (void)show {
+    const intake::FollowUpCheckboxes boxes =
+        intake::followUpCheckboxes(_swapBox.state == NSControlStateValueOn, _deleteWanted);
+    _deleteBox.enabled = boxes.deleteEnabled;
+    _deleteBox.state = boxes.deleteOn ? NSControlStateValueOn : NSControlStateValueOff;
+}
+
+- (void)swapChanged:(id)sender {
+    [self show];
+}
+
+- (void)deleteChanged:(id)sender {
+    _deleteWanted = _deleteBox.state == NSControlStateValueOn;
+}
+
+- (intake::RunFollowUps)choice {
+    return intake::chosenFollowUps(_swapBox.state == NSControlStateValueOn,
+                                   _deleteBox.enabled && _deleteBox.state == NSControlStateValueOn);
+}
+
+@end
+
 namespace intake {
 
 namespace {
@@ -314,6 +383,15 @@ std::string idList(const std::vector<std::string> &ids) {
 struct PickerFlow;
 struct ExecuteFlow;
 struct DeleteFlow;
+
+// One ended run's follow-ups (IntakeExecuteFollowUp; main thread).
+struct FollowUpJob {
+    std::string stem;
+    std::vector<std::string> ids;      // the run's roots
+    RunFollowUps choice;               // from its run file
+    bool earlierSession = false;       // adopted, or finished by the leftover scan
+    std::vector<std::string> swapped;  // the roots the swap step took
+};
 
 // Leaked on purpose (like the provider's state): a CLI completion may come
 // back after on_quit, and static destructors run at exit.
@@ -355,6 +433,13 @@ struct ActionsState {
     // starts before it is done.
     bool runScanStarted = false;
     bool runScanDone = false;
+    // The Execute follow-ups of ended runs, queued once their reload is
+    // back: one chain at a time (swap, then the delete census and gc). The
+    // chain's gc holds the lane with followUpGcToken (0: none); its end
+    // ends the chain and starts the next.
+    std::deque<std::shared_ptr<FollowUpJob>> followUps;
+    bool followUpActive = false;
+    uint64_t followUpGcToken = 0;
 
     // Set once above, then read on the queue.
     dispatch_queue_t queue = nil;
@@ -433,6 +518,10 @@ enum class LaneRun {
 
 void startOnQueue(uint64_t token, std::shared_ptr<const CliConfig> config, std::shared_ptr<const CliRequest> request,
                   std::shared_ptr<const std::vector<MutationRoot>> roots, LaneRun run = LaneRun::Single);
+
+// The Execute follow-up's gc on `token` has ended (or never started): its
+// chain ends (see the Execute follow-ups below).
+void followUpGcEnded(uint64_t token);
 
 // The assign of an AssignThenPropose run finished (its errors and console
 // line are already out): starts the propose on `token`, or releases the
@@ -539,6 +628,7 @@ void onFinished(uint64_t token, CliCommand command, const std::vector<MutationRo
         return;
     }
     serviceRefreshAfterCommand();
+    followUpGcEnded(token);
 }
 
 void onRefused(uint64_t token, CliCommand command, const std::string &refusal, LaneRun run = LaneRun::Single) {
@@ -550,6 +640,7 @@ void onRefused(uint64_t token, CliCommand command, const std::string &refusal, L
     logError(std::string(cliCommandName(command)) + ": not started (" + refusal + ")");
     // The assign before it did run: show what it changed.
     if (run == LaneRun::ProposeAfterAssign) serviceRefreshAfterCommand();
+    followUpGcEnded(token);
 }
 
 // --- start (queue) ---
@@ -591,19 +682,29 @@ std::string notRun(IntakeAction action, const std::string &why) {
     return "not run: " + why;
 }
 
-std::string runMutation(const ActionEntry &entry, const std::string &reason) {
+// `heldToken` (the Execute follow-up's gc): a lane token the caller already
+// holds, used instead of taking one; it is released on every path that
+// starts nothing.
+std::string runMutation(const ActionEntry &entry, const std::string &reason, uint64_t heldToken = 0) {
     ActionsState &st = actionsState();
-    if (st.stopped) return "not run: intake is not running";
+    auto refuse = [&](const std::string &why) {
+        if (heldToken != 0) st.lane.finish(heldToken);
+        return notRun(entry.action, why);
+    };
+    if (st.stopped) {
+        if (heldToken != 0) st.lane.finish(heldToken);
+        return "not run: intake is not running";
+    }
     CliRequest request;
     std::string why;
-    if (!requestForEntry(entry, reason, request, &why)) return notRun(entry.action, why);
+    if (!requestForEntry(entry, reason, request, &why)) return refuse(why);
     CliConfig config;
-    if (!serviceMutationConfig(config)) return notRun(entry.action, "intake is not running or has no CLI path");
+    if (!serviceMutationConfig(config)) return refuse("intake is not running or has no CLI path");
     if (!st.runScanDone) {
-        return notRun(entry.action, "intake is still checking for an execute run left by an earlier session");
+        return refuse("intake is still checking for an execute run left by an earlier session");
     }
     const std::string name = cliCommandName(request.command);
-    const uint64_t token = st.lane.acquire(laneHolderFor(request));
+    const uint64_t token = heldToken != 0 ? heldToken : st.lane.acquire(laneHolderFor(request));
     if (token == 0) {
         return notRun(entry.action, st.lane.executeRunning() ? "another intake command is still running (execute)"
                                                              : "another intake command is still running");
@@ -992,6 +1093,7 @@ struct ExecuteFlow {
     ExecutePlan plan;
     // While the sheet is up (released on a later main-queue turn).
     NSAlert *alert = nil;
+    JLIntakeExecuteFollowUps *followUps = nil;  // its checkboxes
 };
 
 // Ends `flow` if it is still the current one; its alert is released on a
@@ -1002,6 +1104,7 @@ void endExecuteFlow(std::shared_ptr<ExecuteFlow> flow) {
     if (st.executeFlow == flow) st.executeFlow.reset();
     dispatch_async(dispatch_get_main_queue(), ^{
         flow->alert = nil;
+        flow->followUps = nil;
     });
 }
 
@@ -1047,8 +1150,11 @@ std::vector<MutationRoot> runRoots(const std::vector<std::string> &ids, const st
     return out;
 }
 
-// A finished run's result: per-root errors, one console line, a refresh.
-void applyRunResult(CliCommand command, const std::vector<MutationRoot> &roots, const EnvelopeResult &envelope) {
+// A finished run's result: per-root errors, one console line, a refresh;
+// `reloaded` (optional: the Execute follow-ups) runs on the main thread
+// when that refresh has ended.
+void applyRunResult(CliCommand command, const std::vector<MutationRoot> &roots, const EnvelopeResult &envelope,
+                    std::function<void(const LoaderStatus &status)> reloaded = nullptr) {
     const RunSummary summary = summarizeRun(command, roots, envelope);
     RootErrorStore &errors = actionsErrorStore();
     for (const std::string &id : summary.outcome.succeeded) errors.clear(id);
@@ -1066,7 +1172,23 @@ void applyRunResult(CliCommand command, const std::vector<MutationRoot> &roots, 
     } else {
         logInfo(summary.outcome.consoleLine);
     }
-    serviceRefreshAfterCommand();
+    serviceRefreshAfterCommand(std::move(reloaded));
+}
+
+void queueFollowUp(std::shared_ptr<FollowUpJob> job, const LoaderStatus &status);
+
+// What applyRunResult waits for when an execute run has follow-ups (null:
+// none): their job, queued once the reload after the run is back.
+std::function<void(const LoaderStatus &)> followUpsAfterReload(const std::string &stem, CliCommand command,
+                                                               const std::vector<std::string> &ids,
+                                                               const RunFollowUps &choice, bool earlierSession) {
+    if (command != CliCommand::Execute || !hasFollowUps(choice)) return nullptr;
+    auto job = std::make_shared<FollowUpJob>();
+    job->stem = stem;
+    job->ids = ids;
+    job->choice = choice;
+    job->earlierSession = earlierSession;
+    return [job](const LoaderStatus &status) { queueFollowUp(job, status); };
 }
 
 // Queue: deletes a finished run's files.
@@ -1080,16 +1202,18 @@ void deleteRunFilesLater(const std::string &stem) {
     });
 }
 
-// A tracked run has ended (own or adopted) with `envelope`: apply it,
-// forget the run, release the lane when it was the last, delete its files.
-void finishRun(const std::string &stem, const EnvelopeResult &envelope) {
+// A tracked run has ended (own or adopted) with `envelope`: apply it (its
+// follow-ups wait for the reload after it), forget the run, release the
+// lane when it was the last, delete its files.
+void finishRun(const std::string &stem, const EnvelopeResult &envelope, bool adopted) {
     ActionsState &st = actionsState();
     if (st.stopped) return;  // the files stay: the next session finishes it
     const TrackedRun *found = st.tracker.find(stem);
     if (found == nullptr) return;
     const TrackedRun run = *found;
     st.exitWatches.erase(stem);
-    applyRunResult(run.command, runRoots(run.ids, run.rootPaths), envelope);
+    applyRunResult(run.command, runRoots(run.ids, run.rootPaths), envelope,
+                   followUpsAfterReload(stem, run.command, run.ids, run.followUps, adopted));
     st.tracker.remove(stem);
     releaseRunLaneIfIdle();
     deleteRunFilesLater(stem);
@@ -1121,7 +1245,7 @@ void onOwnRunEnded(const std::string &stem, const CliResult &result) {
     if (st.stopped) return;
     logCliResult(result);
     st.tracker.exited(stem);
-    finishRun(stem, result.envelope);
+    finishRun(stem, result.envelope, false);
 }
 
 void onRunRefused(const std::string &stem, const std::string &refusal) {
@@ -1141,7 +1265,7 @@ void onRunRefused(const std::string &stem, const std::string &refusal) {
 // written: a run the next session could not find must not start.
 void startRunOnQueue(const std::string &stem, std::shared_ptr<const CliConfig> config,
                      std::shared_ptr<const CliRequest> request,
-                     std::shared_ptr<const std::vector<std::string>> rootPaths) {
+                     std::shared_ptr<const std::vector<std::string>> rootPaths, RunFollowUps followUps) {
     ActionsState &st = actionsState();
     const std::string dir = st.outputDirectory;
     CliRunOptions options;
@@ -1156,6 +1280,7 @@ void startRunOnQueue(const std::string &stem, std::shared_ptr<const CliConfig> c
     provisional.ids = ids;
     provisional.rootPaths = *rootPaths;
     provisional.output = runOutputName(stem);
+    provisional.followUps = followUps;  // the Execute sheet's choice, from the start
     std::string provisionalError;
     if (!writeRunFile(dir, stem, provisional, provisionalError)) {
         const std::string refusal = "the run file could not be written: " + provisionalError;
@@ -1201,8 +1326,10 @@ void startRunOnQueue(const std::string &stem, std::shared_ptr<const CliConfig> c
 }
 
 // Starts `command` (Execute or Resume) on `roots` as a detached run: the
-// lane and the configuration first.
-std::string startDetachedRun(CliCommand command, const std::vector<ActionRoot> &roots) {
+// lane and the configuration first. `followUps`: the Execute sheet's choice
+// (a resume has none).
+std::string startDetachedRun(CliCommand command, const std::vector<ActionRoot> &roots,
+                             RunFollowUps followUps = RunFollowUps()) {
     ActionsState &st = actionsState();
     const IntakeAction action = command == CliCommand::Resume ? IntakeAction::Resume : IntakeAction::Execute;
     auto refuse = [&](const std::string &why) {
@@ -1226,14 +1353,15 @@ std::string startDetachedRun(CliCommand command, const std::vector<ActionRoot> &
     if (!serviceMutationConfig(*config)) return refuse("intake is not running or has no CLI path");
     if (!holdRunLane()) return refuse("another intake command is still running");
     const std::string stem = uniqueRunStem(st.outputDirectory, std::chrono::system_clock::now());
-    st.tracker.begin(stem, command, request->ids, *rootPaths);
+    st.tracker.begin(stem, command, request->ids, *rootPaths, followUps);
     logInfo(std::string(cliCommandName(command)) + ": starting for " + rootCountText(request->ids.size()) + ": " +
-            idList(request->ids));
+            idList(request->ids) +
+            (hasFollowUps(followUps) ? (followUps.deleteLocal ? " (then swap and delete)" : " (then swap)") : ""));
     std::shared_ptr<const CliConfig> sharedConfig = config;
     std::shared_ptr<const CliRequest> sharedRequest = request;
     std::shared_ptr<const std::vector<std::string>> sharedPaths = rootPaths;
     dispatch_async(st.queue, ^{
-        startRunOnQueue(stem, sharedConfig, sharedRequest, sharedPaths);
+        startRunOnQueue(stem, sharedConfig, sharedRequest, sharedPaths, followUps);
     });
     return "starting for " + rootCountText(request->ids.size());
 }
@@ -1241,8 +1369,9 @@ std::string startDetachedRun(CliCommand command, const std::vector<ActionRoot> &
 // The sheet's Execute. The lane was free while the sheet was up, so roots
 // that changed meanwhile (no longer approved, another target) are left out
 // first, one Error line each (IntakeExecutePlan recheckPlaceable); then the
-// lane and the configuration again (startDetachedRun).
-void confirmExecute(const std::shared_ptr<ExecuteFlow> &flow) {
+// lane and the configuration again (startDetachedRun), with the sheet's
+// follow-ups.
+void confirmExecute(const std::shared_ptr<ExecuteFlow> &flow, const RunFollowUps &followUps) {
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
     const ExecuteRecheck recheck =
         recheckPlaceable(flow->plan, [&view](const std::string &id) -> const IntakeRecord * {
@@ -1256,7 +1385,7 @@ void confirmExecute(const std::shared_ptr<ExecuteFlow> &flow) {
         logDebug("execute: " + what);
         return;
     }
-    startDetachedRun(CliCommand::Execute, recheck.keep);  // logs its start or refusal
+    startDetachedRun(CliCommand::Execute, recheck.keep, followUps);  // logs its start or refusal
 }
 
 void showExecuteSheet(const std::shared_ptr<ExecuteFlow> &flow) {
@@ -1266,17 +1395,26 @@ void showExecuteSheet(const std::shared_ptr<ExecuteFlow> &flow) {
     alert.informativeText = NSStr(executeSheetText(flow->plan));
     [alert addButtonWithTitle:@"Execute"];
     [alert addButtonWithTitle:@"Cancel"];  // Escape (NSAlert's Cancel rule)
+    // The follow-ups, as last confirmed (hidden configInts).
+    JLIntakeExecuteFollowUps *followUps = [[JLIntakeExecuteFollowUps alloc]
+        initWithSwap:followUpSetting(config::getInt(config::kExecuteSwapAfter, kExecuteSwapAfterDefault))
+         deleteLocal:followUpSetting(config::getInt(config::kExecuteDeleteAfter, kExecuteDeleteAfterDefault))];
+    alert.accessoryView = followUps.view;
     flow->alert = alert;
+    flow->followUps = followUps;
 
     std::shared_ptr<ExecuteFlow> current = flow;
     void (^finish)(NSModalResponse) = ^(NSModalResponse response) {
+        const RunFollowUps choice = [current->followUps choice];
         endExecuteFlow(current);
         if (actionsState().stopped) return;  // quit started: drop it
         if (response != NSAlertFirstButtonReturn) {
             logDebug("execute: cancelled in the sheet");
         } else {
+            config::setInt(config::kExecuteSwapAfter, choice.swap ? 1 : 0);
+            config::setInt(config::kExecuteDeleteAfter, choice.deleteLocal ? 1 : 0);
             // The lane and the configuration again (startDetachedRun).
-            confirmExecute(current);
+            confirmExecute(current, choice);
         }
     };
     // The window chosen at the click; if it can no longer take a sheet, the
@@ -1545,41 +1683,48 @@ void deleteAfterSwapCheck(std::shared_ptr<DeleteFlow> flow) {
     deleteConfirmed(flow);
 }
 
-// "Swap, then delete", one step: swaps the income rows of the next playlist
-// in `pending` (found again; gone or without such rows: skipped), then the
-// next; at the end, deleteAfterSwapCheck.
-void deleteSwapNext(std::shared_ptr<DeleteFlow> flow, std::shared_ptr<std::vector<PlaylistRef>> pending,
-                    size_t next) {
+// Swaps the playlist rows of `ids` that still point at their income paths,
+// one playlist of `pending` after the other (each found again; gone or
+// without such rows: skipped), then calls `done`. Used by "Swap, then
+// delete" and by the Execute follow-ups.
+struct SwapChain {
+    std::unordered_set<std::string> ids;
+    std::vector<PlaylistRef> pending;
+    std::function<void()> done;
+    // A swap did not start (another swap running, ...): true goes on with
+    // the next playlist, false ends the chain there (`done` never runs).
+    std::function<bool(const std::string &why)> notStarted;
+};
+
+// One step: the next playlist of `chain` from `next` on.
+void swapChainNext(std::shared_ptr<SwapChain> chain, size_t next) {
     if (actionsState().stopped) return;
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
-    const std::unordered_set<std::string> ids = rootIdSet(flow->entry.roots);
-    while (view && next < pending->size()) {
-        const t_size playlist = findPlaylist((*pending)[next++]);
+    while (view && next < chain->pending.size()) {
+        const t_size playlist = findPlaylist(chain->pending[next++]);
         if (playlist == SIZE_MAX) continue;
         NativePathMenuBudget budget;
-        std::vector<SwapRow> rows = swapIncomeRows(playlist, ids, *view, &budget);
+        std::vector<SwapRow> rows = swapIncomeRows(playlist, chain->ids, *view, &budget);
         if (rows.empty()) continue;
         std::string why;
         const bool started = swapStart(
             playlist, std::move(rows), view, serviceActionInfo().libraryPrefix,
-            [flow, pending, next](const SwapResult &) {
+            [chain, next](const SwapResult &) {
                 if (actionsState().stopped) return;
-                deleteSwapNext(flow, pending, next);
+                swapChainNext(chain, next);
             },
             why);
-        if (!started) {
-            notRun(IntakeAction::DeleteLocal, "the swap did not start: " + why);
-            endDeleteFlow(flow);
-        }
-        return;
+        if (started) return;
+        if (!chain->notStarted(why)) return;
     }
-    deleteAfterSwapCheck(flow);
+    chain->done();
 }
 
 // "Swap, then delete": the rows of these roots that still point at income
 // paths are swapped, in the playlist the click came from first, then in
 // every other playlist that holds such rows (a locked one keeps them); gc
-// runs only when none is left anywhere afterwards and none was unchecked.
+// runs only when none is left anywhere afterwards and none was unchecked
+// (deleteAfterSwapCheck). A swap that does not start ends the flow.
 void deleteAfterSwap(std::shared_ptr<DeleteFlow> flow) {
     if (!flow->income.offerSwap()) {
         notRun(IntakeAction::DeleteLocal, "\"Swap, then delete\" was not offered; nothing deleted");
@@ -1587,13 +1732,20 @@ void deleteAfterSwap(std::shared_ptr<DeleteFlow> flow) {
         return;
     }
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
-    auto pending = std::make_shared<std::vector<PlaylistRef>>();
+    auto chain = std::make_shared<SwapChain>();
+    chain->ids = rootIdSet(flow->entry.roots);
     if (view) {
         IncomeRowCensus census;
-        countIncomeRows(*view, rootIdSet(flow->entry.roots), flow->playlist, nullptr, &census);
-        *pending = std::move(census.playlists);
+        countIncomeRows(*view, chain->ids, flow->playlist, nullptr, &census);
+        chain->pending = std::move(census.playlists);
     }
-    deleteSwapNext(flow, pending, 0);
+    chain->done = [flow] { deleteAfterSwapCheck(flow); };
+    chain->notStarted = [flow](const std::string &why) {
+        notRun(IntakeAction::DeleteLocal, "the swap did not start: " + why);
+        endDeleteFlow(flow);
+        return false;
+    };
+    swapChainNext(chain, 0);
 }
 
 void showDeleteSheet(const std::shared_ptr<DeleteFlow> &flow) {
@@ -1670,6 +1822,149 @@ void onDeleteFilesRead(uint64_t serial, std::vector<PlacedFilesReply> &replies) 
     showDeleteSheet(flow);
 }
 
+// --- Execute follow-ups (main) ---
+//
+// The Execute sheet's checkboxes, kept in the run file (RunFollowUps) and
+// run when the run ends (own, adopted, or finished by the leftover scan),
+// after its result and the reload that follows (applyRunResult): swap the
+// rows of the roots now placed in every playlist (SwapChain, no lane), then,
+// when chosen, take the lane, count the rows left (the Delete census) and
+// run gc on the roots that pass the gc guard and whose census is clear
+// (IntakeExecuteFollowUp); the others are kept with an Info line and a
+// tooltip. The ticked checkbox is the confirm_gc confirmation for exactly
+// those roots: no sheet. One chain at a time; a quit drops the rest.
+
+void startNextFollowUp();
+
+// The current chain has ended (each chain gets here once).
+void endFollowUp() {
+    actionsState().followUpActive = false;
+    startNextFollowUp();
+}
+
+void followUpGcEnded(uint64_t token) {
+    ActionsState &st = actionsState();
+    if (token == 0 || token != st.followUpGcToken) return;
+    st.followUpGcToken = 0;
+    endFollowUp();
+}
+
+// The run's reload is back: its follow-ups join the queue, unless that load
+// failed (the statuses it would go by are not the run's).
+void queueFollowUp(std::shared_ptr<FollowUpJob> job, const LoaderStatus &status) {
+    ActionsState &st = actionsState();
+    if (st.stopped) return;
+    if (status.state != LoaderState::Ready) {
+        logInfo("execute: no swap or delete after run " + job->stem + ": the reload after it did not succeed (" +
+                loaderStateName(status.state) + (status.error.empty() ? std::string() : ": " + status.error) + ")");
+        return;
+    }
+    st.followUps.push_back(std::move(job));
+    startNextFollowUp();
+}
+
+// The delete step, after the swap: the lane, the census, gc on the roots
+// that pass; every path ends the chain (a started gc ends it when it ends).
+void followUpDelete(std::shared_ptr<FollowUpJob> job) {
+    ActionsState &st = actionsState();
+    if (st.stopped) return;
+    if (!job->choice.deleteLocal) {
+        endFollowUp();
+        return;
+    }
+    const std::shared_ptr<const IntakeView> view = providerCurrentView();
+    std::string refusal = whyNotStartable();
+    if (refusal.empty() && !view) refusal = "no intake data to check the playlists";
+    if (refusal.empty() && view->isInert()) refusal = "intake is inert: " + view->inertReason();
+    uint64_t token = 0;
+    if (refusal.empty()) {
+        token = st.lane.acquire(LaneHolder::Mutating);
+        if (token == 0) refusal = "another intake command is still running";
+    }
+    // After the swap, so swapped rows count as library rows.
+    std::unordered_map<std::string, size_t> left;
+    size_t unchecked = 0;
+    if (refusal.empty()) {
+        IncomeRowCensus census;
+        const std::unordered_set<std::string> ids(job->swapped.begin(), job->swapped.end());
+        countIncomeRows(*view, ids, playlistRefFor(activePlaylist()), nullptr, &census);
+        for (size_t i = 0; i < census.rows.size(); i++) left[census.rows[i].rootId] += census.entries[i];
+        unchecked = census.unchecked;
+    }
+    const FollowUpGcPlan plan = planFollowUpGc(
+        job->swapped,
+        [&view](const std::string &id) -> const IntakeRecord * {
+            return view ? view->snapshot().recordForId(id) : nullptr;
+        },
+        left, unchecked, refusal);
+    RootErrorStore &errors = actionsErrorStore();
+    for (const FollowUpSkip &skip : plan.skipped) {
+        logInfo(followUpSkipLine(job->stem, skip));
+        errors.set(skip.id, followUpSkipTooltip(skip), skip.baseline);
+    }
+    if (!plan.gc.empty()) {
+        ActionEntry entry;
+        entry.action = IntakeAction::DeleteLocal;
+        entry.title = "Delete local copy";
+        entry.enabled = true;
+        entry.roots = plan.gc;
+        logDebug("delete-local: \"Then delete the local copies\" in the Execute sheet confirms gc for " +
+                 rootCountText(plan.gc.size()) + " of run " + job->stem);
+        st.followUpGcToken = token;
+        runMutation(entry, std::string(), token);  // logs its start, or why not (and releases the token)
+        if (st.lane.busy()) return;                // gc runs: followUpGcEnded ends the chain
+        st.followUpGcToken = 0;
+    } else if (token != 0) {
+        st.lane.finish(token);
+    }
+    if (!plan.skipped.empty()) serviceRefreshAfterCommand();  // shows the tooltips
+    endFollowUp();
+}
+
+void startNextFollowUp() {
+    ActionsState &st = actionsState();
+    if (st.stopped || st.followUpActive || st.followUps.empty()) return;
+    std::shared_ptr<FollowUpJob> job = st.followUps.front();
+    st.followUps.pop_front();
+    st.followUpActive = true;
+    if (job->earlierSession) logInfo(earlierRunFollowUpLine(job->stem, job->choice));
+    const std::shared_ptr<const IntakeView> view = providerCurrentView();
+    if (!view || view->isInert()) {
+        logInfo("execute: no swap or delete after run " + job->stem + ": " +
+                (view ? "intake is inert: " + view->inertReason() : std::string("no intake data")));
+        endFollowUp();
+        return;
+    }
+    const FollowUpSwapPlan plan = planFollowUpSwap(
+        job->ids, [&view](const std::string &id) { return view->snapshot().recordForId(id); });
+    for (const auto &skipped : plan.notSwapped) {
+        logDebug("execute: run " + job->stem + ": no swap for " + skipped.first + ": " + skipped.second);
+    }
+    if (plan.swap.empty()) {
+        logInfo("execute: no swap or delete after run " + job->stem +
+                ": none of its roots is placed with placed.verified");
+        endFollowUp();
+        return;
+    }
+    job->swapped = plan.swap;
+    auto chain = std::make_shared<SwapChain>();
+    chain->ids.insert(plan.swap.begin(), plan.swap.end());
+    IncomeRowCensus census;
+    countIncomeRows(*view, chain->ids, playlistRefFor(activePlaylist()), nullptr, &census);
+    chain->pending = std::move(census.playlists);
+    logInfo("execute: after run " + job->stem + ": swap for " + rootCountText(plan.swap.size()) + " (" +
+            std::to_string(census.total) + " playlist row(s) in " + std::to_string(chain->pending.size()) +
+            " playlist(s))" + (job->choice.deleteLocal ? ", then delete" : ""));
+    const std::string stem = job->stem;
+    chain->done = [job] { followUpDelete(job); };
+    chain->notStarted = [stem](const std::string &why) {
+        // The delete census finds the rows it left.
+        logInfo("execute: after run " + stem + ": a playlist was not swapped: " + why);
+        return true;
+    };
+    swapChainNext(chain, 0);
+}
+
 // --- leftover runs (B8) ---
 
 // Queue -> main: an adopted run's process has ended.
@@ -1681,7 +1976,7 @@ void onAdoptedRunEnded(const std::string &stem, const EnvelopeResult &envelope) 
     logInfo(std::string(cliCommandName(run->command)) + ": the run adopted from an earlier session (pid " +
             std::to_string(run->pid) + ") has ended");
     st.tracker.exited(stem);
-    finishRun(stem, envelope);
+    finishRun(stem, envelope, true);
 }
 
 void watchAdoptedRun(const TrackedRun &run) {
@@ -1736,7 +2031,8 @@ void onRunScan(const std::shared_ptr<RunScanResult> &result) {
         logInfo(name + ": a run from an earlier session has ended (" + pid + ", " +
                 rootCountText(run.file.ids.size()) + ": " + idList(run.file.ids) + ", run file " +
                 runFileText(run.stem) + "); applying its result");
-        applyRunResult(run.file.command, runRoots(run.file.ids, run.file.rootPaths), result->finished[i]);
+        applyRunResult(run.file.command, runRoots(run.file.ids, run.file.rootPaths), result->finished[i],
+                       followUpsAfterReload(run.stem, run.file.command, run.file.ids, run.file.followUps, true));
         deleteRunFilesLater(run.stem);
     }
     st.runScanDone = true;
@@ -2069,6 +2365,8 @@ void actionsShutdown() {
     // A swap's result is dropped (the playlist stays as it is).
     swapShutdown();
     st.deleteFlow.reset();
+    // Follow-ups not started yet are dropped (nothing is deleted).
+    st.followUps.clear();
     // Detached runs keep running and keep their files (the next session
     // adopts or finishes them); only the watching stops.
     for (auto &watch : st.exitWatches) watch.second->cancel();

@@ -107,13 +107,19 @@
 //     "artist – album → target (n files, k shadows skipped)" rows, then the
 //     excluded roots with their error, as a sheet on that window (or the
 //     main, key or foobar2000 main window, else app-modal from a run-loop callout, never
-//     inside a main-queue block), buttons Execute and Cancel. Execute leaves
+//     inside a main-queue block), buttons Execute and Cancel, and two
+//     checkboxes (JLIntakeExecuteFollowUps, IntakeExecuteFollowUp): "Swap
+//     playlist rows to the library copies when done" and "Then delete the
+//     local copies" (enabled only while the first is ticked), opened as
+//     last confirmed (hidden configInts execute_swap_after, default 1, and
+//     execute_delete_after, default 0; written on Execute). Execute leaves
 //     out the roots that changed while the sheet was open (no longer
-//     approved, or another target than the sheet showed: one Error line
-//     each, IntakeExecutePlan recheckPlaceable), checks the lane and the
-//     configuration again and starts the run on the roots that remain. One
-//     execute flow at a time (dry run running or sheet
-//     open): another request logs one Info line and does nothing.
+//     approved, another target than the sheet showed, or no target now:
+//     one Error line each, IntakeExecutePlan recheckPlaceable), checks the
+//     lane and the configuration again and starts the run on the roots that
+//     remain, with the follow-ups in its run file. One execute flow at a
+//     time (dry run running or sheet open): another request logs one Info
+//     line and does nothing.
 //   - Resume placement (B8): no confirmation; starts `execute <ids>
 //     --resume --json` as a detached run at once.
 //   - Swap to library paths (B9, IntakeSwap): the selected rows that map to
@@ -174,6 +180,23 @@
 //  roots", "resume failed for 1 root: ..."), serviceRefreshAfterCommand(),
 //  the lane is released and both files are deleted. After on_quit results
 //  are dropped and the files stay: the next session finishes the run.
+//
+//  Execute follow-ups (IntakeExecuteFollowUp): an execute run whose run
+//  file records swap on (own, adopted, or finished by the leftover scan;
+//  the last two log "run <stem>: swap/delete as chosen at its start")
+//  waits for the refresh after its result (serviceRefreshAfterCommand's
+//  `finished`; one that did not succeed stops it, one Info line). Then the
+//  rows of its roots now placed with placed.verified are swapped in every
+//  playlist (the chain "Swap, then delete" uses, IntakeSwap, no lane);
+//  with delete on, the lane is taken, the Delete census counts the entries
+//  still on their income paths, and gc runs (runMutation on that token)
+//  for the roots that pass the gc guard and whose census is clear: the
+//  checkbox is their confirm_gc confirmation, no sheet. The others get one
+//  Info line and a tooltip each (baseline: their status then) and a
+//  refresh shows them. The lane is released on every path (nothing to
+//  delete, a refusal, gc's exit). One chain at a time, queued in the order
+//  the refreshes come back; a chain ends when its gc ends. A quit drops
+//  the chains not done (nothing is deleted).
 //
 //  Leftover runs (actionsStartRunScan, from on_init, once): the cache
 //  folder is scanned on the mutation queue (IntakeExecuteTracker

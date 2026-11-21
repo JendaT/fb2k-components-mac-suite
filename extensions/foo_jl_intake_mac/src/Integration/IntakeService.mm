@@ -215,22 +215,28 @@ public:
             if (finished) finished(status());
             return;
         }
-        LoadFinishedHandler served;
-        if (finished) {
-            // Loader queue: hand the status to the main thread.
-            served = [finished](const LoaderStatus &st) {
-                std::function<void(const LoaderStatus &)> done = finished;
-                LoaderStatus copy = st;
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    done(copy);
-                });
-            };
-        }
-        loader_->reload(recheckVersion, std::move(served));
+        loader_->reload(recheckVersion, onMainThread(std::move(finished)));
     }
 
-    void refreshAfterCommand() {
-        if (loader_) loader_->reload(false);
+    void refreshAfterCommand(std::function<void(const LoaderStatus &)> finished) {
+        if (!loader_) {
+            if (finished) finished(status());
+            return;
+        }
+        loader_->reload(false, onMainThread(std::move(finished)));
+    }
+
+    // A load-finished handler (loader queue) that hands the status to
+    // `finished` on the main thread; empty for an empty one.
+    static LoadFinishedHandler onMainThread(std::function<void(const LoaderStatus &)> finished) {
+        if (!finished) return LoadFinishedHandler();
+        return [finished](const LoaderStatus &st) {
+            std::function<void(const LoaderStatus &)> done = finished;
+            LoaderStatus copy = st;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                done(copy);
+            });
+        };
     }
 
     std::string statusLine() const { return loader_ ? loader_->statusLine() : std::string("Stopped"); }
@@ -428,8 +434,12 @@ void serviceReload(bool recheckVersion, std::function<void(const LoaderStatus &s
     }
 }
 
-void serviceRefreshAfterCommand() {
-    if (g_service != nullptr) g_service->refreshAfterCommand();
+void serviceRefreshAfterCommand(std::function<void(const LoaderStatus &status)> finished) {
+    if (g_service != nullptr) {
+        g_service->refreshAfterCommand(std::move(finished));
+    } else if (finished) {
+        finished(serviceStatus());
+    }
 }
 
 std::string serviceStatusLine() {

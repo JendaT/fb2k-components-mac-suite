@@ -96,8 +96,13 @@ void serviceReload(bool recheckVersion, std::function<void(const LoaderStatus &s
 // component started exits, PLAN.md 3.5, doc 04 "Refresh and invalidation"):
 // one coalesced full `status --json` load with a full member listing (the
 // command may have moved or written sidecars anywhere), then the
-// fingerprint diff. A no-op before on_init and after on_quit.
-void serviceRefreshAfterCommand();
+// fingerprint diff. A no-op before on_init and after on_quit. `finished`
+// (optional; the Execute follow-ups wait for it) as for serviceReload: once
+// on the main thread with the loader's status when the load serving this
+// request has ended, at once with state Stopped before on_init and after
+// on_quit, never after on_quit for a request still waiting then. Unlike
+// serviceReload it keeps the slow mac-volume marks.
+void serviceRefreshAfterCommand(std::function<void(const LoaderStatus &status)> finished = nullptr);
 
 // Main thread. The loader's status line; "Stopped" before on_init and
 // after on_quit.
