@@ -13,7 +13,10 @@
 //  A preset's text is the reason, sent through the usual `reject --reason`
 //  (no contract change). "Other…" uses the free text, trimmed of leading
 //  and trailing whitespace; empty means no reason, as before the presets.
-//  Integration remembers the last choice for the session only (no setting).
+//  Integration remembers the last confirmed choice for the session only
+//  (no setting): the first sheet of a session starts on the first preset,
+//  "Already in library", and each later one on that choice
+//  (rejectInitialChoice).
 //
 //  Thread-safety: pure functions.
 //
@@ -37,5 +40,10 @@ bool rejectChoiceIsOther(size_t choice);
 
 // The reason `choice` gives: a preset's text, else `freeText` trimmed.
 std::string rejectReasonFor(size_t choice, const std::string &freeText);
+
+// The pop-up's choice when a sheet opens: `lastChoice`, the session's last
+// confirmed one, while it is a valid index (Other… included); else (none
+// yet, SIZE_MAX, or past the end) the first preset, "Already in library".
+size_t rejectInitialChoice(size_t lastChoice);
 
 } // namespace intake

@@ -89,7 +89,8 @@
 //     IntakeRejectReason) above a free-text field. A preset's text is the
 //     reason and the field shows it, disabled; "Other…" enables the field
 //     (empty: no reason). The last choice is kept for the session only
-//     (Other… at first). Return rejects, Escape cancels. Off: at once, no
+//     ("Already in library" at first, IntakeRejectReason
+//     rejectInitialChoice). Return rejects, Escape cancels. Off: at once, no
 //     reason (the item then has no ellipsis). Only when the CLI has
 //     `reject`. No alert when the call could not start anyway.
 //   - Execute placement… (B8): describe, then confirm. The sheet's window
@@ -110,16 +111,16 @@
 //     inside a main-queue block), buttons Execute and Cancel, and two
 //     checkboxes (JLIntakeExecuteFollowUps, IntakeExecuteFollowUp): "Swap
 //     playlist rows to the library copies when done" and "Then delete the
-//     local copies" (enabled only while the first is ticked), opened as
-//     last confirmed (hidden configInts execute_swap_after, default 1, and
-//     execute_delete_after, default 0; written on Execute). Execute leaves
-//     out the roots that changed while the sheet was open (no longer
-//     approved, another target than the sheet showed, or no target now:
-//     one Error line each, IntakeExecutePlan recheckPlaceable), checks the
-//     lane and the configuration again and starts the run on the roots that
-//     remain, with the follow-ups in its run file. One execute flow at a
-//     time (dry run running or sheet open): another request logs one Info
-//     line and does nothing.
+//     local copies" (enabled only while the first is ticked). Swap opens as
+//     last confirmed (hidden configInt execute_swap_after, default 1,
+//     written on Execute); delete opens unticked every time and is never
+//     saved. Execute leaves out the roots that changed while the sheet was
+//     open (no longer approved, another target than the sheet showed, or
+//     no target now: one Error line each, IntakeExecutePlan
+//     recheckPlaceable), checks the lane and the configuration again and
+//     starts the run on the roots that remain, with the follow-ups in its
+//     run file. One execute flow at a time (dry run running or sheet open):
+//     another request logs one Info line and does nothing.
 //   - Resume placement (B8): no confirmation; starts `execute <ids>
 //     --resume --json` as a detached run at once.
 //   - Swap to library paths (B9, IntakeSwap): the selected rows that map to
@@ -196,7 +197,12 @@
 //  refresh shows them. The lane is released on every path (nothing to
 //  delete, a refusal, gc's exit). One chain at a time, queued in the order
 //  the refreshes come back; a chain ends when its gc ends. A quit drops
-//  the chains not done (nothing is deleted).
+//  the chains not done, and the next start cannot do them (the run file
+//  went when the run's result was read): actionsShutdown logs one Info
+//  line per run whose follow-ups had not finished, from its end to its
+//  chain's end (waiting for the refresh, queued, or swapping; nothing was
+//  deleted; IntakeExecuteFollowUp followUpQuitLine). A gc already running
+//  is not stopped and finishes on its own: no line for it.
 //
 //  Leftover runs (actionsStartRunScan, from on_init, once): the cache
 //  folder is scanned on the mutation queue (IntakeExecuteTracker

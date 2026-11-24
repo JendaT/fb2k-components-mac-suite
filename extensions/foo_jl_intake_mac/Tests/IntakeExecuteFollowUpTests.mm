@@ -5,12 +5,13 @@
 //  Unit tests for IntakeExecuteFollowUp (Execute placement…'s follow-ups):
 //  the two checkboxes (delete enabled only while swap is on, unticked while
 //  disabled, its tick back when swap is ticked again), the recorded choice
-//  (delete only with swap), the hidden settings' defaults, which roots are
-//  swapped after the run (placed with placed.verified now, run order, each
-//  once), which are deleted after the swap (the gc guard against the
+//  (delete only with swap), the hidden swap setting's default, which roots
+//  are swapped after the run (placed with placed.verified now, run order,
+//  each once), which are deleted after the swap (the gc guard against the
 //  current records, the census per root, unchecked rows stopping every
 //  root, a refusal skipping every root, the skip reasons and tooltip
-//  baselines), and the log and tooltip texts. Synthetic ids and paths only.
+//  baselines), and the log and tooltip texts (the quit line included).
+//  Synthetic ids and paths only.
 //
 // TEST_DEPS: src/Core/IntakeGcPlan.mm src/Core/IntakeActionTable.mm src/Core/IntakeCapabilities.mm
 // TEST_DEPS: src/Core/IntakeCommandArgs.mm src/Core/IntakeSemver.mm src/Core/IntakeSettingsParse.mm
@@ -106,8 +107,7 @@ static void testCheckboxes() {
     CHECK(!hasFollowUps(RunFollowUps{}) && !hasFollowUps(RunFollowUps{false, true, true}),
           "not recorded (an older build's run file, a resume): nothing, whatever the flags say");
 
-    CHECK(followUpSetting(kExecuteSwapAfterDefault) && !followUpSetting(kExecuteDeleteAfterDefault),
-          "defaults: swap 1, delete 0");
+    CHECK(followUpSetting(kExecuteSwapAfterDefault), "default: swap 1 (delete has no setting)");
     CHECK(followUpSetting(1) && followUpSetting(-1) && followUpSetting(7) && !followUpSetting(0),
           "0 is off, anything else on");
 }
@@ -224,6 +224,14 @@ static void testTexts() {
     CHECK(earlierRunFollowUpLine("execute-a", RunFollowUps{true, true, true}) ==
               "run execute-a: swap/delete as chosen at its start (swap, then delete)",
           "an earlier session's run: swap, then delete");
+    CHECK(followUpQuitLine("execute-20261121-101500-123", RunFollowUps{true, true, false}) ==
+              "execute: swap after run execute-20261121-101500-123 not finished: foobar2000 quit first (use Swap "
+              "to library paths by hand)",
+          "quit before the follow-ups: swap only, no word about deleting");
+    CHECK(followUpQuitLine("execute-20261121-101500-123", RunFollowUps{true, true, true}) ==
+              "execute: swap, then delete after run execute-20261121-101500-123 not finished: foobar2000 quit "
+              "first (nothing was deleted; use Swap to library paths, then Delete local copy\xE2\x80\xA6 by hand)",
+          "quit before the follow-ups: swap, then delete, says nothing was deleted");
 }
 
 int main() {

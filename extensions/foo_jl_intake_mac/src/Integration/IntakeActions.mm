@@ -298,10 +298,11 @@ static NSString *JLIntakeNSString(const std::string &s) {
 // view: "Swap playlist rows to the library copies when done" and, indented
 // under it, "Then delete the local copies", enabled only while the first is
 // ticked and shown unticked while disabled (followUpCheckboxes); ticking
-// the first again brings back the second's tick.
+// the first again brings back the second's tick. The second always starts
+// unticked (never saved).
 @interface JLIntakeExecuteFollowUps : NSObject
 @property(nonatomic, strong, readonly) NSView *view;
-- (instancetype)initWithSwap:(BOOL)swap deleteLocal:(BOOL)deleteLocal;
+- (instancetype)initWithSwap:(BOOL)swap;
 - (void)swapChanged:(id)sender;
 - (void)deleteChanged:(id)sender;
 // The choice the run records (chosenFollowUps).
@@ -314,9 +315,9 @@ static NSString *JLIntakeNSString(const std::string &s) {
     BOOL _deleteWanted;  // the delete tick, kept while swap is unticked
 }
 
-- (instancetype)initWithSwap:(BOOL)swap deleteLocal:(BOOL)deleteLocal {
+- (instancetype)initWithSwap:(BOOL)swap {
     if ((self = [super init])) {
-        _deleteWanted = deleteLocal;
+        _deleteWanted = NO;
         _swapBox = [NSButton checkboxWithTitle:@"Swap playlist rows to the library copies when done"
                                         target:self
                                         action:@selector(swapChanged:)];
@@ -434,12 +435,18 @@ struct ActionsState {
     bool runScanStarted = false;
     bool runScanDone = false;
     // The Execute follow-ups of ended runs, queued once their reload is
-    // back: one chain at a time (swap, then the delete census and gc). The
-    // chain's gc holds the lane with followUpGcToken (0: none); its end
-    // ends the chain and starts the next.
+    // back: one chain at a time (swap, then the delete census and gc), the
+    // running one in followUpActive (null: none). The chain's gc holds the
+    // lane with followUpGcToken (0: none); its end ends the chain and
+    // starts the next.
     std::deque<std::shared_ptr<FollowUpJob>> followUps;
-    bool followUpActive = false;
+    std::shared_ptr<FollowUpJob> followUpActive;
     uint64_t followUpGcToken = 0;
+    // Every follow-up job not finished yet, in the order the runs ended:
+    // from followUpsAfterReload until its chain ends (endFollowUp) or its
+    // reload failed (queueFollowUp). Their run files are already gone, so
+    // actionsShutdown logs one Info line for each.
+    std::vector<std::shared_ptr<FollowUpJob>> followUpsUnfinished;
 
     // Set once above, then read on the queue.
     dispatch_queue_t queue = nil;
@@ -776,8 +783,9 @@ NSWindow *sheetHostWindow() {
     return activeSheetHost();
 }
 
-// The Reject… sheet's last reason choice, for this session only (no
-// setting): Other… until the first confirmed Reject. Main thread.
+// The Reject… sheet's last confirmed reason choice, for this session only
+// (no setting): SIZE_MAX until the first confirmed Reject, so the first
+// sheet opens on "Already in library" (rejectInitialChoice). Main thread.
 size_t g_lastRejectChoice = SIZE_MAX;
 
 // Reject…: the confirmation (doc 04 v1.2, confirm_reject), with the reason
@@ -799,8 +807,7 @@ void confirmReject(const ActionEntry &entry) {
                                                       pullsDown:NO];
     for (const std::string &title : rejectReasonChoices()) [popup addItemWithTitle:NSStr(title)];
     popup.accessibilityLabel = @"Reason";
-    const size_t initial =
-        g_lastRejectChoice < rejectReasonChoices().size() ? g_lastRejectChoice : rejectReasonOtherIndex();
+    const size_t initial = rejectInitialChoice(g_lastRejectChoice);
     [popup selectItemAtIndex:static_cast<NSInteger>(initial)];
     NSTextField *reasonField = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, width, fieldHeight)];
     reasonField.placeholderString = @"Reason (optional)";
@@ -1178,7 +1185,8 @@ void applyRunResult(CliCommand command, const std::vector<MutationRoot> &roots, 
 void queueFollowUp(std::shared_ptr<FollowUpJob> job, const LoaderStatus &status);
 
 // What applyRunResult waits for when an execute run has follow-ups (null:
-// none): their job, queued once the reload after the run is back.
+// none): their job, queued once the reload after the run is back. From
+// here the job counts as unfinished (followUpsUnfinished).
 std::function<void(const LoaderStatus &)> followUpsAfterReload(const std::string &stem, CliCommand command,
                                                                const std::vector<std::string> &ids,
                                                                const RunFollowUps &choice, bool earlierSession) {
@@ -1188,7 +1196,15 @@ std::function<void(const LoaderStatus &)> followUpsAfterReload(const std::string
     job->ids = ids;
     job->choice = choice;
     job->earlierSession = earlierSession;
+    actionsState().followUpsUnfinished.push_back(job);
     return [job](const LoaderStatus &status) { queueFollowUp(job, status); };
+}
+
+// `job` is finished (its chain ended, or its reload failed): no line for
+// it at quit.
+void forgetFollowUp(const std::shared_ptr<FollowUpJob> &job) {
+    std::vector<std::shared_ptr<FollowUpJob>> &unfinished = actionsState().followUpsUnfinished;
+    unfinished.erase(std::remove(unfinished.begin(), unfinished.end(), job), unfinished.end());
 }
 
 // Queue: deletes a finished run's files.
@@ -1395,10 +1411,10 @@ void showExecuteSheet(const std::shared_ptr<ExecuteFlow> &flow) {
     alert.informativeText = NSStr(executeSheetText(flow->plan));
     [alert addButtonWithTitle:@"Execute"];
     [alert addButtonWithTitle:@"Cancel"];  // Escape (NSAlert's Cancel rule)
-    // The follow-ups, as last confirmed (hidden configInts).
+    // The follow-ups: swap as last confirmed (hidden configInt), delete
+    // unticked.
     JLIntakeExecuteFollowUps *followUps = [[JLIntakeExecuteFollowUps alloc]
-        initWithSwap:followUpSetting(config::getInt(config::kExecuteSwapAfter, kExecuteSwapAfterDefault))
-         deleteLocal:followUpSetting(config::getInt(config::kExecuteDeleteAfter, kExecuteDeleteAfterDefault))];
+        initWithSwap:followUpSetting(config::getInt(config::kExecuteSwapAfter, kExecuteSwapAfterDefault))];
     alert.accessoryView = followUps.view;
     flow->alert = alert;
     flow->followUps = followUps;
@@ -1411,8 +1427,7 @@ void showExecuteSheet(const std::shared_ptr<ExecuteFlow> &flow) {
         if (response != NSAlertFirstButtonReturn) {
             logDebug("execute: cancelled in the sheet");
         } else {
-            config::setInt(config::kExecuteSwapAfter, choice.swap ? 1 : 0);
-            config::setInt(config::kExecuteDeleteAfter, choice.deleteLocal ? 1 : 0);
+            config::setInt(config::kExecuteSwapAfter, choice.swap ? 1 : 0);  // delete is never saved
             // The lane and the configuration again (startDetachedRun).
             confirmExecute(current, choice);
         }
@@ -1832,13 +1847,16 @@ void onDeleteFilesRead(uint64_t serial, std::vector<PlacedFilesReply> &replies) 
 // run gc on the roots that pass the gc guard and whose census is clear
 // (IntakeExecuteFollowUp); the others are kept with an Info line and a
 // tooltip. The ticked checkbox is the confirm_gc confirmation for exactly
-// those roots: no sheet. One chain at a time; a quit drops the rest.
+// those roots: no sheet. One chain at a time; a quit drops the rest, with
+// one Info line per run whose follow-ups had not finished (actionsShutdown).
 
 void startNextFollowUp();
 
 // The current chain has ended (each chain gets here once).
 void endFollowUp() {
-    actionsState().followUpActive = false;
+    ActionsState &st = actionsState();
+    if (st.followUpActive) forgetFollowUp(st.followUpActive);
+    st.followUpActive.reset();
     startNextFollowUp();
 }
 
@@ -1857,6 +1875,7 @@ void queueFollowUp(std::shared_ptr<FollowUpJob> job, const LoaderStatus &status)
     if (status.state != LoaderState::Ready) {
         logInfo("execute: no swap or delete after run " + job->stem + ": the reload after it did not succeed (" +
                 loaderStateName(status.state) + (status.error.empty() ? std::string() : ": " + status.error) + ")");
+        forgetFollowUp(job);
         return;
     }
     st.followUps.push_back(std::move(job));
@@ -1926,7 +1945,7 @@ void startNextFollowUp() {
     if (st.stopped || st.followUpActive || st.followUps.empty()) return;
     std::shared_ptr<FollowUpJob> job = st.followUps.front();
     st.followUps.pop_front();
-    st.followUpActive = true;
+    st.followUpActive = job;
     if (job->earlierSession) logInfo(earlierRunFollowUpLine(job->stem, job->choice));
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
     if (!view || view->isInert()) {
@@ -2365,7 +2384,17 @@ void actionsShutdown() {
     // A swap's result is dropped (the playlist stays as it is).
     swapShutdown();
     st.deleteFlow.reset();
-    // Follow-ups not started yet are dropped (nothing is deleted).
+    // Follow-ups not finished are dropped: those waiting for their reload,
+    // queued, or swapping (nothing is deleted). Their run files are gone,
+    // so the next start cannot do them: one Info line per run (the log
+    // backend goes only after this, IntakeService on_quit). A chain whose
+    // gc is already on its way is left out: a quit never stops gc, and it
+    // finishes on its own.
+    for (const std::shared_ptr<FollowUpJob> &job : st.followUpsUnfinished) {
+        if (job == st.followUpActive && st.followUpGcToken != 0) continue;
+        logInfo(followUpQuitLine(job->stem, job->choice));
+    }
+    st.followUpsUnfinished.clear();
     st.followUps.clear();
     // Detached runs keep running and keep their files (the next session
     // adopts or finishes them); only the watching stops.

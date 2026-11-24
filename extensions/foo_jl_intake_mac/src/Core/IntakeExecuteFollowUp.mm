@@ -124,4 +124,14 @@ std::string earlierRunFollowUpLine(const std::string &stem, const RunFollowUps &
            (followUps.deleteLocal ? "swap, then delete" : "swap only") + ")";
 }
 
+std::string followUpQuitLine(const std::string &stem, const RunFollowUps &followUps) {
+    if (followUps.deleteLocal) {
+        return "execute: swap, then delete after run " + stem +
+               " not finished: foobar2000 quit first (nothing was deleted; use Swap to library paths, then Delete "
+               "local copy\xE2\x80\xA6 by hand)";  // U+2026
+    }
+    return "execute: swap after run " + stem +
+           " not finished: foobar2000 quit first (use Swap to library paths by hand)";
+}
+
 } // namespace intake

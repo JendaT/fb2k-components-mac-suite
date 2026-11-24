@@ -42,4 +42,8 @@ std::string rejectReasonFor(size_t choice, const std::string &freeText) {
     return freeText.substr(begin, end - begin);
 }
 
+size_t rejectInitialChoice(size_t lastChoice) {
+    return lastChoice < rejectReasonChoices().size() ? lastChoice : 0;
+}
+
 } // namespace intake
