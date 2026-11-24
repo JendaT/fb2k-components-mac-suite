@@ -535,10 +535,15 @@ keeps its line up to date.
   alike), "Placement check failed: …", "Execute failed: …", "Resume failed:
   …", "Delete failed: …", "Row count failed: …" or "Swap failed: …". The
   reason is the first root's error without its "<command>: " prefix when no
-  root succeeded, "<k> of <n> albums" when some did. A result carries
-  state succeeded with the check icon, or failed with the cross icon, and no
-  progress. Labels are cut at 60 bytes and reasons at 120, on a character
-  boundary (never between a letter and its combining accent), with "…".
+  root succeeded, "<k> of <n> albums" when some did. An assign that failed
+  for some roots ends its entry as "Assign failed: <k> of <n> albums" even
+  when the propose after it succeeded; the Delete flow's sidecar reads end
+  as "Row count failed: …" when a file list could not be read. A result
+  carries state succeeded with the check icon, or failed with the cross
+  icon, and no progress. Labels are cut at 60 bytes and reasons at 120,
+  never inside a character or a composed character sequence (a letter
+  keeps every combining mark after it, kana its voicing mark, decomposed
+  Hangul its jamo, as in NFD names from an SMB share), with "…".
   Loads, Refresh, Reload now, Test CLI and the picker's `collections` are
   not shown.
 - **The list** (`status_items`, read only while the popover is open):
@@ -552,9 +557,12 @@ keeps its line up to date.
   mutation lane, the run, the swap) and ends on every path that lets it go:
   result, refusal, timeout. A dry run that outlives its 10 s report keeps
   showing "Checking placement…" until its late answer, though the lane is
-  free again (user decision Q2); a refusal or quit ends it. The sidecar
-  reads end with their replies or after 10 s ("Row count failed: no answer
-  within 10 s").
+  free again (user decision Q2); a refusal or quit ends it. The runner
+  never kills a dry run, so an answer may never come (a hung share): the
+  entry ends at the latest at the mutating calls' 15-minute cap, as
+  "Placement check failed: no answer within 15 min", and an answer after
+  that is ignored. The sidecar reads end with their replies or after 10 s
+  ("Row count failed: no answer within 10 s").
 - **Execute progress:** not from the CLI's output (written only at exit)
   but from the statuses each published load shows: done = the run's roots
   now `placed`, the album = the root that turned `placing` since the last
@@ -573,10 +581,14 @@ keeps its line up to date.
   skipping one unregistered since that round began; several callbacks at
   once, each once; unregistering an unknown one does nothing. Coalescing is
   the host's (SimPlaylist reads about 4 times a second at most). The host
-  has no timer, so the provider fires when a result's 10 s run out: one
-  `dispatch_after` on the main queue at the earliest expiry, re-armed on
-  every change, none while no result is shown. With no host registered a
-  change costs the line's update and one uncontended lock.
+  has no timer, so the provider fires when a result's 10 s run out or a
+  dry run reaches its 15 minutes: one `dispatch_after` on the main queue at
+  the earliest of them, re-armed on every change, none while no result is
+  shown and no dry run is pending. It runs on the wall clock
+  (`dispatch_walltime`), the clock of the times it compares, so a Mac that
+  slept past an expiry clears the line on waking; a wall clock set back
+  delays it by as much. With no host registered a change costs the line's
+  update and one uncontended lock.
 - **Quit:** `on_quit` empties the model and fires once, so the pill goes;
   afterwards no hook adds an entry, no timer acts, nothing fires, and the
   provider answers false and an empty list. Its state is never destroyed: a

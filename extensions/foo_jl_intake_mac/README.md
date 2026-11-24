@@ -161,6 +161,11 @@ of running commands and those that ended in the last 10 seconds.
   placement, and a placement picked up at start), Resume, Delete local copy
   (and its file list reads), and Swap to library paths. Loads and Refresh
   are not.
+- A command that failed for some albums shows as failed ("Assign failed: 1
+  of 3 albums"), also when the propose after an assign succeeded. A
+  placement check that never answers (a share that stopped responding)
+  leaves the line after 15 minutes as "Placement check failed: no answer
+  within 15 min".
 - The placement count moves when a load sees the sidecars change, in steps
   of a few seconds. On a network share without file events (SMB is
   untested) it stays at 0/40 until you refresh or the placement ends.

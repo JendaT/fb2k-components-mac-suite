@@ -7,8 +7,11 @@
 
 #include "IntakeActivity.h"
 
+#include <CoreFoundation/CoreFoundation.h>
+
 #include <algorithm>
 #include <climits>
+#include <string_view>
 
 namespace intake {
 
@@ -70,21 +73,56 @@ bool isContinuation(unsigned char c) {
     return (c & 0xC0) == 0x80;
 }
 
-// A combining diacritical mark (U+0300–U+036F) starts at `at`.
-bool combiningMarkAt(const std::string &s, size_t at) {
-    if (at + 1 >= s.size()) return false;
-    const unsigned char a = static_cast<unsigned char>(s[at]);
-    const unsigned char b = static_cast<unsigned char>(s[at + 1]);
-    if (a == 0xCC) return b >= 0x80 && b <= 0xBF;  // U+0300–U+033F
-    if (a == 0xCD) return b >= 0x80 && b <= 0xAF;  // U+0340–U+036F
-    return false;
+// The UTF-16 length of the UTF-8 bytes s[0, bytes): one unit per
+// character, two for one of four bytes (outside the BMP).
+CFIndex utf16Length(std::string_view s, size_t bytes) {
+    CFIndex units = 0;
+    for (size_t i = 0; i < bytes; i++) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        if (isContinuation(c)) continue;
+        units += c >= 0xF0 ? 2 : 1;
+    }
+    return units;
 }
 
-// The start of the character before the one at `at` (at > 0).
-size_t previousBoundary(const std::string &s, size_t at) {
-    size_t i = at - 1;
-    while (i > 0 && isContinuation(static_cast<unsigned char>(s[i]))) i--;
+// The byte offset in UTF-8 `s` of UTF-16 index `units` (a character start).
+size_t utf8Offset(std::string_view s, CFIndex units) {
+    size_t i = 0;
+    CFIndex seen = 0;
+    while (i < s.size() && seen < units) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        seen += c >= 0xF0 ? 2 : 1;
+        i++;
+        while (i < s.size() && isContinuation(static_cast<unsigned char>(s[i]))) i++;
+    }
     return i;
+}
+
+// `cut` (a UTF-8 character start in `s`, 0 < cut < s.size()) moved back to
+// the start of the composed character sequence it lies in
+// (CFStringGetRangeOfComposedCharactersAtIndex): a letter keeps the
+// combining marks after it, a Hangul syllable its jamo. An ASCII byte at
+// `cut` always starts one (control characters are spaces by now, so no
+// CR LF). Text that is not valid UTF-8 keeps `cut`.
+size_t composedStart(const std::string &s, size_t cut) {
+    if (cut == 0 || static_cast<unsigned char>(s[cut]) < 0x80) return cut;
+    // CoreFoundation drops a leading UTF-8 BOM even from bytes that are not
+    // an external representation; a BOM is a character of its own, so the
+    // text after it is enough (cut, a character start, lies past it).
+    const size_t skip = s.compare(0, 3, "\xEF\xBB\xBF") == 0 ? 3 : 0;
+    const std::string_view body = std::string_view(s).substr(skip);
+    CFStringRef str = CFStringCreateWithBytes(kCFAllocatorDefault, reinterpret_cast<const UInt8 *>(body.data()),
+                                              static_cast<CFIndex>(body.size()), kCFStringEncodingUTF8, false);
+    if (str == nullptr) return cut;
+    const CFIndex at = utf16Length(body, cut - skip);
+    size_t start = cut;
+    // The units must line up with the bytes (a second BOM would shift them).
+    if (CFStringGetLength(str) == utf16Length(body, body.size())) {
+        const CFRange range = CFStringGetRangeOfComposedCharactersAtIndex(str, at);
+        if (range.location < at) start = skip + utf8Offset(body, range.location);
+    }
+    CFRelease(str);
+    return start;
 }
 
 std::string plural(size_t n, const char *one, const char *many) {
@@ -138,9 +176,9 @@ std::string activityShorten(const std::string &text, size_t maxBytes) {
     size_t cut = maxBytes - ellipsis;
     // Never inside a character...
     while (cut > 0 && isContinuation(static_cast<unsigned char>(s[cut]))) cut--;
-    // ...and never between a letter and the accents that follow it: the
-    // letter goes with them.
-    while (cut > 0 && combiningMarkAt(s, cut)) cut = previousBoundary(s, cut);
+    // ...and never inside a composed character sequence: a letter goes with
+    // the combining marks that follow it.
+    cut = composedStart(s, cut);
     while (cut > 0 && s[cut - 1] == ' ') cut--;
     return s.substr(0, cut) + kEllipsis;
 }
@@ -176,6 +214,33 @@ ActivityResult activityResultFor(const MutationOutcome &outcome, size_t named, c
         if (semicolon != std::string::npos) line = line.substr(semicolon + 2);
     }
     r.reason = line;
+    return r;
+}
+
+ActivityResult activityAfterAssign(const ActivityResult &assign, const ActivityResult &propose) {
+    if (assign.succeeded) {
+        ActivityResult r = propose;
+        r.kind.reset();  // the entry's own: AssignThenPropose
+        return r;
+    }
+    ActivityResult r = assign;
+    r.kind = ActivityKind::Assign;
+    if (!propose.succeeded) {
+        const std::string &more = propose.detail.empty() ? propose.reason : propose.detail;
+        if (!more.empty()) r.detail = r.detail.empty() ? more : r.detail + "; " + more;
+    }
+    return r;
+}
+
+ActivityResult activityReadsResult(size_t named, const std::vector<std::string> &unread) {
+    ActivityResult r;
+    if (unread.empty()) return r;
+    r.succeeded = false;
+    const size_t total = std::max(named, unread.size());
+    const std::string &first = unread.front();
+    r.reason = unread.size() < total ? std::to_string(unread.size()) + " of " + plural(total, "album", "albums") : first;
+    r.detail = "no file list for " + std::to_string(unread.size()) + " of " + plural(total, "album", "albums") +
+               (first.empty() ? std::string() : ": " + first);
     return r;
 }
 
@@ -241,18 +306,33 @@ bool ActivityModel::rename(const std::string &key, ActivityKind kind, size_t cou
     return true;
 }
 
+void ActivityModel::finish(Entry &e, const ActivityResult &result, int64_t at, std::optional<size_t> count) {
+    e.state = result.succeeded ? ActivityState::Succeeded : ActivityState::Failed;
+    e.reason = result.succeeded ? std::string() : activityShorten(result.reason, kActivityReasonMaxBytes);
+    e.detail = result.succeeded ? std::string() : oneLine(result.detail);
+    if (result.kind) e.kind = *result.kind;
+    if (count) e.count = *count;
+    e.current.clear();
+    e.endedMs = at;
+    e.endSeq = nextEndSeq_++;
+    e.deadlineMs.reset();
+    e.atDeadline = ActivityResult();
+}
+
 bool ActivityModel::end(const std::string &key, const ActivityResult &result, int64_t now,
                         std::optional<size_t> count) {
     prune(now);
     Entry *e = findRunning(key);
     if (e == nullptr) return false;
-    e->state = result.succeeded ? ActivityState::Succeeded : ActivityState::Failed;
-    e->reason = result.succeeded ? std::string() : activityShorten(result.reason, kActivityReasonMaxBytes);
-    e->detail = result.succeeded ? std::string() : oneLine(result.detail);
-    if (count) e->count = *count;
-    e->current.clear();
-    e->endedMs = now;
-    e->endSeq = nextEndSeq_++;
+    finish(*e, result, now, count);
+    return true;
+}
+
+bool ActivityModel::deadline(const std::string &key, int64_t at, const ActivityResult &result) {
+    Entry *e = findRunning(key);
+    if (e == nullptr) return false;
+    e->deadlineMs = at;
+    e->atDeadline = result;
     return true;
 }
 
@@ -263,10 +343,17 @@ bool ActivityModel::clear() {
 }
 
 bool ActivityModel::prune(int64_t now) {
+    bool changed = false;
+    for (Entry &e : entries_) {
+        if (e.state != ActivityState::Running || !e.deadlineMs || *e.deadlineMs > now) continue;
+        const ActivityResult result = e.atDeadline;
+        finish(e, result, *e.deadlineMs, std::nullopt);
+        changed = true;
+    }
     const size_t before = entries_.size();
     entries_.erase(std::remove_if(entries_.begin(), entries_.end(), [now](const Entry &e) { return !shown(e, now); }),
                    entries_.end());
-    return entries_.size() != before;
+    return changed || entries_.size() != before;
 }
 
 namespace {
@@ -382,8 +469,14 @@ std::vector<ActivityItem> ActivityModel::items(int64_t now) const {
 std::optional<int64_t> ActivityModel::nextExpiry(int64_t now) const {
     std::optional<int64_t> next;
     for (const Entry &e : entries_) {
-        if (e.state == ActivityState::Running || !shown(e, now)) continue;
-        const int64_t at = e.endedMs + kActivityResultMs;
+        int64_t at = 0;
+        if (e.state == ActivityState::Running) {
+            if (!e.deadlineMs) continue;
+            at = *e.deadlineMs;  // may be past: prune at once
+        } else {
+            if (!shown(e, now)) continue;
+            at = e.endedMs + kActivityResultMs;
+        }
         if (!next || at < *next) next = at;
     }
     return next;

@@ -18,8 +18,12 @@
 //   - activityCensusKey(serial): the Delete flow's sidecar reads.
 //  progress() sets done/total and the album being worked on; rename()
 //  changes the kind and the count (the propose after an assign); end() makes
-//  the entry a result, succeeded or failed with a short reason; clear()
-//  (quit) drops everything. All of them work on the RUNNING entry of a key:
+//  the entry a result, succeeded or failed with a short reason (a result
+//  may name another kind for its text: the assign that failed before the
+//  propose after it); deadline() sets the time and the result at which the
+//  entry ends unless something ended it before (the execute dry run, which
+//  the runner never kills: its answer may never come); clear() (quit) drops
+//  everything. All of them work on the RUNNING entry of a key:
 //  a key with no running entry (never begun, already ended, cleared) is
 //  ignored and they return false, so a double end, or an end after quit, is
 //  harmless. begin() on a key that still has a running entry drops that
@@ -28,9 +32,16 @@
 //  Time. Every query takes `now` in milliseconds (Unix epoch in production,
 //  any clock in tests). A result is shown while ended <= now < ended + 10 s
 //  (kActivityResultMs), then it is gone; a result whose end lies after `now`
-//  (the wall clock went back) is gone too, so nothing lingers. nextExpiry()
-//  is the earliest time after `now` at which a result goes, for the
-//  provider's timer; prune() drops the ones gone.
+//  (the wall clock went back) is gone too, so nothing lingers. A running
+//  entry with a deadline stays running until prune() at or after the
+//  deadline ends it with its deadline result (ended = the deadline, so it
+//  shows for the 10 s after the deadline, or not at all when prune() comes
+//  later than that); an end() after the deadline finds it ended (its own
+//  prune() runs first) and is ignored like any double end. nextExpiry() is
+//  the earliest time at which a shown result goes or a deadline falls, for
+//  the provider's timer (a deadline already past: a time at or before
+//  `now`, prune at once); prune() ends the entries past their deadline and
+//  drops the results gone.
 //
 //  The line (line(now)):
 //   - something running: the most recently begun running entry, plus
@@ -63,10 +74,14 @@
 //  "Delete failed: …", "Row count failed: …", "Swap failed: …" (state
 //  failed, icon cross). Results carry no done/total.
 //  Labels are cut to kActivityLabelMaxBytes and reasons to
-//  kActivityReasonMaxBytes on a UTF-8 boundary (never inside a character,
-//  and never between a letter and a combining accent U+0300–U+036F that
-//  follows it), with "…"; newlines, tabs and other control characters
-//  become spaces.
+//  kActivityReasonMaxBytes with "…", never inside a character and never
+//  inside a composed character sequence (CoreFoundation's
+//  CFStringGetRangeOfComposedCharactersAtIndex): a letter keeps every
+//  combining mark that follows it (U+0300–U+036F, the kana voicing marks
+//  U+3099/U+309A, U+1DC0–U+1DFF, U+20D0–U+20FF, U+FE20–U+FE2F, ...), and
+//  decomposed Hangul keeps its jamo together, as in the NFD folder names
+//  of an SMB share. Text that is not valid UTF-8 is cut on a UTF-8 boundary
+//  only. Newlines, tabs and other control characters become spaces.
 //
 //  The list (items(now)): running entries first, most recently begun first,
 //  then the results still shown, newest first. Title and detail:
@@ -84,6 +99,20 @@
 //  reason: the first root's error text without its "<command>: " prefix
 //  when no root succeeded, "<k> of <n> albums" when some did; the console
 //  line is the detail.
+//
+//  activityAfterAssign ends the one entry of an assign and the propose after
+//  it: an assign that failed for some roots or all ends it failed as the
+//  assign ("Assign failed: 1 of 3 albums", kind Assign), whatever the
+//  propose did (its failure, if any, follows in the detail); otherwise the
+//  propose's own result ("Assigned and proposed 2 albums", "Propose failed:
+//  …"). So a partial failure never shows the check icon.
+//
+//  activityReadsResult ends the Delete flow's census (its sidecar reads):
+//  succeeded when every root's file list was read; else failed with the
+//  first error when none was, "<k> of <n> albums" when some were, the
+//  detail "no file list for <k> of <n> albums: <first error>". A share that
+//  fails at once and one that hangs (the 10 s timeout, "no answer within
+//  10 s") both end failed.
 //
 //  Thread-safety: none (main thread only).
 //
@@ -157,6 +186,9 @@ struct ActivityResult {
     bool succeeded = true;
     std::string reason;  // failed: short, for the line
     std::string detail;  // failed: longer, for the list (optional)
+    // The kind whose words the result uses, when not the entry's own (the
+    // assign that failed before its propose: activityAfterAssign).
+    std::optional<ActivityKind> kind;
 };
 
 // The keys (see the top of this file).
@@ -178,6 +210,15 @@ std::string activityShorten(const std::string &text, size_t maxBytes);
 // "execute dry run").
 ActivityResult activityResultFor(const MutationOutcome &outcome, size_t named, const std::string &commandName);
 
+// The end of an assign and the propose after it (see the top of this
+// file): `assign` the assign's result, `propose` the propose's (or its
+// refusal's).
+ActivityResult activityAfterAssign(const ActivityResult &assign, const ActivityResult &propose);
+
+// The end of reading `named` roots' file lists; `unread` holds the error of
+// each root that has none, in order (see the top of this file).
+ActivityResult activityReadsResult(size_t named, const std::vector<std::string> &unread);
+
 class ActivityModel {
 public:
     // A running entry under `key`; `count` albums (Swap: rows), the first
@@ -194,19 +235,27 @@ public:
 
     // The running entry becomes a result at `now`; `count` (optional)
     // replaces its count for the result text (Swap: the rows swapped). True
-    // when found.
+    // when found (an entry past its deadline is not: prune() runs first).
     bool end(const std::string &key, const ActivityResult &result, int64_t now,
              std::optional<size_t> count = std::nullopt);
+
+    // The running entry ends with `result` at `at` unless it ends before
+    // (applied by prune()); a later call replaces the deadline. True when
+    // found.
+    bool deadline(const std::string &key, int64_t at, const ActivityResult &result);
 
     // Drops every entry (quit). True when there was one.
     bool clear();
 
-    // Drops the results no longer shown at `now`. True when one went.
+    // Ends the running entries whose deadline is at or before `now`, then
+    // drops the results no longer shown at `now`. True when either changed
+    // something.
     bool prune(int64_t now);
 
     std::optional<ActivityLine> line(int64_t now) const;
     std::vector<ActivityItem> items(int64_t now) const;
-    // The earliest time after `now` at which a shown result goes.
+    // The earliest time at which a shown result goes or a running entry's
+    // deadline falls (at or before `now` when a deadline is already past).
     std::optional<int64_t> nextExpiry(int64_t now) const;
 
     bool isRunning(const std::string &key) const;
@@ -229,10 +278,13 @@ private:
         int64_t startedMs = 0;
         int64_t endedMs = 0;
         uint64_t endSeq = 0;  // order of the ends
+        std::optional<int64_t> deadlineMs;  // running: ends then with atDeadline
+        ActivityResult atDeadline;
     };
 
     Entry *findRunning(const std::string &key);
     const Entry *findRunning(const std::string &key) const;
+    void finish(Entry &e, const ActivityResult &result, int64_t at, std::optional<size_t> count);
     static bool shown(const Entry &e, int64_t now);
     static std::string lineText(const Entry &e);
     static ActivityItem itemFor(const Entry &e);

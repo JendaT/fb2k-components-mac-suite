@@ -14,15 +14,22 @@
 //   - lane token: runMutation begins (propose, assign, approve, reject, gc;
 //     the Execute follow-up's gc too); onFinished, onRefused and
 //     proposeAfterAssignOrEnd's end of the run end it; the propose after an
-//     assign renames it (AssignThenPropose). The execute dry run begins in
+//     assign renames it (AssignThenPropose), and its end folds in the
+//     assign's result (activityAfterAssign: an assign that failed for some
+//     roots ends the entry failed). The execute dry run begins in
 //     actionsExecutePlacement and ends in onExecuteDryRun (its answer, a late
 //     one included: the 10 s report frees the lane but the entry stays, Q2)
-//     or onRefused. reportBudget never ends an entry.
+//     or onRefused. The runner never kills a dry run, so its answer may
+//     never come (a hung share): the entry also has a deadline at the
+//     mutating calls' 15-minute cap (ProcessLimits::hardCapSeconds), where
+//     it ends failed "no answer within 15 min"; an answer after that finds
+//     it ended. reportBudget never ends an entry.
 //   - run stem: startDetachedRun and onRunScan's adopted runs begin
 //     (activityBeginRun); finishRun (at tracker.remove) and onRunRefused end.
 //   - swap serial: swapStart begins, its finish ends.
 //   - census serial: actionsDeleteLocal's sidecar reads begin;
-//     onDeleteFilesRead or its 10 s timeout end.
+//     onDeleteFilesRead (activityReadsResult: failed when a file list
+//     could not be read) or its 10 s timeout end.
 //   - quit: actionsShutdown calls activityClear(), which drops everything
 //     and fires the change handler once; later hooks do nothing.
 //  Loads and Refresh are not entries.
@@ -37,9 +44,11 @@
 //  The provider's side (main thread): activityModel() to read the line and
 //  the items at activityNowMs(); activitySetChangeHandler() for one handler
 //  that is called after every change that may alter the line or the list,
-//  and again when a result's 10 s run out (the hub keeps one dispatch_after
-//  at the model's nextExpiry). The handler runs on the main thread. The
-//  status provider (IntakeStatusProvider.mm) installs it from on_init.
+//  and again when a result's 10 s run out or a deadline falls (the hub
+//  keeps one dispatch_after at the model's nextExpiry, on the wall clock
+//  like activityNowMs, so it also fires on time after the Mac slept). The
+//  handler runs on the main thread. The status provider
+//  (IntakeStatusProvider.mm) installs it from on_init.
 //
 //  The state is leaked on purpose (like the actions' state): hooks may run
 //  after on_quit.
@@ -75,6 +84,10 @@ void activityBegin(const std::string &key, ActivityKind kind, size_t count, cons
 // seeded from the current view.
 void activityBeginRun(const std::string &stem, CliCommand command, const std::vector<std::string> &ids,
                       const std::string &firstLabel);
+
+// The running entry under `key` ends with `result` `afterMs` from now
+// unless something ends it before (the execute dry run's 15 minutes).
+void activityDeadline(const std::string &key, int64_t afterMs, const ActivityResult &result);
 
 void activityRename(const std::string &key, ActivityKind kind, size_t count, const std::string &firstLabel);
 

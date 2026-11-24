@@ -922,7 +922,14 @@ cmd_rows() {
                     return
                 fi
                 [ -f "$RESP/$KEY.envelope" ] && emit_verbatim "$KEY"
-                if [ $RESUME -eq 1 ]; then ids_with_status placing; else ids_with_status approved; fi
+                if [ $WALK_PICKED -eq 1 ]; then
+                    # per-root: the roots the walk picked before it rewrote
+                    # their statuses, as the CLI replies for the roots it
+                    # took at the start.
+                    IDS=(${WALK[@]+"${WALK[@]}"})
+                elif [ $RESUME -eq 1 ]; then ids_with_status placing
+                else ids_with_status approved
+                fi
                 run_ids "$verb" ${IDS[@]+"${IDS[@]}"}
                 finish_rows
                 return
@@ -1055,6 +1062,8 @@ WALKED_KIND=()   # row | error
 WALKED_JSON=()
 SYNTH_KIND=""
 JOURNAL_SEQ=100
+WALK=()          # per-root: the roots of the walk
+WALK_PICKED=0    # 1 when the walk picked them itself (--approved, --resume, no ids)
 
 # The reply the walk decided for root $1 -> REPLY and SYNTH_KIND; or 1.
 walked_reply() {
@@ -1204,6 +1213,9 @@ mode_per_root() {
         elif [ $APPROVED -eq 1 ]; then ids_with_status approved
         fi
         WALK=(${IDS[@]+"${IDS[@]}"})
+        # The reply covers these roots (cmd_rows), not the ones still in
+        # that status once the walk has rewritten them.
+        WALK_PICKED=1
     else
         resolve_refs
         WALK=(${RESOLVED[@]+"${RESOLVED[@]}"})

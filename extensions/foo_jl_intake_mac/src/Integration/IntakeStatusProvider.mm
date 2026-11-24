@@ -33,10 +33,12 @@
 //  a second); the provider sends one call per change and adds no timer of
 //  its own.
 //
-//  Time. The host has no timer: a result line that expires after 10 s must
-//  be announced. The hub keeps one dispatch_after on the main queue at the
-//  model's nextExpiry (re-armed on every change, none while no result is
-//  shown, none after quit); when it fires, the hub prunes the model and
+//  Time. The host has no timer: a result line that expires after 10 s, or
+//  a dry run that reaches its 15-minute deadline, must be announced. The
+//  hub keeps one dispatch_after on the main queue at the model's nextExpiry
+//  (re-armed on every change, none while no result is shown and no
+//  deadline is pending, none after quit), on the wall clock, so it fires on
+//  time after the Mac slept; when it fires, the hub prunes the model and
 //  calls the handler, which takes the new line and fires the callbacks.
 //
 //  Cost with no host: the handler still takes the line on each change (one

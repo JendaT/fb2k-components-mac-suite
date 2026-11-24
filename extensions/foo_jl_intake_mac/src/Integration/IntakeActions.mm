@@ -425,6 +425,12 @@ struct ActionsState {
     // The call whose 10 s report put E_CLI_TIMEOUT on its roots (0: none);
     // its finish replaces those errors.
     uint64_t timeoutReported = 0;
+    // B14: the status-bar result of the assign whose propose runs on
+    // assignToken (0: none); that propose's end folds it in
+    // (activityAfterAssign), so a partly failed assign never ends with the
+    // check icon.
+    uint64_t assignToken = 0;
+    ActivityResult assignResult;
     // The picker flow in progress (`collections` running or the sheet
     // open), or null: at most one (B7).
     std::shared_ptr<PickerFlow> picker;
@@ -542,12 +548,25 @@ void startOnQueue(uint64_t token, std::shared_ptr<const CliConfig> config, std::
 // chain ends (see the Execute follow-ups below).
 void followUpGcEnded(uint64_t token);
 
+// B14: the status-bar result of the propose after the assign on `token`,
+// with the assign's result folded in (activityAfterAssign); `propose` alone
+// when no assign result is kept for `token`.
+ActivityResult afterAssignResult(uint64_t token, const ActivityResult &propose) {
+    ActionsState &st = actionsState();
+    if (st.assignToken != token) return propose;
+    const ActivityResult assign = st.assignResult;
+    st.assignToken = 0;
+    st.assignResult = ActivityResult();
+    return activityAfterAssign(assign, propose);
+}
+
 // The assign of an AssignThenPropose run finished (its errors and console
 // line are already out): starts the propose on `token`, or releases the
 // lane and refreshes once when there is nothing to propose or it cannot
 // start. `assignResult`: the assign's status-bar result, the entry's end
 // when no propose follows; a propose that follows renames the entry
-// (AssignThenPropose) and its own finish or refusal ends it.
+// (AssignThenPropose), and its own finish or refusal ends it with the
+// assign's result folded in (afterAssignResult).
 void proposeAfterAssignOrEnd(uint64_t token, const std::vector<MutationRoot> &assigned, const CliResult &result,
                              const MutationOutcome &outcome, const ActivityResult &assignResult) {
     ActionsState &st = actionsState();
@@ -570,9 +589,11 @@ void proposeAfterAssignOrEnd(uint64_t token, const std::vector<MutationRoot> &as
         notStarted.succeeded = false;
         notStarted.reason = "propose not started";
         notStarted.detail = "propose: not run after assign: intake is not running or has no CLI path";
-        endRun(notStarted);
+        endRun(activityAfterAssign(assignResult, notStarted));
         return;
     }
+    st.assignToken = token;
+    st.assignResult = assignResult;
     CliRequest request;
     request.command = CliCommand::Propose;
     request.ids = next.propose;
@@ -628,8 +649,10 @@ void onFinished(uint64_t token, CliCommand command, const std::vector<MutationRo
     // assign is never released early: only dry runs are).
     const bool proposeNext = run == LaneRun::AssignThenPropose && command == CliCommand::Assign;
     const MutationOutcome outcome = summarizeMutation(command, roots, result.envelope);
-    // B14: the status-bar result of this call (the entry of its lane token).
-    const ActivityResult activity = activityResultFor(outcome, roots.size(), name);
+    // B14: the status-bar result of this call (the entry of its lane token);
+    // the propose after an assign folds in the assign's.
+    const ActivityResult own = activityResultFor(outcome, roots.size(), name);
+    const ActivityResult activity = run == LaneRun::ProposeAfterAssign ? afterAssignResult(token, own) : own;
     if (!proposeNext && !st.lane.finish(token)) {
         activityEnd(activityLaneKey(token), activity);
         logInfo(name + ": a late dry-run result was ignored");
@@ -670,7 +693,9 @@ void onFinished(uint64_t token, CliCommand command, const std::vector<MutationRo
 void onRefused(uint64_t token, CliCommand command, const std::string &refusal, LaneRun run = LaneRun::Single) {
     ActionsState &st = actionsState();
     st.lane.finish(token);
-    activityEnd(activityLaneKey(token), activityNotStarted(refusal));
+    const ActivityResult notStarted = activityNotStarted(refusal);
+    activityEnd(activityLaneKey(token),
+                run == LaneRun::ProposeAfterAssign ? afterAssignResult(token, notStarted) : notStarted);
     if (st.stopped) return;
     // The only console line for it (IntakeCliRunner logs it at Debug);
     // a caller bug, not a root's error, so no tooltip.
@@ -1862,14 +1887,22 @@ void showDeleteSheet(const std::shared_ptr<DeleteFlow> &flow) {
 
 void onDeleteFilesRead(uint64_t serial, std::vector<PlacedFilesReply> &replies) {
     ActionsState &st = actionsState();
-    // B14: the census entry ends with the reads (a reply after the 10 s
-    // timeout finds it ended already).
-    activityEnd(activityCensusKey(serial), ActivityResult());
-    if (st.stopped || !st.deleteFlow || st.deleteFlow->serial != serial) return;
+    // B14: the census entry ends with the reads, failed when a file list
+    // could not be read (activityReadsResult; a reply after the 10 s timeout
+    // finds it ended already).
+    if (st.stopped || !st.deleteFlow || st.deleteFlow->serial != serial) {
+        std::vector<std::string> unread;
+        for (const PlacedFilesReply &r : replies) {
+            if (!r.ok) unread.push_back(r.error);
+        }
+        activityEnd(activityCensusKey(serial), activityReadsResult(replies.size(), unread));
+        return;
+    }
     std::shared_ptr<DeleteFlow> flow = st.deleteFlow;
     flow->filesRead = true;
     flow->confirm.clear();
     flow->files.clear();
+    std::vector<std::string> unread;
     for (const ActionRoot &root : flow->entry.roots) {
         const PlacedFilesReply *reply = nullptr;
         for (const PlacedFilesReply &r : replies) {
@@ -1882,8 +1915,10 @@ void onDeleteFilesRead(uint64_t serial, std::vector<PlacedFilesReply> &replies) 
             const std::string error = reply != nullptr ? reply->error : std::string("no longer listed by intake status");
             logDebug("delete-local: no file list for " + root.id + ": " + error);
             flow->confirm.push_back(gcConfirmRoot(root, nullptr, error));
+            unread.push_back(error);
         }
     }
+    activityEnd(activityCensusKey(serial), activityReadsResult(flow->entry.roots.size(), unread));
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
     flow->income = view ? countIncomeRows(*view, rootIdSet(flow->entry.roots), flow->playlist, &flow->files)
                         : GcIncomeRows();
@@ -2182,9 +2217,22 @@ std::string actionsExecutePlacement(const ActionEntry &entry) {
     logInfo(std::string(kExecuteDryRunName) + ": starting for " + rootCountText(request.ids.size()) + ": " +
             idList(request.ids));
     // B14: until its answer (onExecuteDryRun, late or not) or its refusal
-    // (onRefused); the 10 s report does not end it.
+    // (onRefused); the 10 s report does not end it. The runner never kills
+    // a dry run (ReportOnly), so an answer may never come (a hung share):
+    // at the mutating calls' hard cap the entry ends failed, and an answer
+    // after that is ignored like any double end.
     activityBegin(activityLaneKey(token), ActivityKind::ExecuteDryRun, request.ids.size(),
                   albumLabel(entry.roots.front()));  // request.ids follow entry.roots
+    {
+        const double capSeconds = ProcessLimits().hardCapSeconds;
+        const std::string minutes = std::to_string(static_cast<long>(capSeconds / 60.0));
+        ActivityResult noAnswer;
+        noAnswer.succeeded = false;
+        noAnswer.reason = "no answer within " + minutes + " min";
+        noAnswer.detail = std::string(kExecuteDryRunName) + ": no answer after " + minutes +
+                          " minutes (it may still be running); a later answer is ignored";
+        activityDeadline(activityLaneKey(token), static_cast<int64_t>(capSeconds * 1000.0), noAnswer);
+    }
     auto roots = std::make_shared<std::vector<MutationRoot>>();
     for (const ActionRoot &r : entry.roots) roots->push_back({r.id, r.rootPath, r.status, r.targetPath});
     const uint64_t serial = flow->serial;

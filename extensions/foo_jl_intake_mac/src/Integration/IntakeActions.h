@@ -237,9 +237,9 @@
 //  sidecar reads is an entry from the moment it holds its lane token, run
 //  stem or serial until every path that lets go of it (result, refusal,
 //  timeout) calls activityEnd; the propose after an assign renames the
-//  assign's entry; the dry run's entry outlives its 10 s report until its
-//  answer. actionsShutdown clears them. The list of pairs is in
-//  IntakeActivityHub.h.
+//  assign's entry and its end folds in the assign's result; the dry run's
+//  entry outlives its 10 s report until its answer, at most 15 minutes.
+//  actionsShutdown clears them. The list of pairs is in IntakeActivityHub.h.
 //
 //  Nothing here is modal for an error, and no error makes the provider
 //  inert.

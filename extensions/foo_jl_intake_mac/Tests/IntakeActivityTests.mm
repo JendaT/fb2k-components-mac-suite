@@ -5,10 +5,12 @@
 //  Unit tests for IntakeActivity (the status bar's activity model, B14) with
 //  a fake clock: the running and result texts of every kind (singular,
 //  plural, an album's label, UTF-8 labels and their cut on a character
-//  boundary), the 10 s result window to the millisecond, the order of the
-//  list, " (+N more)", progress (n/m), rename, keys (begin and end by lane
-//  token, run stem, swap serial; unknown and double ends), clear, and
-//  activityResultFor over hand-built outcomes.
+//  boundary, never inside a composed character sequence), the 10 s result
+//  window to the millisecond, the order of the list, " (+N more)", progress
+//  (n/m), rename, keys (begin and end by lane token, run stem, swap serial;
+//  unknown and double ends), clear, activityResultFor over hand-built
+//  outcomes, deadlines (the execute dry run's 15 minutes),
+//  activityAfterAssign and activityReadsResult.
 //
 
 #import <Foundation/Foundation.h>
@@ -204,6 +206,43 @@ static void testUtf8() {
         }
     }
     CHECK(activityShorten(many, 2).empty(), "no room even for the ellipsis: empty");
+
+    // Other combining marks of NFD names stay with their letter too (review
+    // finding: only U+0300-U+036F did).
+    const std::string ke = "\xE3\x82\xB1";            // KATAKANA KE
+    const std::string dakuten = "\xE3\x82\x99";       // U+3099 voicing mark: KE + it = GE
+    s = std::string(54, 'a') + ke + dakuten + "bbbbbb";  // the mark at 57..59
+    CHECK(activityShorten(s, 60) == std::string(54, 'a') + kDots, "kana keeps its voicing mark");
+    s = std::string(51, 'a') + ke + dakuten + "\xE3\x83\x95\xE3\x82\x9A" + "bbbbbb";  // GE, then PU (U+309A)
+    CHECK(activityShorten(s, 60) == std::string(51, 'a') + ke + dakuten + kDots, "a whole kana before the cut stays");
+    s = std::string(56, 'a') + "e\xE2\x83\x97" + "bbbbbb";  // e + U+20D7
+    CHECK(activityShorten(s, 60) == std::string(56, 'a') + kDots, "U+20D0-U+20FF marks");
+    s = std::string(56, 'a') + "e\xE1\xB7\x80" + "bbbbbb";  // e + U+1DC0
+    CHECK(activityShorten(s, 60) == std::string(56, 'a') + kDots, "U+1DC0-U+1DFF marks");
+    s = std::string(56, 'a') + "e\xEF\xB8\xA0" + "bbbbbb";  // e + U+FE20
+    CHECK(activityShorten(s, 60) == std::string(56, 'a') + kDots, "U+FE20-U+FE2F marks");
+    // Decomposed Hangul HAN (U+1112 U+1161 U+11AB): the cut never splits
+    // the syllable into loose jamo.
+    const std::string han = "\xE1\x84\x92\xE1\x85\xA1\xE1\x86\xAB";
+    s = std::string(54, 'a') + han + "bbbbbb";  // the cut at 57 falls on the vowel
+    CHECK(activityShorten(s, 60) == std::string(54, 'a') + kDots, "a Hangul syllable keeps its jamo");
+    s = std::string(51, 'a') + han + han + "bbbbbb";  // the cut at 57 falls on the final consonant
+    CHECK(activityShorten(s, 60) == std::string(51, 'a') + kDots, "nor from its final consonant");
+    s = std::string(48, 'a') + han + han + "bbbbbb";  // the second syllable starts at 57
+    CHECK(activityShorten(s, 60) == std::string(48, 'a') + han + kDots, "a whole syllable before the cut stays");
+    // A mark on a character outside the BMP (two UTF-16 units).
+    s = std::string(52, 'a') + "\xF0\x9F\x8E\xB5" + "\xE2\x83\x9D" + "bbbbbb";  // U+1F3B5 + U+20DD at 56..58
+    CHECK(activityShorten(s, 60) == std::string(52, 'a') + kDots, "an enclosing mark keeps its character");
+    // Accents after a surrogate pair: the UTF-16 index maps back to bytes.
+    s = std::string(50, 'a') + "\xF0\x9F\x8E\xB5" + "e\xCC\x81\xCC\x88" + "bbbbbb";  // U+0308 at 57..58
+    CHECK(activityShorten(s, 60) == std::string(50, 'a') + "\xF0\x9F\x8E\xB5" + kDots,
+          "the offsets hold past a surrogate pair");
+    // Text that is not UTF-8: the UTF-8 boundary only, never a crash.
+    s = std::string(56, 'a') + "e\xCC\x81" + "\xFF" + "bbbbbb";
+    CHECK(activityShorten(s, 60) == std::string(56, 'a') + "e" + kDots, "invalid UTF-8: the byte cut");
+    // A leading BOM keeps the offsets right (or the byte cut).
+    s = "\xEF\xBB\xBF" + std::string(53, 'a') + "e\xCC\x81" + "bbbbbb";
+    CHECK(activityShorten(s, 60) == "\xEF\xBB\xBF" + std::string(53, 'a') + kDots, "a BOM before the text");
 
     // Control characters become spaces.
     CHECK(activityShorten("a\nb\tc\rd", 60) == "a b c d", "newlines and tabs become spaces");
@@ -475,6 +514,148 @@ static void testResultFor() {
     CHECK(!r.succeeded && r.reason == "1 of 2 albums", "a root missing from data counts as failed");
 }
 
+// A running entry with a deadline (the execute dry run, which the runner
+// never kills: review finding, an answer that never comes left it running
+// for the session and hid every later result from the line).
+static void testDeadline() {
+    g_context = "deadline";
+    const int64_t cap = 15 * 60 * 1000;
+    const ActivityResult noAnswer = failed("no answer within 15 min", "execute dry run: no answer after 15 minutes");
+    ActivityModel m;
+    m.begin("lane:1", ActivityKind::ExecuteDryRun, 3, "", 1000);
+    CHECK(!m.nextExpiry(1000).has_value(), "no deadline: never expires");
+    CHECK(m.deadline("lane:1", 1000 + cap, noAnswer), "deadline set");
+    CHECK(!m.deadline("lane:9", 1000 + cap, noAnswer), "an unknown key: false");
+    CHECK(m.nextExpiry(1000) == std::optional<int64_t>(1000 + cap), "the timer's next time is the deadline");
+    CHECK(!m.prune(cap) && m.isRunning("lane:1"), "running until the deadline");
+    CHECK(lineText(m, cap) == "Checking placement of 3 albums" + kDots, "and shown as running");
+
+    // A later operation shows "(+1 more)" until the deadline; then the
+    // dry run's failure, and later results reach the line again.
+    m.begin("lane:2", ActivityKind::Propose, 3, "", 5000);
+    CHECK(lineText(m, 5000) == "Proposing 3 albums" + kDots + " (+1 more)", "+1 more while it runs");
+    m.end("lane:2", ActivityResult(), 6000);
+    CHECK(lineText(m, 6000) == "Checking placement of 3 albums" + kDots, "the running dry run hides the result");
+    CHECK(m.prune(1000 + cap), "prune at the deadline ends it");
+    CHECK(!m.isRunning("lane:1") && m.runningCount() == 0, "no longer running");
+    CHECK(lineText(m, 1000 + cap) == "Placement check failed: no answer within 15 min", "failed at its deadline");
+    std::vector<ActivityItem> items = m.items(1000 + cap);
+    CHECK(items.size() == 1 && items[0].state == ActivityState::Failed && items[0].endedMs == 1000 + cap &&
+              items[0].detail == "execute dry run: no answer after 15 minutes",
+          "ended at the deadline, the console line as detail");
+    CHECK(m.nextExpiry(1000 + cap) == std::optional<int64_t>(1000 + cap + kActivityResultMs),
+          "then the result's 10 s");
+    CHECK(!m.end("lane:1", ActivityResult(), 2000 + cap), "a late answer is ignored like a double end");
+    CHECK(lineText(m, 2000 + cap) == "Placement check failed: no answer within 15 min", "the line keeps the failure");
+    m.begin("lane:3", ActivityKind::Approve, 2, "", 3000 + cap);
+    m.end("lane:3", ActivityResult(), 4000 + cap);
+    CHECK(lineText(m, 4000 + cap) == "Approved 2 albums", "a later result reaches the line");
+
+    // An end before the deadline wins, and the deadline is gone with it.
+    ActivityModel early;
+    early.begin("lane:1", ActivityKind::ExecuteDryRun, 1, "Artist" + kDash + "Album", 0);
+    early.deadline("lane:1", cap, noAnswer);
+    CHECK(early.end("lane:1", ActivityResult(), 15000), "the late answer before the deadline");
+    CHECK(lineText(early, 15000) == "Checked placement of Artist" + kDash + "Album", "its own result");
+    CHECK(early.nextExpiry(15000) == std::optional<int64_t>(25000), "no deadline left, only the 10 s");
+    CHECK(!early.prune(cap) || early.size() == 0, "the deadline does nothing later");
+    CHECK(!early.line(cap).has_value(), "nothing shown");
+
+    // A deadline already past (the timer fired late, the Mac slept): the
+    // next time is at or before now, and an end() prunes first.
+    ActivityModel late;
+    late.begin("lane:1", ActivityKind::ExecuteDryRun, 2, "", 0);
+    late.deadline("lane:1", 1000, noAnswer);
+    CHECK(late.nextExpiry(5000) == std::optional<int64_t>(1000), "an overdue deadline: prune at once");
+    CHECK(!late.end("lane:1", ActivityResult(), 5000), "an end after the deadline finds it ended");
+    CHECK(lineText(late, 5000) == "Placement check failed: no answer within 15 min", "the deadline's result");
+    // Pruned much later than the deadline: ended then, so not shown at all.
+    ActivityModel slept;
+    slept.begin("lane:1", ActivityKind::ExecuteDryRun, 2, "", 0);
+    slept.deadline("lane:1", 1000, noAnswer);
+    CHECK(slept.prune(1000 + kActivityResultMs) && slept.size() == 0, "past its 10 s too: gone");
+    CHECK(!slept.line(1000 + kActivityResultMs).has_value(), "no line");
+
+    // begin() on the key drops the deadline with the old entry; clear()
+    // drops it too.
+    ActivityModel again;
+    again.begin("lane:1", ActivityKind::ExecuteDryRun, 2, "", 0);
+    again.deadline("lane:1", 1000, noAnswer);
+    again.begin("lane:1", ActivityKind::Propose, 2, "", 10);
+    CHECK(!again.prune(2000) && again.isRunning("lane:1"), "the new entry has no deadline");
+    again.deadline("lane:1", 3000, noAnswer);
+    CHECK(again.clear() && !again.nextExpiry(0).has_value(), "clear drops the deadline");
+}
+
+// The end of an assign and the propose after it (review finding: a partly
+// failed assign ended with the propose's success and the check icon).
+static void testAfterAssign() {
+    g_context = "after-assign";
+    const ActivityResult ok;
+    const ActivityResult assignPart = failed("1 of 3 albums", "assign: done for 2 of 3 roots; cannot assign from status placed");
+    const ActivityResult proposeFail = failed("unreadable sidecar", "propose failed for 2 roots: unreadable sidecar");
+
+    ActivityResult r = activityAfterAssign(ok, ok);
+    CHECK(r.succeeded && !r.kind.has_value(), "both succeeded: the propose's success");
+    r = activityAfterAssign(ok, proposeFail);
+    CHECK(!r.succeeded && r.reason == "unreadable sidecar" && !r.kind.has_value(), "only the propose failed");
+    r = activityAfterAssign(assignPart, ok);
+    CHECK(!r.succeeded && r.reason == "1 of 3 albums" && r.kind == std::optional<ActivityKind>(ActivityKind::Assign),
+          "the assign failed for one: failed, as the assign");
+    CHECK(r.detail == assignPart.detail, "its console line");
+    r = activityAfterAssign(assignPart, proposeFail);
+    CHECK(!r.succeeded && r.reason == "1 of 3 albums" && r.kind == std::optional<ActivityKind>(ActivityKind::Assign),
+          "both failed: the assign's failure");
+    CHECK(r.detail == assignPart.detail + "; " + proposeFail.detail, "both console lines");
+    r = activityAfterAssign(failed("x"), failed("not started"));
+    CHECK(r.detail == "not started", "the propose's reason when it has no detail");
+
+    // Through the model: the entry renamed for the propose, then ended.
+    auto ended = [](const ActivityResult &assign, const ActivityResult &propose) {
+        ActivityModel m;
+        m.begin("lane:1", ActivityKind::Assign, 3, "", 0);
+        m.rename("lane:1", ActivityKind::AssignThenPropose, 2, "");
+        m.end("lane:1", activityAfterAssign(assign, propose), 10);
+        return m;
+    };
+    ActivityModel m = ended(ok, ok);
+    CHECK(lineText(m, 10) == "Assigned and proposed 2 albums", "succeeded: assigned and proposed");
+    CHECK(m.line(10)->icon == ActivityIcon::Check, "with the check");
+    m = ended(assignPart, ok);
+    CHECK(lineText(m, 10) == "Assign failed: 1 of 3 albums", "the partial assign shows");
+    CHECK(m.line(10)->icon == ActivityIcon::Cross && m.line(10)->state == ActivityState::Failed, "with the cross");
+    CHECK(m.items(10).size() == 1 && m.items(10)[0].title == "Assign failed: 1 of 3 albums", "the list says so too");
+    m = ended(ok, proposeFail);
+    CHECK(lineText(m, 10) == "Propose failed: unreadable sidecar", "a failed propose");
+}
+
+// The Delete flow's census (review finding: it always ended succeeded).
+static void testReadsResult() {
+    g_context = "reads-result";
+    ActivityResult r = activityReadsResult(3, {});
+    CHECK(r.succeeded, "every list read: succeeded");
+    r = activityReadsResult(3, {"share unreachable (Host is down)", "the share stopped answering",
+                                "the share stopped answering"});
+    CHECK(!r.succeeded && r.reason == "share unreachable (Host is down)", "none read: the first error");
+    CHECK(r.detail == "no file list for 3 of 3 albums: share unreachable (Host is down)", "the detail");
+    r = activityReadsResult(3, {"no longer listed by intake status"});
+    CHECK(!r.succeeded && r.reason == "1 of 3 albums", "some read: k of n albums");
+    CHECK(r.detail == "no file list for 1 of 3 albums: no longer listed by intake status", "the detail");
+    r = activityReadsResult(1, {"unreadable"});
+    CHECK(!r.succeeded && r.reason == "unreadable", "one root, unread");
+    r = activityReadsResult(0, {"x", "y"});
+    CHECK(!r.succeeded && r.reason == "x" && r.detail == "no file list for 2 of 2 albums: x",
+          "more errors than named: all failed");
+
+    ActivityModel m;
+    m.begin("census:1", ActivityKind::DeleteCensus, 3, "", 0);
+    m.end("census:1", activityReadsResult(3, {"share unreachable", "the share stopped answering",
+                                              "the share stopped answering"}),
+          50);
+    CHECK(lineText(m, 50) == "Row count failed: share unreachable", "a share that fails at once: failed");
+    CHECK(m.line(50)->icon == ActivityIcon::Cross, "with the cross");
+}
+
 int main() {
     @autoreleasepool {
         testKeys();
@@ -489,6 +670,9 @@ int main() {
         testClear();
         testItemDetails();
         testResultFor();
+        testDeadline();
+        testAfterAssign();
+        testReadsResult();
     }
     TEST_MAIN_END();
 }

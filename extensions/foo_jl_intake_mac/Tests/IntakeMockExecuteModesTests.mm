@@ -7,7 +7,8 @@
 //     then placed, or approved for a root that fails), as the real CLI does,
 //     in the summary rows and the sidecars, with the library copy; a resume
 //     writes no placing; a dry run answers at once; replies are made up for
-//     generated roots (perf-200);
+//     generated roots (perf-200); without ids (--approved, --resume) the
+//     reply covers the roots the walk picked;
 //   - slow-dry-run: an execute dry run answers only after its pause, while
 //     a real execute walks as per-root does;
 //   - bad mode arguments exit 64.
@@ -79,12 +80,18 @@ static void testPerRootWalk() {
     run.start({"execute", kPerf4, kPerf12, kPerf20, "--json"}, mock::mockEnv(state));
     // The distinct status triples seen while it runs.
     std::vector<std::string> seen;
-    while (!run.done) {
+    auto sample = [&state, &seen] {
         const std::string t = statusOf(state, kPerf4) + "," + statusOf(state, kPerf12) + "," + statusOf(state, kPerf20);
         if (seen.empty() || seen.back() != t) seen.push_back(t);
+    };
+    while (!run.done) {
+        sample();
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     run.join();
+    // The last root's final write can land after the last sample, just
+    // before the mock exits (its reply is quick): one more after the exit.
+    sample();
     auto indexOf = [&seen](const std::string &t) {
         for (size_t i = 0; i < seen.size(); i++) {
             if (seen[i] == t) return static_cast<long>(i);
@@ -168,6 +175,48 @@ static void testPerRootDryRunAndResume() {
           "with its library copy");
 }
 
+// The number of times `part` occurs in `text`.
+static size_t countOf(const std::string &text, const std::string &part) {
+    size_t n = 0;
+    for (size_t at = text.find(part); at != std::string::npos; at = text.find(part, at + part.size())) n++;
+    return n;
+}
+
+// Without ids the walk picks the roots itself; the reply covers those
+// roots, not the ones still in that status after the walk (review finding:
+// the reply was empty, or only the failed root's error with data null).
+static void testPerRootWithoutIds() {
+    g_context = "per-root-no-ids";
+    const std::string state = mock::setupState("perf-200");
+    CHECK(!state.empty(), "perf-200 set up");
+    mock::setMode(state, "execute", "per-root 0");
+    std::string out;
+    int rc = mock::runCapture({mock::mockPath(), "execute", "--approved", "--json"}, mock::mockEnv(state), out);
+    CHECK_EQ(rc, 0, "--approved: exit 0");
+    CHECK(contains(out, "\"ok\":true"), "ok");
+    CHECK_EQ(countOf(out, "\"journal_seq\":"), static_cast<size_t>(25), "a row for each of the 25 roots walked");
+    CHECK(statusOf(state, kPerf4) == "placed" && statusOf(state, kPerf20) == "placed", "they are placed");
+
+    const std::string failing = mock::setupState("perf-200");
+    CHECK(!failing.empty(), "perf-200 set up again");
+    mock::setMode(failing, "execute", std::string("per-root 0 ") + kPerf12);
+    rc = mock::runCapture({mock::mockPath(), "execute", "--approved", "--json"}, mock::mockEnv(failing), out);
+    CHECK_EQ(rc, 1, "one root failing: exit 1, not 2");
+    CHECK(contains(out, "\"ok\":false") && !contains(out, "\"data\":null"), "data is not null");
+    CHECK_EQ(countOf(out, "\"journal_seq\":"), static_cast<size_t>(24), "rows for the 24 roots placed");
+    CHECK_EQ(countOf(out, "\"E_VERIFY\""), static_cast<size_t>(1), "and the failed root's error");
+    CHECK(statusOf(failing, kPerf12) == "approved", "which is approved again");
+
+    const std::string resume = mock::setupState("default");
+    CHECK(!resume.empty(), "default set up");
+    mock::setMode(resume, "execute", "per-root 0");
+    rc = mock::runCapture({mock::mockPath(), "execute", "--resume", "--json"}, mock::mockEnv(resume), out);
+    CHECK_EQ(rc, 0, "--resume: exit 0");
+    CHECK(contains(out, "\"id\":\"itk_00000011\"") && contains(out, "\"resumed\":\"completed\""),
+          "the row of the root that was placing");
+    CHECK(statusOf(resume, "itk_00000011") == "placed", "now placed");
+}
+
 static void testSlowDryRun() {
     g_context = "slow-dry-run";
     const std::string state = mock::setupState("perf-200");
@@ -210,6 +259,7 @@ int main(void) {
         atexit([] { mock::killLeftovers(); });
         testPerRootWalk();
         testPerRootDryRunAndResume();
+        testPerRootWithoutIds();
         testSlowDryRun();
         testBadArguments();
         mock::killLeftovers();

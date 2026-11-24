@@ -16,6 +16,7 @@
 #include "../Core/IntakeRunProgress.h"
 #include "../Core/IntakeView.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <unordered_map>
@@ -43,8 +44,14 @@ HubState &hub() {
 
 void notifyChanged();
 
-// One dispatch_after at the model's next expiry; an older one finds its
-// generation stale and does nothing.
+// One dispatch_after at the model's next expiry (a result's 10 s or a
+// running entry's deadline); an older one finds its generation stale and
+// does nothing. On the wall clock (dispatch_walltime), the clock of
+// activityNowMs: dispatch_time counts mach_absolute_time, which stops while
+// the Mac sleeps, so a lid closed 2 s into a result's 10 s would keep the
+// line for another 8 s after waking. A walltime timer fires on waking when
+// its time passed during sleep. The price: a wall clock set back delays it
+// by as much (rare; the next change re-arms it).
 void scheduleExpiry() {
     HubState &h = hub();
     const uint64_t generation = ++h.expiryGeneration;
@@ -52,8 +59,9 @@ void scheduleExpiry() {
     const int64_t now = activityNowMs();
     const std::optional<int64_t> next = h.model.nextExpiry(now);
     if (!next) return;
-    const int64_t delayMs = *next - now + 1;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delayMs * static_cast<int64_t>(NSEC_PER_MSEC)),
+    // A deadline already past: at once (1 ms).
+    const int64_t delayMs = std::max<int64_t>(*next - now, 0) + 1;
+    dispatch_after(dispatch_walltime(nullptr, delayMs * static_cast<int64_t>(NSEC_PER_MSEC)),
                    dispatch_get_main_queue(), ^{
                        HubState &later = hub();
                        if (later.expiryGeneration != generation || later.stopped) return;
@@ -145,6 +153,13 @@ void activityBeginRun(const std::string &stem, CliCommand command, const std::ve
     h.runs[key] = std::move(run);
     h.runsTracked.store(true, std::memory_order_relaxed);
     notifyChanged();
+}
+
+void activityDeadline(const std::string &key, int64_t afterMs, const ActivityResult &result) {
+    HubState &h = hub();
+    if (h.stopped) return;
+    // The line does not change now: only the timer is re-armed.
+    if (h.model.deadline(key, activityNowMs() + afterMs, result)) scheduleExpiry();
 }
 
 void activityRename(const std::string &key, ActivityKind kind, size_t count, const std::string &firstLabel) {
