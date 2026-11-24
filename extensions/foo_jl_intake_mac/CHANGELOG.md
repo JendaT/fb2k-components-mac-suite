@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Row tooltip**: Hovering an intake row shows its status, the target folder from the tier on, who assigned it with the confidence, or what is still missing.
 - **Cannot be placed**: A release whose target can never be built (for example graded tier reject) now says "cannot be placed" in its tooltip and group badge; "slot pending" is kept for singles.
 - **Group badge**: A group of one proposed or approved release shows the target collection and confidence; amber when it needs review or is below 0.6.
+- **Title-formatting fields**: `%intake_status%`, `%intake_target%` and `%intake_collection%` for SimPlaylist columns and group patterns; changed playlist rows refresh at most once per second, only after a field was used.
 - **Context actions**: Propose, Assign (to a candidate or any collection), Approve, Reject, Execute placement, Resume placement, Swap to library paths, Delete local copy, Refresh.
 - **Assign then propose**: Assigning a resolved release to a collection also proposes it, so it is ready to approve.
 - **Assign picker**: "Assign to other collection…" shows the list at once (Suggested, Recent, All collections) and filters it as you type, by any part of the name, ignoring case, accents and brackets.
@@ -31,3 +32,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Changes only through the CLI**: Reads sidecars and CLI output; music files and sidecars change only through the intake command-line tool.
 - **Requirements**: A SimPlaylist build with the row decorator API, and an intake CLI that reports schema 1.
 - **Changes made on the NAS**: Need Refresh; FSEvents sees only changes made through this Mac.
+- **Fields outside playlists**: Items in no playlist (library viewers) are not refreshed when a field value changes; `mac-volume://` rows need a volume foobar2000 resolves.

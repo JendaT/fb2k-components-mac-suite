@@ -78,6 +78,14 @@ Debug lines show each CLI call's arguments, how it ended (outcome, exit code,
 duration, error codes) and the member-list I/O. They never show the CLI's
 output. The `decor_stats` lines ignore this setting.
 
+The title-formatting fields (B13) have no setting of their own. At level 2
+the console shows each volume table seed (`[intake] fields: volume table
+(start): N volume id(s), M mount(s) under /Volumes, X ms: <UUID> -> <root>`),
+each volume learned from a decorated row, and, once a field has been used,
+one line per refresh (`[intake] fields: refreshed N of M playlist rows in X
+ms (main thread Y ms, K root key(s))`). A seed call that takes over 20 ms is
+logged at level 1.
+
 ## foo_jl_intake.watch_folders
 
 `configStrings`. Extra folders to watch for sidecar changes, one absolute path

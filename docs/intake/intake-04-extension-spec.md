@@ -282,6 +282,60 @@ belongs to one `proposed` or `approved` root:
   (`target_null_reason`, `quality.*`) through the overseer; with them the
   wording can name the reason.
 
+### Title-formatting fields (B13)
+Three global fields, usable in any title-formatting script (SimPlaylist
+columns and group patterns included), from a
+`metadb_display_field_provider_v2` (`process_field` and `process_field_v2`
+answer alike):
+
+| field | value | no value (false, nothing written) |
+|---|---|---|
+| `%intake_status%` | the doc 03 status id: `new`, `resolved`, `proposed`, `approved`, `placing`, `placed`, `rejected`, `gc_done`; an unknown status: the CLI's text | never, for a row under a known root |
+| `%intake_target%` | `proposal.target_path` in the tooltip's form (from the tier folder on, see Row tooltip) | no proposal, a null target, or no `target_path` member (CLI 0.2.1) |
+| `%intake_collection%` | `proposal.target_collection` | no proposal or no collection |
+
+- **Which rows:** the same root mapping as the decorations (normalisation,
+  NFC, mount aliases, members, deepest root). A row outside every known
+  root, any row while the provider is inert or before the first load, and
+  rows of other schemes have no value, so `[%intake_target%]` collapses.
+  Roots that render nothing (placed unverified, gc_done, unknown) still
+  give values where their rows map, i.e. whole-directory roots; a virtual
+  one matches nothing, as its member list is not read (see Members).
+- **Cost:** values are computed once per root when the snapshot is built;
+  `process_field` does no I/O, takes no lock, makes no foobar2000 call but
+  the handle's `get_path()`, and allocates nothing for an already-normal
+  ASCII path.
+- **mac-volume rows:** `process_field` may not call
+  `filesystem::g_get_native_path`, so a volume table stands in for it:
+  seeded per mount under `/Volumes` off the main thread
+  (`g_get_canonical_path("<mount>/")` gives `mac-volume://<UUID>/`,
+  `g_get_native_path` of that gives the root foobar2000 resolves it to),
+  re-seeded on mount, unmount and Refresh, and learned from rows the
+  decorate path converted (a stale volume id of a share that is still
+  mounted is known only this way, once one of its rows was shown). The
+  remainder after `<UUID>/` is taken raw (S0, plorg). A row of a volume id
+  the table does not know has no value.
+- **Refresh:** foobar2000 caches field values until
+  `metadb_io::dispatch_refresh`. Nothing is refreshed until a field was
+  evaluated once. After that, each published view or volume table change
+  marks the roots whose key, member list or values changed (all roots on an
+  alias table change, a volume change or an inert switch), and at most once
+  per second the main thread reads every playlist's items once, tests them
+  off the main thread and refreshes the matching handles, each once
+  (SimPlaylist re-lays out, and v2 regroups, on every refresh). Every row
+  whose value a host may still hold differs is refreshed, also through
+  states that came and went within the second; a few more may be. No call
+  when nothing matched. Debug line: `fields: refreshed N of M playlist rows
+  in X ms`.
+- **Limits:** items in no playlist (a library viewer, the Properties
+  dialog) are not refreshed: they show new values only when their host
+  formats them again. Refresh lags a change by 0.25 to 1 s. Field names are
+  fixed for the session.
+- **Considered:** a `metadb_index` client, whose
+  `dispatch_refresh(index, hashes)` also reaches library items, needs a
+  registered index hashed from every track's record in the database and
+  stored by foobar2000; not worth it for three display fields.
+
 ### Context actions (selection mapped to sidecar roots)
 A flat `jl_context_action` list (API v1: no submenus, no tooltip);
 `action_id` indexes a table captured at menu time.
