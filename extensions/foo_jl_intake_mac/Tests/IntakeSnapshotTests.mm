@@ -15,6 +15,7 @@
 // TEST_DEPS: src/Core/IntakeCommandArgs.mm src/Core/IntakeSemver.mm src/Core/IntakeSettingsParse.mm
 // TEST_DEPS: src/Core/IntakeGroupBadge.mm
 // TEST_DEPS: src/Core/IntakeTargetPath.mm
+// TEST_DEPS: src/Core/IntakeFields.mm
 //
 
 #import <Foundation/Foundation.h>

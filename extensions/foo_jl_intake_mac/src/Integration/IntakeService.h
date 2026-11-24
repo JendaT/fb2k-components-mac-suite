@@ -17,6 +17,13 @@
 //  re-reads the mount table, reloads and restarts the watch stream), and
 //  starts the first load.
 //
+//  Title-formatting fields (B13, IntakeFieldProvider): on_init starts the
+//  volume seed (fieldsStart) before the loader; every published view goes
+//  to fieldsPublishView as well as to the provider; a mount or unmount
+//  notification and Refresh re-seed the volume table
+//  (fieldsReseedVolumes); on_quit calls fieldsShutdown right after
+//  actionsShutdown.
+//
 //  Settings (B5): the preferences page writes configStore and posts
 //  IntakeSettingsDidChangeNotification on the main thread. The service
 //  reads every key again (config::load) and applies what changed, with no

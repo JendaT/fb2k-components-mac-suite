@@ -13,6 +13,7 @@
 #include "IntakeActions.h"
 #include "IntakeConfig.h"
 #include "IntakeDecoratorProvider.h"
+#include "IntakeFieldProvider.h"
 #include "IntakeMounts.h"
 #include "IntakeNativePath.h"
 
@@ -132,6 +133,9 @@ public:
         ls.cli = cliConfig();
         ls.readMounts = [] { return readMountTable(); };
         ls.publish = [](std::shared_ptr<const IntakeView> view, bool invalidateAll, PublishReason reason) {
+            // B13: the title-formatting fields read every view too (swapped
+            // in on the main thread, refreshed there when they changed).
+            fieldsPublishView(view);
             providerPublish(std::move(view), invalidateAll, reason == PublishReason::Load);
         };
         ls.watchFolders = settings_.watchFolders;
@@ -211,6 +215,8 @@ public:
     void reload(bool recheckVersion, std::function<void(const LoaderStatus &)> finished) {
         // Refresh is the user's way back from a volume the guard marked.
         if (resetSlowVolumes("refresh")) providerInvalidateAll();
+        // And the fields' volume table is read again (B13).
+        fieldsReseedVolumes("refresh");
         if (!loader_) {
             if (finished) finished(status());
             return;
@@ -384,6 +390,8 @@ void Service::volumesChanged() {
     // cached that; a reload that finds nothing changed would not repaint
     // them.
     if (resetSlowVolumes("mount change")) providerInvalidateAll();
+    // The fields' volume ids follow the mounts (B13).
+    fieldsReseedVolumes("mount change");
     if (g_service == nullptr || !g_service->loader_) return;
     g_service->loader_->remount();
     g_service->loader_->reload(false);
@@ -403,6 +411,9 @@ public:
         setLogLevel(settings.logLevel);
         providerSetStatsEnabled(settings.decorStats);
         if (settings.decorStats) logUnfiltered(LogLevel::Info, "decor_stats on: one line per decorate batch");
+        // B13: the fields' volume table is seeded off the main thread, so
+        // it is usually ready before the first load is.
+        fieldsStart();
         g_service = new Service(settings);
         g_service->start();
         // B8: adopt or finish execute runs an earlier session left behind
@@ -412,6 +423,7 @@ public:
 
     void on_quit() override {
         actionsShutdown();  // results of running mutating calls are dropped from here on
+        fieldsShutdown();   // no field refresh or seed from here on; the fields keep answering
         if (g_service != nullptr) {
             g_service->stop();
             delete g_service;

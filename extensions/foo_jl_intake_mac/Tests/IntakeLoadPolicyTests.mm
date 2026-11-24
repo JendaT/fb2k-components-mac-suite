@@ -15,6 +15,7 @@
 // TEST_DEPS: src/Core/IntakeWatchFilter.mm
 // TEST_DEPS: src/Core/IntakeGroupBadge.mm
 // TEST_DEPS: src/Core/IntakeTargetPath.mm
+// TEST_DEPS: src/Core/IntakeFields.mm src/Core/IntakeStatusModel.mm
 //
 
 #import <Foundation/Foundation.h>

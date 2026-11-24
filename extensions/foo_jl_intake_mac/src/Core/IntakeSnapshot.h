@@ -4,8 +4,9 @@
 //
 //  One immutable view of intake state: the records of a `status --json`
 //  load (IntakeStatusModel), their membership (IntakeSidecarMembers), their
-//  visuals (IntakeDecorationMap) and group badges (IntakeGroupBadge),
-//  indexed for the decorate path (PLAN.md 3.2, 3.3).
+//  visuals (IntakeDecorationMap), group badges (IntakeGroupBadge) and
+//  title-formatting field values (IntakeFields, B13), indexed for the
+//  decorate path (PLAN.md 3.2, 3.3).
 //
 //  Lookup of a row path:
 //   1. The member map: an exact match on root_path + "/" + files[].path of
@@ -82,7 +83,8 @@ bool singlesRootFor(const IntakeRecord &record, const RootMembers *members);
 class IntakeSnapshot {
 public:
     // Takes the records and the member table, computes every record's visual
-    // and badge with `palette` and builds both maps. Logs ties at Debug level.
+    // and badge with `palette` and its field values, and builds both maps.
+    // Logs ties at Debug level.
     static std::shared_ptr<const IntakeSnapshot> build(std::vector<IntakeRecord> records,
                                                        MemberTable members,
                                                        const IntakePalette &palette = IntakePalette());

@@ -29,6 +29,8 @@ JL_COMPONENT_ABOUT(
     "Features:\n"
     "- Row tints and icons by intake status, with a marker on releases that need review\n"
     "- Group header badge with the target collection and confidence\n"
+    "- Title-formatting fields %intake_status%, %intake_target% and %intake_collection% "
+    "for columns and group patterns\n"
     "- Context actions: Propose, Assign, Approve, Reject, Execute, Resume, Swap to library paths "
     "and Delete local copy\n"
     "- All changes to music files and sidecars go through the intake command-line tool\n"
