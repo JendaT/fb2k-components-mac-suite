@@ -17,6 +17,7 @@
 #include "IntakeFieldProvider.h"
 #include "IntakeMounts.h"
 #include "IntakeNativePath.h"
+#include "IntakeStatusProvider.h"
 
 #include "../Core/IntakeCliRunner.h"
 #include "../Core/IntakeCommandArgs.h"
@@ -415,6 +416,9 @@ public:
         setLogLevel(settings.logLevel);
         providerSetStatsEnabled(settings.decorStats);
         if (settings.decorStats) logUnfiltered(LogLevel::Info, "decor_stats on: one line per decorate batch");
+        // B14: the status provider follows the activity model before
+        // anything can begin an activity (the run scan below adopts runs).
+        statusProviderStart();
         // B13: the fields' volume table is seeded off the main thread, so
         // it is usually ready before the first load is.
         fieldsStart();

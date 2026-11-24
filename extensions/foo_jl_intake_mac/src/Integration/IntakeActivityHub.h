@@ -38,7 +38,8 @@
 //  the items at activityNowMs(); activitySetChangeHandler() for one handler
 //  that is called after every change that may alter the line or the list,
 //  and again when a result's 10 s run out (the hub keeps one dispatch_after
-//  at the model's nextExpiry). The handler runs on the main thread.
+//  at the model's nextExpiry). The handler runs on the main thread. The
+//  status provider (IntakeStatusProvider.mm) installs it from on_init.
 //
 //  The state is leaked on purpose (like the actions' state): hooks may run
 //  after on_quit.
