@@ -1,0 +1,404 @@
+//
+//  IntakeActivity.mm
+//  foo_jl_intake
+//
+//  See IntakeActivity.h.
+//
+
+#include "IntakeActivity.h"
+
+#include <algorithm>
+#include <climits>
+
+namespace intake {
+
+namespace {
+
+const char *const kEllipsis = "\xE2\x80\xA6";  // U+2026
+
+// The words of a kind's texts.
+struct Words {
+    const char *running;   // before the object: "Checking placement of"
+    const char *progress;  // before n/m: "Checking placement"
+    const char *done;      // before the object: "Checked placement of"
+    const char *failed;    // before ": <reason>"
+};
+
+Words wordsFor(ActivityKind kind) {
+    switch (kind) {
+        case ActivityKind::Propose: return {"Proposing", "Proposing", "Proposed", "Propose failed"};
+        case ActivityKind::Assign: return {"Assigning", "Assigning", "Assigned", "Assign failed"};
+        case ActivityKind::AssignThenPropose:
+            return {"Proposing", "Proposing", "Assigned and proposed", "Propose failed"};
+        case ActivityKind::Approve: return {"Approving", "Approving", "Approved", "Approve failed"};
+        case ActivityKind::Reject: return {"Rejecting", "Rejecting", "Rejected", "Reject failed"};
+        case ActivityKind::ExecuteDryRun:
+            return {"Checking placement of", "Checking placement", "Checked placement of", "Placement check failed"};
+        case ActivityKind::Execute: return {"Placing", "Placing", "Placed", "Execute failed"};
+        case ActivityKind::Resume:
+            return {"Resuming placement of", "Resuming placement", "Resumed placement of", "Resume failed"};
+        case ActivityKind::Gc:
+            return {"Deleting local copies of", "Deleting local copies", "Deleted local copies of", "Delete failed"};
+        case ActivityKind::DeleteCensus:
+            return {"Counting playlist rows for", "Counting playlist rows", "Counted playlist rows for",
+                    "Row count failed"};
+        case ActivityKind::Swap: return {"Swapping", "Swapping playlist rows", "Swapped", "Swap failed"};
+    }
+    return {"Working on", "Working on", "Done with", "Failed"};
+}
+
+bool hasProgressFromStart(ActivityKind kind) {
+    return kind == ActivityKind::Execute || kind == ActivityKind::Resume;
+}
+
+uint32_t clamp32(size_t n) {
+    return n > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(n);
+}
+
+// Control characters (newlines, tabs, DEL) become spaces; UTF-8 bytes are
+// all >= 0x80 and stay.
+std::string oneLine(const std::string &text) {
+    std::string out = text;
+    for (char &c : out) {
+        const unsigned char u = static_cast<unsigned char>(c);
+        if (u < 0x20 || u == 0x7F) c = ' ';
+    }
+    return out;
+}
+
+bool isContinuation(unsigned char c) {
+    return (c & 0xC0) == 0x80;
+}
+
+// A combining diacritical mark (U+0300–U+036F) starts at `at`.
+bool combiningMarkAt(const std::string &s, size_t at) {
+    if (at + 1 >= s.size()) return false;
+    const unsigned char a = static_cast<unsigned char>(s[at]);
+    const unsigned char b = static_cast<unsigned char>(s[at + 1]);
+    if (a == 0xCC) return b >= 0x80 && b <= 0xBF;  // U+0300–U+033F
+    if (a == 0xCD) return b >= 0x80 && b <= 0xAF;  // U+0340–U+036F
+    return false;
+}
+
+// The start of the character before the one at `at` (at > 0).
+size_t previousBoundary(const std::string &s, size_t at) {
+    size_t i = at - 1;
+    while (i > 0 && isContinuation(static_cast<unsigned char>(s[i]))) i--;
+    return i;
+}
+
+std::string plural(size_t n, const char *one, const char *many) {
+    return std::to_string(n) + " " + (n == 1 ? one : many);
+}
+
+bool startsWith(const std::string &s, const std::string &prefix) {
+    return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
+}
+
+} // anonymous namespace
+
+std::string activityLaneKey(uint64_t token) {
+    return "lane:" + std::to_string(token);
+}
+
+std::string activityRunKey(const std::string &stem) {
+    return "run:" + stem;
+}
+
+std::string activitySwapKey(uint64_t serial) {
+    return "swap:" + std::to_string(serial);
+}
+
+std::string activityCensusKey(uint64_t serial) {
+    return "census:" + std::to_string(serial);
+}
+
+bool activityKindFor(CliCommand command, bool dryRun, ActivityKind &out) {
+    switch (command) {
+        case CliCommand::Propose: out = ActivityKind::Propose; return true;
+        case CliCommand::Assign: out = ActivityKind::Assign; return true;
+        case CliCommand::Approve: out = ActivityKind::Approve; return true;
+        case CliCommand::Reject: out = ActivityKind::Reject; return true;
+        case CliCommand::Execute: out = dryRun ? ActivityKind::ExecuteDryRun : ActivityKind::Execute; return true;
+        case CliCommand::Resume: out = ActivityKind::Resume; return true;
+        case CliCommand::Gc: out = ActivityKind::Gc; return true;
+        case CliCommand::Version:
+        case CliCommand::Status:
+        case CliCommand::Collections:
+        case CliCommand::Income: return false;
+    }
+    return false;
+}
+
+std::string activityShorten(const std::string &text, size_t maxBytes) {
+    std::string s = oneLine(text);
+    if (s.size() <= maxBytes) return s;
+    const size_t ellipsis = 3;
+    if (maxBytes < ellipsis) return std::string();
+    size_t cut = maxBytes - ellipsis;
+    // Never inside a character...
+    while (cut > 0 && isContinuation(static_cast<unsigned char>(s[cut]))) cut--;
+    // ...and never between a letter and the accents that follow it: the
+    // letter goes with them.
+    while (cut > 0 && combiningMarkAt(s, cut)) cut = previousBoundary(s, cut);
+    while (cut > 0 && s[cut - 1] == ' ') cut--;
+    return s.substr(0, cut) + kEllipsis;
+}
+
+ActivityResult activityResultFor(const MutationOutcome &outcome, size_t named, const std::string &commandName) {
+    ActivityResult r;
+    if (!outcome.isError && outcome.rootErrors.empty() && outcome.failedWithoutError.empty()) return r;
+    r.succeeded = false;
+    r.detail = outcome.consoleLine;
+    const std::string prefix = commandName + ": ";
+    const size_t succeeded = outcome.succeeded.size();
+    const size_t failed = named > succeeded ? named - succeeded : 0;
+    if (succeeded > 0 && failed > 0) {
+        r.reason = std::to_string(failed) + " of " + plural(named, "album", "albums");
+        return r;
+    }
+    if (!outcome.rootErrors.empty()) {
+        const std::string &text = outcome.rootErrors.front().second;
+        r.reason = startsWith(text, prefix) ? text.substr(prefix.size()) : text;
+        return r;
+    }
+    // No root's error to show: the console line without what it repeats
+    // ("propose: cancelled", "propose failed for 3 roots: <error>", "propose:
+    // done for 3 of 3 roots; <error>").
+    std::string line = outcome.consoleLine;
+    const std::string failedFor = commandName + " failed for ";
+    if (startsWith(line, failedFor)) {
+        const size_t colon = line.find(": ", failedFor.size());
+        line = colon == std::string::npos ? line.substr(failedFor.size()) : line.substr(colon + 2);
+    } else if (startsWith(line, prefix)) {
+        line = line.substr(prefix.size());
+        const size_t semicolon = line.find("; ");
+        if (semicolon != std::string::npos) line = line.substr(semicolon + 2);
+    }
+    r.reason = line;
+    return r;
+}
+
+// --- the model ---
+
+ActivityModel::Entry *ActivityModel::findRunning(const std::string &key) {
+    for (Entry &e : entries_) {
+        if (e.state == ActivityState::Running && e.key == key) return &e;
+    }
+    return nullptr;
+}
+
+const ActivityModel::Entry *ActivityModel::findRunning(const std::string &key) const {
+    for (const Entry &e : entries_) {
+        if (e.state == ActivityState::Running && e.key == key) return &e;
+    }
+    return nullptr;
+}
+
+bool ActivityModel::shown(const Entry &e, int64_t now) {
+    if (e.state == ActivityState::Running) return true;
+    return e.endedMs <= now && now - e.endedMs < kActivityResultMs;
+}
+
+uint64_t ActivityModel::begin(const std::string &key, ActivityKind kind, size_t count, const std::string &firstLabel,
+                              int64_t now) {
+    prune(now);
+    entries_.erase(std::remove_if(entries_.begin(), entries_.end(),
+                                  [&key](const Entry &e) { return e.state == ActivityState::Running && e.key == key; }),
+                   entries_.end());
+    Entry e;
+    e.id = nextId_++;
+    e.key = key;
+    e.kind = kind;
+    e.count = count;
+    e.label = activityShorten(firstLabel, kActivityLabelMaxBytes);
+    if (hasProgressFromStart(kind)) e.total = clamp32(count);
+    e.startedMs = now;
+    entries_.push_back(std::move(e));
+    return entries_.back().id;
+}
+
+bool ActivityModel::progress(const std::string &key, uint32_t done, uint32_t total, const std::string &currentLabel) {
+    Entry *e = findRunning(key);
+    if (e == nullptr) return false;
+    std::string current = activityShorten(currentLabel, kActivityLabelMaxBytes);
+    if (e->done == done && e->total == total && e->current == current) return false;
+    e->done = done;
+    e->total = total;
+    e->current = std::move(current);
+    return true;
+}
+
+bool ActivityModel::rename(const std::string &key, ActivityKind kind, size_t count, const std::string &firstLabel) {
+    Entry *e = findRunning(key);
+    if (e == nullptr) return false;
+    e->kind = kind;
+    e->count = count;
+    e->label = activityShorten(firstLabel, kActivityLabelMaxBytes);
+    e->done = 0;
+    e->total = hasProgressFromStart(kind) ? clamp32(count) : 0;
+    e->current.clear();
+    return true;
+}
+
+bool ActivityModel::end(const std::string &key, const ActivityResult &result, int64_t now,
+                        std::optional<size_t> count) {
+    prune(now);
+    Entry *e = findRunning(key);
+    if (e == nullptr) return false;
+    e->state = result.succeeded ? ActivityState::Succeeded : ActivityState::Failed;
+    e->reason = result.succeeded ? std::string() : activityShorten(result.reason, kActivityReasonMaxBytes);
+    e->detail = result.succeeded ? std::string() : oneLine(result.detail);
+    if (count) e->count = *count;
+    e->current.clear();
+    e->endedMs = now;
+    e->endSeq = nextEndSeq_++;
+    return true;
+}
+
+bool ActivityModel::clear() {
+    const bool had = !entries_.empty();
+    entries_.clear();
+    return had;
+}
+
+bool ActivityModel::prune(int64_t now) {
+    const size_t before = entries_.size();
+    entries_.erase(std::remove_if(entries_.begin(), entries_.end(), [now](const Entry &e) { return !shown(e, now); }),
+                   entries_.end());
+    return entries_.size() != before;
+}
+
+namespace {
+
+// The object of a text: the album's label for one, else the count.
+std::string objectText(ActivityKind kind, size_t count, const std::string &label) {
+    if (kind == ActivityKind::Swap) return plural(count, "playlist row", "playlist rows");
+    if (count == 1 && !label.empty()) return label;
+    return plural(count, "album", "albums");
+}
+
+// "<first album> and N more" for more than one album; empty otherwise.
+std::string albumDetail(ActivityKind kind, size_t count, const std::string &label) {
+    if (kind == ActivityKind::Swap || count < 2 || label.empty()) return std::string();
+    return label + " and " + std::to_string(count - 1) + " more";
+}
+
+} // anonymous namespace
+
+std::string ActivityModel::lineText(const Entry &e) {
+    const Words w = wordsFor(e.kind);
+    switch (e.state) {
+        case ActivityState::Running:
+            if (e.total > 1 && (e.done > 0 || !e.current.empty())) {
+                std::string text = std::string(w.progress) + " " + std::to_string(e.done) + "/" +
+                                   std::to_string(e.total);
+                if (!e.current.empty()) text += ": " + e.current;
+                return text;
+            }
+            return std::string(w.running) + " " + objectText(e.kind, e.count, e.label) + kEllipsis;
+        case ActivityState::Succeeded:
+            return std::string(w.done) + " " + objectText(e.kind, e.count, e.label);
+        case ActivityState::Failed:
+            return e.reason.empty() ? std::string(w.failed) : std::string(w.failed) + ": " + e.reason;
+    }
+    return std::string();
+}
+
+ActivityItem ActivityModel::itemFor(const Entry &e) {
+    ActivityItem item;
+    item.id = e.id;
+    item.state = e.state;
+    item.startedMs = e.startedMs;
+    item.endedMs = e.state == ActivityState::Running ? 0 : e.endedMs;
+    const std::string albums = albumDetail(e.kind, e.count, e.label);
+    if (e.state == ActivityState::Running) {
+        item.done = e.done;
+        item.total = e.total;
+        if (e.total > 1 && (e.done > 0 || !e.current.empty())) {
+            item.title = std::string(wordsFor(e.kind).progress) + " " + std::to_string(e.done) + "/" +
+                         std::to_string(e.total);
+            item.detail = e.current.empty() ? albums : e.current;
+            return item;
+        }
+        item.title = lineText(e);
+        item.detail = albums;
+        return item;
+    }
+    item.title = lineText(e);
+    item.detail = e.state == ActivityState::Failed && !e.detail.empty() ? e.detail : albums;
+    return item;
+}
+
+std::optional<ActivityLine> ActivityModel::line(int64_t now) const {
+    const Entry *top = nullptr;
+    size_t running = 0;
+    for (const Entry &e : entries_) {
+        if (e.state != ActivityState::Running) continue;
+        running++;
+        if (top == nullptr || e.id > top->id) top = &e;
+    }
+    ActivityLine out;
+    if (top != nullptr) {
+        out.text = lineText(*top);
+        if (running > 1) out.text += " (+" + std::to_string(running - 1) + " more)";
+        out.done = top->done;
+        out.total = top->total;
+        out.icon = ActivityIcon::None;
+        out.state = ActivityState::Running;
+        return out;
+    }
+    const Entry *newest = nullptr;
+    for (const Entry &e : entries_) {
+        if (!shown(e, now)) continue;
+        if (newest == nullptr || e.endSeq > newest->endSeq) newest = &e;
+    }
+    if (newest == nullptr) return std::nullopt;
+    out.text = lineText(*newest);
+    out.state = newest->state;
+    out.icon = newest->state == ActivityState::Succeeded ? ActivityIcon::Check : ActivityIcon::Cross;
+    return out;
+}
+
+std::vector<ActivityItem> ActivityModel::items(int64_t now) const {
+    std::vector<const Entry *> running;
+    std::vector<const Entry *> ended;
+    for (const Entry &e : entries_) {
+        if (e.state == ActivityState::Running) {
+            running.push_back(&e);
+        } else if (shown(e, now)) {
+            ended.push_back(&e);
+        }
+    }
+    std::sort(running.begin(), running.end(), [](const Entry *a, const Entry *b) { return a->id > b->id; });
+    std::sort(ended.begin(), ended.end(), [](const Entry *a, const Entry *b) { return a->endSeq > b->endSeq; });
+    std::vector<ActivityItem> out;
+    out.reserve(running.size() + ended.size());
+    for (const Entry *e : running) out.push_back(itemFor(*e));
+    for (const Entry *e : ended) out.push_back(itemFor(*e));
+    return out;
+}
+
+std::optional<int64_t> ActivityModel::nextExpiry(int64_t now) const {
+    std::optional<int64_t> next;
+    for (const Entry &e : entries_) {
+        if (e.state == ActivityState::Running || !shown(e, now)) continue;
+        const int64_t at = e.endedMs + kActivityResultMs;
+        if (!next || at < *next) next = at;
+    }
+    return next;
+}
+
+bool ActivityModel::isRunning(const std::string &key) const {
+    return findRunning(key) != nullptr;
+}
+
+size_t ActivityModel::runningCount() const {
+    size_t n = 0;
+    for (const Entry &e : entries_) {
+        if (e.state == ActivityState::Running) n++;
+    }
+    return n;
+}
+
+} // namespace intake

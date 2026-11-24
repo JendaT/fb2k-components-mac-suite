@@ -14,6 +14,7 @@
 
 #include "IntakeActions.h"
 
+#include "IntakeActivityHub.h"
 #include "IntakeConfig.h"
 #include "IntakeDecoratorProvider.h"
 #include "IntakeNativePath.h"
@@ -21,6 +22,7 @@
 #include "IntakeSwap.h"
 
 #include "../Core/IntakeActionTable.h"
+#include "../Core/IntakeActivity.h"
 #include "../Core/IntakeAssignPropose.h"
 #include "../Core/IntakeCliRunner.h"
 #include "../Core/IntakeCollectionSearch.h"
@@ -381,6 +383,16 @@ std::string idList(const std::vector<std::string> &ids) {
     return out;
 }
 
+// B14: the status-bar result of an operation that did not start (a caller
+// bug or a run file that could not be written; the console line says more).
+ActivityResult activityNotStarted(const std::string &why) {
+    ActivityResult r;
+    r.succeeded = false;
+    r.reason = "not started";
+    r.detail = why;
+    return r;
+}
+
 struct PickerFlow;
 struct ExecuteFlow;
 struct DeleteFlow;
@@ -533,31 +545,41 @@ void followUpGcEnded(uint64_t token);
 // The assign of an AssignThenPropose run finished (its errors and console
 // line are already out): starts the propose on `token`, or releases the
 // lane and refreshes once when there is nothing to propose or it cannot
-// start.
+// start. `assignResult`: the assign's status-bar result, the entry's end
+// when no propose follows; a propose that follows renames the entry
+// (AssignThenPropose) and its own finish or refusal ends it.
 void proposeAfterAssignOrEnd(uint64_t token, const std::vector<MutationRoot> &assigned, const CliResult &result,
-                             const MutationOutcome &outcome) {
+                             const MutationOutcome &outcome, const ActivityResult &assignResult) {
     ActionsState &st = actionsState();
     const AssignFollowUp next =
         proposeAfterAssign(assigned, result.envelope.outcome, outcome, result.envelope.errors);
     if (!next.skippedLine.empty()) logDebug(next.skippedLine);
-    auto endRun = [&st, token] {
+    auto endRun = [&st, token](const ActivityResult &activity) {
         st.lane.finish(token);
+        activityEnd(activityLaneKey(token), activity);
         serviceRefreshAfterCommand();
     };
     if (next.propose.empty()) {
-        endRun();
+        endRun(assignResult);
         return;
     }
     CliConfig config;
     if (!serviceMutationConfig(config)) {
         logError("propose: not run after assign: intake is not running or has no CLI path");
-        endRun();
+        ActivityResult notStarted;
+        notStarted.succeeded = false;
+        notStarted.reason = "propose not started";
+        notStarted.detail = "propose: not run after assign: intake is not running or has no CLI path";
+        endRun(notStarted);
         return;
     }
     CliRequest request;
     request.command = CliCommand::Propose;
     request.ids = next.propose;
     logInfo("propose: starting after assign for " + rootCountText(request.ids.size()) + ": " + idList(request.ids));
+    activityRename(activityLaneKey(token), ActivityKind::AssignThenPropose, request.ids.size(),
+                   next.roots.empty() ? activityLabelFor(request.ids.front())
+                                      : activityLabelFor(next.roots.front().id, next.roots.front().rootPath));
     auto sharedConfig = std::make_shared<const CliConfig>(std::move(config));
     auto sharedRequest = std::make_shared<const CliRequest>(std::move(request));
     auto sharedRoots = std::make_shared<const std::vector<MutationRoot>>(next.roots);
@@ -570,6 +592,9 @@ void onBudget(uint64_t token, CliCommand command, const std::vector<MutationRoot
     ActionsState &st = actionsState();
     if (st.stopped) return;
     const std::string name = cliCommandName(command);
+    // B14: the lane is released here for a dry run, but its status-bar entry
+    // stays until the answer arrives (onExecuteDryRun, Q2); a real call
+    // keeps running and keeps its entry.
     if (st.lane.reportBudget(token)) {
         logInfo(name + " dry run: no answer within 10 s; the lane is free again and its late result will be ignored");
     } else if (event == CliBudgetEvent::Timeout) {
@@ -602,11 +627,14 @@ void onFinished(uint64_t token, CliCommand command, const std::vector<MutationRo
     // The assign of a two-call run keeps the lane for its propose (a real
     // assign is never released early: only dry runs are).
     const bool proposeNext = run == LaneRun::AssignThenPropose && command == CliCommand::Assign;
+    const MutationOutcome outcome = summarizeMutation(command, roots, result.envelope);
+    // B14: the status-bar result of this call (the entry of its lane token).
+    const ActivityResult activity = activityResultFor(outcome, roots.size(), name);
     if (!proposeNext && !st.lane.finish(token)) {
+        activityEnd(activityLaneKey(token), activity);
         logInfo(name + ": a late dry-run result was ignored");
         return;
     }
-    const MutationOutcome outcome = summarizeMutation(command, roots, result.envelope);
     RootErrorStore &errors = actionsErrorStore();
     if (st.timeoutReported == token) {
         // The 10 s report's E_CLI_TIMEOUT (which replaced any older error
@@ -631,9 +659,10 @@ void onFinished(uint64_t token, CliCommand command, const std::vector<MutationRo
         logInfo(outcome.consoleLine);
     }
     if (proposeNext) {
-        proposeAfterAssignOrEnd(token, roots, result, outcome);  // one refresh, after the propose
+        proposeAfterAssignOrEnd(token, roots, result, outcome, activity);  // one refresh, after the propose
         return;
     }
+    activityEnd(activityLaneKey(token), activity);
     serviceRefreshAfterCommand();
     followUpGcEnded(token);
 }
@@ -641,6 +670,7 @@ void onFinished(uint64_t token, CliCommand command, const std::vector<MutationRo
 void onRefused(uint64_t token, CliCommand command, const std::string &refusal, LaneRun run = LaneRun::Single) {
     ActionsState &st = actionsState();
     st.lane.finish(token);
+    activityEnd(activityLaneKey(token), activityNotStarted(refusal));
     if (st.stopped) return;
     // The only console line for it (IntakeCliRunner logs it at Debug);
     // a caller bug, not a root's error, so no tooltip.
@@ -718,6 +748,7 @@ std::string runMutation(const ActionEntry &entry, const std::string &reason, uin
     }
     auto roots = std::make_shared<std::vector<MutationRoot>>();
     const bool gc = request.command == CliCommand::Gc;
+    std::string firstLabel;  // the status bar's album for one root
     for (const ActionRoot &r : entry.roots) {
         // Only the roots the request names (gc: the guard may have left
         // some out). gc's E_VERIFY names placed.target_path: rule 1c.
@@ -728,10 +759,17 @@ std::string runMutation(const ActionEntry &entry, const std::string &reason, uin
         }
         const std::string &target = gc && !r.placedTargetPath.empty() ? r.placedTargetPath : r.targetPath;
         roots->push_back({r.id, r.rootPath, r.status, target});
+        if (firstLabel.empty()) firstLabel = albumLabel(r);
     }
     logInfo(name + ": starting for " + rootCountText(request.ids.size()) + ": " + idList(request.ids) +
             (request.collection.empty() ? std::string() : " to \"" + request.collection + "\"") +
             (request.reason.empty() ? std::string() : " (with a reason)"));
+    // B14: the status bar's entry for this lane token, from here to every
+    // path that releases it (onFinished, onRefused, proposeAfterAssignOrEnd).
+    ActivityKind kind = ActivityKind::Propose;
+    if (activityKindFor(request.command, request.dryRun, kind)) {
+        activityBegin(activityLaneKey(token), kind, request.ids.size(), firstLabel);
+    }
     auto sharedConfig = std::make_shared<const CliConfig>(std::move(config));
     auto sharedRequest = std::make_shared<const CliRequest>(request);
     std::shared_ptr<const std::vector<MutationRoot>> sharedRoots = roots;
@@ -1159,9 +1197,10 @@ std::vector<MutationRoot> runRoots(const std::vector<std::string> &ids, const st
 
 // A finished run's result: per-root errors, one console line, a refresh;
 // `reloaded` (optional: the Execute follow-ups) runs on the main thread
-// when that refresh has ended.
-void applyRunResult(CliCommand command, const std::vector<MutationRoot> &roots, const EnvelopeResult &envelope,
-                    std::function<void(const LoaderStatus &status)> reloaded = nullptr) {
+// when that refresh has ended. Returns the summary (the status bar's
+// result).
+RunSummary applyRunResult(CliCommand command, const std::vector<MutationRoot> &roots, const EnvelopeResult &envelope,
+                          std::function<void(const LoaderStatus &status)> reloaded = nullptr) {
     const RunSummary summary = summarizeRun(command, roots, envelope);
     RootErrorStore &errors = actionsErrorStore();
     for (const std::string &id : summary.outcome.succeeded) errors.clear(id);
@@ -1180,6 +1219,7 @@ void applyRunResult(CliCommand command, const std::vector<MutationRoot> &roots, 
         logInfo(summary.outcome.consoleLine);
     }
     serviceRefreshAfterCommand(std::move(reloaded));
+    return summary;
 }
 
 void queueFollowUp(std::shared_ptr<FollowUpJob> job, const LoaderStatus &status);
@@ -1228,9 +1268,11 @@ void finishRun(const std::string &stem, const EnvelopeResult &envelope, bool ado
     if (found == nullptr) return;
     const TrackedRun run = *found;
     st.exitWatches.erase(stem);
-    applyRunResult(run.command, runRoots(run.ids, run.rootPaths), envelope,
-                   followUpsAfterReload(stem, run.command, run.ids, run.followUps, adopted));
+    const std::vector<MutationRoot> roots = runRoots(run.ids, run.rootPaths);
+    const RunSummary summary = applyRunResult(run.command, roots, envelope,
+                                              followUpsAfterReload(stem, run.command, run.ids, run.followUps, adopted));
     st.tracker.remove(stem);
+    activityEnd(activityRunKey(stem), activityResultFor(summary.outcome, roots.size(), cliCommandName(run.command)));
     releaseRunLaneIfIdle();
     deleteRunFilesLater(stem);
 }
@@ -1269,6 +1311,7 @@ void onRunRefused(const std::string &stem, const std::string &refusal) {
     const TrackedRun *run = st.tracker.find(stem);
     const std::string name = run != nullptr ? cliCommandName(run->command) : "execute";
     st.tracker.remove(stem);
+    activityEnd(activityRunKey(stem), activityNotStarted(refusal));
     releaseRunLaneIfIdle();
     if (st.stopped) return;
     // A caller bug, not a root's error: no tooltip (as onRefused).
@@ -1370,6 +1413,9 @@ std::string startDetachedRun(CliCommand command, const std::vector<ActionRoot> &
     if (!holdRunLane()) return refuse("another intake command is still running");
     const std::string stem = uniqueRunStem(st.outputDirectory, std::chrono::system_clock::now());
     st.tracker.begin(stem, command, request->ids, *rootPaths, followUps);
+    // B14: the status bar's entry for this run, until finishRun or
+    // onRunRefused; its n/m follows the published views.
+    activityBeginRun(stem, command, request->ids, albumLabel(roots.front()));
     logInfo(std::string(cliCommandName(command)) + ": starting for " + rootCountText(request->ids.size()) + ": " +
             idList(request->ids) +
             (hasFollowUps(followUps) ? (followUps.deleteLocal ? " (then swap and delete)" : " (then swap)") : ""));
@@ -1468,10 +1514,15 @@ void onExecuteDryRunBudget(uint64_t serial, uint64_t token, const std::vector<Mu
     showExecuteSheet(flow);
 }
 
-void onExecuteDryRun(uint64_t serial, uint64_t token, const CliResult &result) {
+void onExecuteDryRun(uint64_t serial, uint64_t token, const std::vector<MutationRoot> &roots, const CliResult &result) {
     ActionsState &st = actionsState();
     if (st.stopped) return;
     logCliResult(result);
+    // B14: the dry run's entry ends with its answer, a late one included
+    // (Q2: it shows until then, even after the 10 s report freed the lane).
+    activityEnd(activityLaneKey(token),
+                activityResultFor(summarizeMutation(CliCommand::Execute, roots, result.envelope, kExecuteDryRunName),
+                                  roots.size(), kExecuteDryRunName));
     if (!st.lane.finish(token)) {
         logInfo("execute: a late dry-run result was ignored");
         return;
@@ -1522,10 +1573,10 @@ void startExecuteDryRunOnQueue(uint64_t serial, uint64_t token, std::shared_ptr<
                 onExecuteDryRunBudget(serial, token, *roots, event);
             });
         },
-        [serial, token](CliResult &&result) {
+        [serial, token, roots](CliResult &&result) {
             auto shared = std::make_shared<CliResult>(std::move(result));
             dispatch_async(dispatch_get_main_queue(), ^{
-                onExecuteDryRun(serial, token, *shared);
+                onExecuteDryRun(serial, token, *roots, *shared);
             });
         },
         &refusal);
@@ -1811,6 +1862,9 @@ void showDeleteSheet(const std::shared_ptr<DeleteFlow> &flow) {
 
 void onDeleteFilesRead(uint64_t serial, std::vector<PlacedFilesReply> &replies) {
     ActionsState &st = actionsState();
+    // B14: the census entry ends with the reads (a reply after the 10 s
+    // timeout finds it ended already).
+    activityEnd(activityCensusKey(serial), ActivityResult());
     if (st.stopped || !st.deleteFlow || st.deleteFlow->serial != serial) return;
     std::shared_ptr<DeleteFlow> flow = st.deleteFlow;
     flow->filesRead = true;
@@ -2040,6 +2094,12 @@ void onRunScan(const std::shared_ptr<RunScanResult> &result) {
         logInfo(name + ": adopted a run from an earlier session: pid " + std::to_string(run.file.pid) + ", " +
                 rootCountText(run.file.ids.size()) + ": " + idList(run.file.ids) + " (run file " +
                 runFileText(run.stem) + "); intake commands wait until it ends");
+        // B14: an entry like an own run's, ended by finishRun.
+        if (!run.file.ids.empty()) {
+            activityBeginRun(run.stem, run.file.command, run.file.ids,
+                             activityLabelFor(run.file.ids.front(),
+                                              run.file.rootPaths.empty() ? std::string() : run.file.rootPaths.front()));
+        }
         watchAdoptedRun(*st.tracker.find(run.stem));
     }
     for (size_t i = 0; i < scan.finish.size(); i++) {
@@ -2121,6 +2181,10 @@ std::string actionsExecutePlacement(const ActionEntry &entry) {
     st.executeFlow = flow;
     logInfo(std::string(kExecuteDryRunName) + ": starting for " + rootCountText(request.ids.size()) + ": " +
             idList(request.ids));
+    // B14: until its answer (onExecuteDryRun, late or not) or its refusal
+    // (onRefused); the 10 s report does not end it.
+    activityBegin(activityLaneKey(token), ActivityKind::ExecuteDryRun, request.ids.size(),
+                  albumLabel(entry.roots.front()));  // request.ids follow entry.roots
     auto roots = std::make_shared<std::vector<MutationRoot>>();
     for (const ActionRoot &r : entry.roots) roots->push_back({r.id, r.rootPath, r.status, r.targetPath});
     const uint64_t serial = flow->serial;
@@ -2211,6 +2275,9 @@ std::string actionsDeleteLocal(const ActionEntry &entry) {
     flow->playlist = playlistRefFor(activePlaylist());
     st.deleteFlow = flow;
     const uint64_t serial = flow->serial;
+    // B14: the census entry, until the reads come back or the 10 s below.
+    activityBegin(activityCensusKey(serial), ActivityKind::DeleteCensus, eligible.roots.size(),
+                  albumLabel(eligible.roots.front()));
     swapReadPlacedFiles(std::move(records), [serial](std::vector<PlacedFilesReply> replies) {
         onDeleteFilesRead(serial, replies);
     });
@@ -2223,9 +2290,14 @@ std::string actionsDeleteLocal(const ActionEntry &entry) {
                        std::shared_ptr<DeleteFlow> late = weakFlow.lock();
                        ActionsState &now = actionsState();
                        if (!late || now.stopped || now.deleteFlow != late || late->filesRead) return;
-                       notRun(IntakeAction::DeleteLocal,
-                              "the sidecars could not be read within 10 s (the share is "
-                              "not answering); no confirmation, nothing deleted");
+                       const std::string why =
+                           "the sidecars could not be read within 10 s (the share is not answering)";
+                       notRun(IntakeAction::DeleteLocal, why + "; no confirmation, nothing deleted");
+                       ActivityResult timedOut;
+                       timedOut.succeeded = false;
+                       timedOut.reason = "no answer within 10 s";
+                       timedOut.detail = why;
+                       activityEnd(activityCensusKey(serial), timedOut);
                        endDeleteFlow(late);
                    });
     return "reading the file lists of " + rootCountText(eligible.roots.size());
@@ -2378,6 +2450,9 @@ void actionsExecute(uint32_t actionId, metadb_handle_list_cref sel) {
 void actionsShutdown() {
     ActionsState &st = actionsState();
     st.stopped = true;
+    // B14: the status bar empties at once (one change notification); no
+    // hook adds to it afterwards.
+    activityClear();
     st.menuTable = ActionTable();
     // A running `collections` is killed; one not yet spawned never starts.
     st.pickerRunner.closeReadLane();

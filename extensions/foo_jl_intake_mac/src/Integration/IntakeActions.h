@@ -232,6 +232,15 @@
 //  (doc 03: mutating calls are not killed before the 15-minute cap, the
 //  runner enforces it).
 //
+//  Status bar (B14, IntakeActivityHub): every mutating call, the execute dry
+//  run, each detached run (own or adopted), each swap and the Delete flow's
+//  sidecar reads is an entry from the moment it holds its lane token, run
+//  stem or serial until every path that lets go of it (result, refusal,
+//  timeout) calls activityEnd; the propose after an assign renames the
+//  assign's entry; the dry run's entry outlives its 10 s report until its
+//  answer. actionsShutdown clears them. The list of pairs is in
+//  IntakeActivityHub.h.
+//
 //  Nothing here is modal for an error, and no error makes the provider
 //  inert.
 //

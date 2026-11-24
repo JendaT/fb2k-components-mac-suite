@@ -11,6 +11,7 @@
 #include "IntakeService.h"
 
 #include "IntakeActions.h"
+#include "IntakeActivityHub.h"
 #include "IntakeConfig.h"
 #include "IntakeDecoratorProvider.h"
 #include "IntakeFieldProvider.h"
@@ -133,6 +134,9 @@ public:
         ls.cli = cliConfig();
         ls.readMounts = [] { return readMountTable(); };
         ls.publish = [](std::shared_ptr<const IntakeView> view, bool invalidateAll, PublishReason reason) {
+            // B14: the n/m of running execute and resume runs, from the
+            // statuses this view shows (nothing unless a run is tracked).
+            activityViewPublished(view);
             // B13: the title-formatting fields read every view too (swapped
             // in on the main thread, refreshed there when they changed).
             fieldsPublishView(view);

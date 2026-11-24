@@ -8,8 +8,8 @@ v1.2) with the data shapes of CLI 0.3.0 (branch `feature/intake-cli`) for
 The `cli-0.2.1` scenario switches to what CLI 0.2.1 does, for testing the
 consumer's fallbacks.
 
-Plain bash 3.2 (`/bin/bash` on macOS) plus `find`, `cp`, `mkdir` and `rm`.
-All fixtures are synthetic.
+Plain bash 3.2 (`/bin/bash` on macOS) plus `find`, `cp`, `mkdir`, `mv`, `rm`
+and `sleep`. All fixtures are synthetic.
 
 ## Use
 
@@ -94,10 +94,13 @@ summaries in `status.d/` and the reply files carry the rest.
 
 ## Modes: `$INTAKE_MOCK_STATE/<command>.mode`
 
-The file holds a mode name (`exit2` takes an error code, `slow` and
-`slow-real` a number of seconds) and applies to every call of that command
-until you delete it. Modes never apply `.start` or `.next` states, except
-`slow` and `slow-real`, which end as a normal call.
+The file holds a mode name (`exit2` takes an error code, `slow`,
+`slow-real` and `slow-dry-run` a number of seconds, `per-root` seconds and
+root ids) and applies to every call of that command until you delete it.
+Modes never apply `.start` or `.next` states, except `slow` and
+`slow-real`, which end as a normal call, and `per-root` and `slow-dry-run`,
+whose real execute applies `.next` (never `.start`: it writes the states
+itself).
 
 | Mode | Output |
 |---|---|
@@ -110,11 +113,22 @@ until you delete it. Modes never apply `.start` or `.next` states, except
 | `hang` | starts `sleep` as a child (not exec) and waits for it. Writes `<shell pid> <child pid>` to `hang.pid`. Killing only the shell leaves the child holding stdout open, so the caller has to kill the process group. If the child returns, the call ends with empty stdout and exit 0 without running the command |
 | `slow [SECONDS]` | applies `.start` (not for `--dry-run`), sleeps in a child (2 s unless SECONDS or `INTAKE_MOCK_SLOW_SECONDS` is given), then runs the command normally: applies `.next` and prints the usual envelope and exit code. For a call that outlives the caller's budget and still completes |
 | `slow-real [SECONDS]` | `slow` for a call without `--dry-run` (a real `execute`, `execute --resume`); a `--dry-run` call answers at once, as with no mode file. For a detached execute that runs long while its dry run answers in time (B8) |
+| `per-root [SECONDS] [ID...]` | for `execute.mode` (B14, the status bar's n/m): a real `execute` walks its roots one by one in the order named, as the CLI does: the root goes `placing` (summary row and sidecar), the mock sleeps SECONDS in a child (4 s unless given, or `INTAKE_MOCK_ROOT_SECONDS`), then its `*.wav` files are copied under its `target_path` (whole-folder roots, inside `root/` only) and it goes `placed` (with `placed: {verified: true, target_path}`); a listed ID fails instead (`E_VERIFY`, back to `approved`, no library copy), as does a root whose reply file holds an `E_VERIFY` error. `execute --resume` writes no `placing`: each root waits, then goes `placed`, or `approved` when it is listed or its reply says `reverted_to_approved`. A root refused before anything is written (another error, a status the CLI does not accept) is not walked. Then the reply, as a normal call. A `--dry-run` answers at once. Replies missing from the scenario are made up (see below) |
+| `slow-dry-run [SECONDS]` | for `execute.mode` (B14): an `execute --dry-run` sleeps in a child (15 s, longer than the component's 10 s budget, unless SECONDS or `INTAKE_MOCK_DRY_SECONDS` is given), then answers normally; a real `execute` or resume walks its roots as `per-root` does with its default pause. Replies missing from the scenario are made up |
 | `big` | about 1 MB of valid status-shaped rows, written row by row, exit 0 |
 | `unknown-code` | exit 2 with the error code `E_MOCK_UNKNOWN_CODE` |
 | `fds` | `{"ok":true,"data":{"fds":[0,1,2]},"errors":[]}`: the descriptors open in the spawned process, read from `/dev/fd` after an exec, so bash's own script descriptor is not listed |
 
-An unknown mode word makes the mock exit 64.
+An unknown mode word, or a `per-root` / `slow-dry-run` argument that is not
+seconds or a root id, makes the mock exit 64.
+
+In `per-root` and `slow-dry-run`, an `execute` root in a status the CLI
+accepts (`approved`; `placing` for `--resume`) without a reply file gets one
+made from its summary row, in the CLI's shapes: the dry-run row (`files: 1`),
+the execute row (`journal_seq` as its sidecar gets it), the resume row
+(`completed`), or `E_NO_TARGET` when the summary has no `target_path`. So the
+generated `perf-200` roots (25 of them `approved`) can run them; other
+commands keep the scenario rules.
 
 ## State changes at the start: `$INTAKE_MOCK_STATE/<command>.start`
 
@@ -179,6 +193,16 @@ echo gc-e_verify > gc.start             # gc itk_00000012: E_VERIFY, still place
 echo gc-e_no_journal > gc.start         # gc itk_00000012: E_NO_JOURNAL, still placed
 ```
 
+Execute of five roots, one failing, that a watcher sees walk root by root
+(B14), and a dry run that outlives the component's 10 s budget:
+
+```bash
+intake-mock --mock-setup perf-200       # approved: itk_c0000004, itk_c000000c, itk_c0000014, ...
+cd "$INTAKE_MOCK_STATE"
+echo 'per-root 4 itk_c000000c' > execute.mode   # 4 s per root; itk_c000000c fails (E_VERIFY)
+echo 'slow-dry-run 15' > execute.mode           # or: the dry run answers after 15 s
+```
+
 Resume, completed and reverted:
 
 ```bash
@@ -222,6 +246,8 @@ inside an argument is written as `\\`, `\t` or `\n`.
 |---|---|---|
 | `INTAKE_MOCK_HANG_SECONDS` | 300 | how long the `hang` child sleeps |
 | `INTAKE_MOCK_SLOW_SECONDS` | 2 | how long `slow` sleeps when its mode file gives no seconds |
+| `INTAKE_MOCK_ROOT_SECONDS` | 4 | the pause per root of `per-root` (no seconds in its mode file) and of `slow-dry-run`'s real execute |
+| `INTAKE_MOCK_DRY_SECONDS` | 15 | how long `slow-dry-run`'s dry run sleeps when its mode file gives no seconds |
 | `INTAKE_MOCK_BIG_BYTES` | 1048576 | output size for `big` |
 | `INTAKE_MOCK_FD_MAX` | 1024 | highest descriptor number `fds` checks, exclusive |
 
