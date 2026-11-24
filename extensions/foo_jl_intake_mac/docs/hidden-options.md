@@ -38,7 +38,7 @@ foobar2000 is quit.
 
 **Hidden (config store only):** `decor_stats`, `log_file`,
 `recent_collections` (kept by the picker, not a setting) and
-`execute_swap_after` / `execute_delete_after` (kept by the Execute sheet).
+`execute_swap_after` (kept by the Execute sheet).
 
 # Keys on the preferences page
 
@@ -280,15 +280,17 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
   "DELETE FROM configStrings WHERE name='foo_jl_intake.recent_collections';"
 ```
 
-## foo_jl_intake.execute_swap_after and execute_delete_after
+## foo_jl_intake.execute_swap_after
 
-`configInts`, `0` off, any other value on; defaults `1` and `0`. The Execute
-placement sheet's two checkboxes: "Swap playlist rows to the library copies
-when done" (`execute_swap_after`) and "Then delete the local copies"
-(`execute_delete_after`, enabled only while the first is ticked). The sheet
-opens with these values and writes the confirmed choice back when Execute is
-clicked (Cancel writes nothing); delete is saved as `0` whenever swap is off.
-There is no preferences UI for them.
+`configInts`, `0` off, any other value on; default `1`. The Execute placement
+sheet's "Swap playlist rows to the library copies when done". The sheet opens
+with this value and writes the confirmed choice back when Execute is clicked
+(Cancel writes nothing). There is no preferences UI for it.
+
+The sheet's second checkbox, "Then delete the local copies" (enabled only
+while the first is ticked), has no key: it opens unticked every time and its
+choice is never saved. Earlier builds kept it in `execute_delete_after`; a
+leftover row is no longer read.
 
 The choice applies to that run only and is stored in its run file, so it
 still applies when the run ends after a restart. When the run ends, the rows
@@ -300,13 +302,13 @@ Kept roots get one console line and a tooltip saying why. The ticked box is
 the confirmation: no Delete sheet appears, whatever `confirm_gc` says.
 
 ```bash
-# quit foobar2000 first: open the sheet with swap off (delete is then off too)
+# quit foobar2000 first: open the sheet with swap off
 sqlite3 ~/Library/foobar2000-v2/config.sqlite \
   "INSERT INTO configInts(name,value) VALUES('foo_jl_intake.execute_swap_after',0)
    ON CONFLICT(name) DO UPDATE SET value=excluded.value;"
 # back to the defaults
 sqlite3 ~/Library/foobar2000-v2/config.sqlite \
-  "DELETE FROM configInts WHERE name IN ('foo_jl_intake.execute_swap_after','foo_jl_intake.execute_delete_after');"
+  "DELETE FROM configInts WHERE name='foo_jl_intake.execute_swap_after';"
 ```
 
 # Execute run files
@@ -318,8 +320,11 @@ sheet's follow-ups as `swap_after` / `delete_after`; a run file without them,
 from an older build, gets no swap or delete when it ends). The run file is written
 before the CLI starts, without the pid and start time, and rewritten with
 them as soon as the child exists. Both are deleted when the component has
-read the result. A run still going when foobar2000 quits keeps running and
-keeps its files; the next start adopts it (live) or finishes it (ended). A
+read the result, before the swap and delete run (they wait for the reload
+after the run): a quit in between drops them, with one console line per run,
+and the next start does not do them. A run still going when foobar2000 quits
+keeps running and keeps its files; the next start adopts it (live) or
+finishes it (ended). A
 run file still without a pid (foobar2000 was gone before it was rewritten)
 is adopted when one of this user's processes still has the output open (that
 process is then watched), finished when the output exists and nobody has it

@@ -340,13 +340,14 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
   tooltip's rule), one Error line each.
 - **Execute follow-ups** (user request 2026-11-21): the sheet has two
   checkboxes, "Swap playlist rows to the library copies when done" (default
-  on) and "Then delete the local copies" (default off, enabled only while
-  the first is ticked, shown unticked while disabled). The last confirmed
-  choice is kept in two hidden configInts, `execute_swap_after` and
-  `execute_delete_after`. It goes into the run file when the run starts
-  (`swap_after`, `delete_after`), so it applies when the run ends, whoever
-  finishes it: this session, a later one that adopts the live run, or one
-  that finds it ended at init (both log one Info line "run <stem>:
+  on) and "Then delete the local copies" (enabled only while the first is
+  ticked, shown unticked while disabled). Swap opens as last confirmed (the
+  hidden configInt `execute_swap_after`); delete opens unticked every time
+  and is never saved (user answer 2026-11-24). The choice goes into the run
+  file when the run starts (`swap_after`, `delete_after`), so it applies
+  when the run ends, whoever finishes it: this session, a later one that
+  adopts the live run, or one that finds it ended at init (both log one
+  Info line "run <stem>:
   swap/delete as chosen at its start"). A run file without the fields (an
   older build, a resume) gets no follow-ups. When the run ends: its result
   as above, then the reload that follows (one that fails stops the
@@ -367,7 +368,13 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
   busy) keeps every root. The other roots go ahead. The lane is held only
   from the census to gc's exit and released on every path; one chain runs at
   a time. A quit between the run's end and its follow-ups drops them:
-  nothing is deleted, and Swap and Delete local copy… stay in the menu.
+  nothing is deleted, and Swap and Delete local copy… stay in the menu. The
+  run file is already gone then, so the next start cannot do them either:
+  the quit logs one Info line per such run, waiting for its reload, queued
+  or swapping ("execute: swap after run <stem> not finished: foobar2000 quit
+  first (use Swap to library paths by hand)", or "swap, then delete … (nothing
+  was deleted; use Swap to library paths, then Delete local copy… by
+  hand)"). A gc already started gets no line: a quit never stops it.
 - **Resume** on `placing` roots runs detached like execute (never killed,
   holds the lane). A root that ends `approved` (resume reverted it) counts as
   a per-root failure.
@@ -427,8 +434,9 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
   library", "Lower quality than library copy", "Not wanted", "Other…". A
   preset's text is the reason (`reject --reason`, unchanged contract) and
   shows in the disabled field; "Other…" enables the field (empty: no
-  reason). The last choice is remembered for the session only (no setting;
-  "Other…" at first). `confirm_reject` 0 skips the sheet: no reason.
+  reason). The first sheet of a session starts on "Already in library";
+  each later one on the session's last confirmed choice (no setting; user
+  answer 2026-11-24). `confirm_reject` 0 skips the sheet: no reason.
 
 The picker, Reject… and Delete local copy… sheets pick their window the same
 way.
