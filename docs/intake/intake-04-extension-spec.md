@@ -304,15 +304,22 @@ answer alike):
 - **Cost:** values are computed once per root when the snapshot is built;
   `process_field` does no I/O, takes no lock, makes no foobar2000 call but
   the handle's `get_path()`, and allocates nothing for an already-normal
-  ASCII path.
+  ASCII path. A path with a non-ASCII byte (names stored decomposed on an
+  SMB share) goes through NFC only when its ASCII folder, the part before
+  the segment with the first non-ASCII byte, is under a root or an ancestor
+  of one; other rows are ruled out by that folder alone (also on the
+  decorate path). The three fields of one row map it once: each thread
+  remembers its last row.
 - **mac-volume rows:** `process_field` may not call
   `filesystem::g_get_native_path`, so a volume table stands in for it:
   seeded per mount under `/Volumes` off the main thread
   (`g_get_canonical_path("<mount>/")` gives `mac-volume://<UUID>/`,
   `g_get_native_path` of that gives the root foobar2000 resolves it to),
   re-seeded on mount, unmount and Refresh, and learned from rows the
-  decorate path converted (a stale volume id of a share that is still
-  mounted is known only this way, once one of its rows was shown). The
+  decorate path converted, also before a field is first used (a stale
+  volume id of a share that is still mounted is known only this way, once
+  one of its rows was shown; SimPlaylist does not decorate rows again when
+  a field comes into use). The
   remainder after `<UUID>/` is taken raw (S0, plorg). A row of a volume id
   the table does not know has no value.
 - **Refresh:** foobar2000 caches field values until
@@ -329,8 +336,11 @@ answer alike):
   in X ms`.
 - **Limits:** items in no playlist (a library viewer, the Properties
   dialog) are not refreshed: they show new values only when their host
-  formats them again. Refresh lags a change by 0.25 to 1 s. Field names are
-  fixed for the session.
+  formats them again. Refresh lags a change by 0.25 to 1 s plus the time
+  to read and test the playlist rows (tens of milliseconds for 80k rows);
+  a change that arrives while a refresh runs waits for it to finish, then
+  about 1 s, then a test of its own. Field names are fixed for the
+  session.
 - **Considered:** a `metadb_index` client, whose
   `dispatch_refresh(index, hashes)` also reaches library items, needs a
   registered index hashed from every track's record in the database and

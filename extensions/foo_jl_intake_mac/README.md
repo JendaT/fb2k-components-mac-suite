@@ -92,6 +92,31 @@ Rows are matched to intake releases (roots) by their file path.
   confidence is below 0.6, with the next candidate as a hint:
   `→ [Collection A] · 0.61 (alt: [Collection B])`.
 
+## Title-formatting fields
+
+Three fields for any title-formatting script, such as a SimPlaylist column
+or group pattern. A row gets the values of the release it belongs to,
+matched as for the tints.
+
+| Field | Value |
+|---|---|
+| `%intake_status%` | The status: `new`, `resolved`, `proposed`, `approved`, `placing`, `placed`, `rejected` or `gc_done`. |
+| `%intake_target%` | The target folder from the tier on, as in the tooltip. |
+| `%intake_collection%` | The target collection. |
+
+- A row with no value gets nothing, so `[%intake_target%]` collapses: rows
+  outside every release, every row while intake is inactive or before the
+  first load, and a release without a target or collection.
+- Rows on a network share need a volume foobar2000 resolves. An older
+  volume id of a share that is still mounted gets values once SimPlaylist
+  has shown one of its rows.
+- When a value changes, playlist rows are updated within about a second.
+  Items in no playlist (a library viewer, the Properties dialog) keep the
+  old value until their viewer formats them again for another reason.
+
+Details are in the spec,
+[`docs/intake/intake-04-extension-spec.md`](../../docs/intake/intake-04-extension-spec.md).
+
 ## Context menu
 
 Select rows and right-click. An item runs on the selected releases that

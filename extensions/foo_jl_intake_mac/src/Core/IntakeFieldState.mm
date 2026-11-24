@@ -7,6 +7,8 @@
 
 #include "IntakePath.h"
 
+#include <atomic>
+
 namespace intake {
 
 namespace {
@@ -47,6 +49,11 @@ bool sameAliases(const IntakeView &a, const IntakeView &b) {
     return a.aliasesPtr() == b.aliasesPtr() || a.aliases().sameAs(b.aliases());
 }
 
+uint64_t nextSerial() {
+    static std::atomic<uint64_t> counter{0};
+    return counter.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
 bool equalsIgnoringCase(std::string_view a, std::string_view b) {
     if (a.size() != b.size()) return false;
     for (size_t i = 0; i < a.size(); i++) {
@@ -66,18 +73,25 @@ bool equalsIgnoringCase(std::string_view a, std::string_view b) {
 FieldState::FieldState(std::shared_ptr<const IntakeView> view, std::shared_ptr<const VolumeTable> volumes)
     : view_(view ? std::move(view) : IntakeView::make(nullptr, nullptr)),
       volumes_(volumes ? std::move(volumes) : VolumeTable::empty()),
-      shows_(viewShowsValues(view_.get())) {}
+      shows_(viewShowsValues(view_.get())),
+      serial_(nextSerial()) {}
 
 const IntakeRecord *FieldState::recordFor(std::string_view itemPath, FieldScratch &scratch) const {
     if (!shows_ || itemPath.empty()) return nullptr;
+    if (scratch.lastSerial == serial_ && scratch.lastPath == itemPath) return scratch.lastRecord;
+    const IntakeRecord *record = nullptr;
     std::string_view uuid;
     std::string_view rest;
     if (splitMacVolumePath(itemPath, uuid, rest)) {
-        if (!volumes_->nativePath(uuid, rest, scratch.native)) return nullptr;
-        return view_->recordFor(scratch.native, scratch.view);
+        if (volumes_->nativePath(uuid, rest, scratch.native)) record = view_->recordFor(scratch.native, scratch.view);
+    } else {
+        // "/..." and "file://..."; IntakePath refuses every other scheme.
+        record = view_->recordFor(itemPath, scratch.view);
     }
-    // "/..." and "file://..."; IntakePath refuses every other scheme.
-    return view_->recordFor(itemPath, scratch.view);
+    scratch.lastSerial = serial_;
+    scratch.lastPath.assign(itemPath.data(), itemPath.size());
+    scratch.lastRecord = record;
+    return record;
 }
 
 bool FieldState::value(uint32_t index, std::string_view itemPath, FieldScratch &scratch,

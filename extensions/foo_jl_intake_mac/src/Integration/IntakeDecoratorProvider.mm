@@ -156,8 +156,8 @@ public:
                     const char *path = intakeNativePath(raw, native);
                     if (path == nullptr) continue;
                     // A converted mac-volume row: the fields' volume table
-                    // may learn its volume (B13; one relaxed load until a
-                    // field was used).
+                    // may learn its volume (B13; an id lookup in a short
+                    // table for a known one).
                     if (path != raw) fieldsNoteNativePath(raw, path);
                     if (const IntakeRowVisual *visual = view->visualFor(path, scratch)) copyVisual(*visual, out[i]);
                 }

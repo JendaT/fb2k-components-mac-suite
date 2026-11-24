@@ -5,14 +5,18 @@
 //  Unit tests for IntakeFieldState (B13 item 4): FieldState::value() for
 //  native, file:// and mac-volume rows (through the volume table and the
 //  mount aliases of a share mounted twice), unknown volumes, other schemes,
-//  inert and empty views, empty values; the dirty set of view changes
+//  inert and empty views, empty values, the remembered last row; rows with
+//  non-ASCII names ruled out by their ASCII folder give the answers of the
+//  full lookup (NFD and NFC, non-ASCII mount points, a mount inside a
+//  share, ".."); the dirty set of view changes
 //  (status, target, roots coming and going, member lists, inert, alias
 //  tables) and of volume changes; the sequences where a host value was
 //  computed with an older volume root; and a randomized check of the
 //  refresh requirement: over many random sequences of views and volume
 //  tables cut into refresh windows, every row whose value a host may still
 //  hold differs from the current one only if the window's dirty set
-//  matches it. Prints the time of 100,000 lookups (printed, not asserted).
+//  matches it. Prints the time of 100,000 lookups, ASCII and NFD (printed,
+//  not asserted).
 //  Synthetic paths and ids only.
 //
 // TEST_DEPS: src/Core/IntakeView.mm src/Core/IntakeSnapshot.mm src/Core/IntakeVolumeTable.mm
@@ -32,7 +36,9 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace intake;
@@ -181,6 +187,122 @@ static void testMembers() {
     CHECK(field(s, 0, "/income/singles/s2.flac") == "-", "an unlisted file");
 }
 
+static void testLastRow() {
+    g_context = "last row";
+    const std::vector<Root> a = {{"itk_00000021", "/income/A", IntakeStatus::Proposed, "C1", ""}};
+    const std::vector<Root> b = {{"itk_00000021", "/income/A", IntakeStatus::Approved, "C2", ""}};
+    auto first = std::make_unique<FieldState>(makeView(a, nullptr), nullptr);
+    FieldScratch scratch;
+    std::string_view out;
+    const std::string row = "/income/A/01.flac";
+    const std::string other = "/income/B/01.flac";
+    CHECK(first->value(0, row, scratch, out) && out == "proposed", "status");
+    CHECK(scratch.lastSerial == first->serial() && scratch.lastPath == row, "the row is remembered");
+    CHECK(first->value(2, row, scratch, out) && out == "C1", "the next field of the same row");
+    const uint64_t firstSerial = first->serial();
+    first.reset();  // retired: a later state may get the same memory
+    auto second = std::make_unique<FieldState>(makeView(b, nullptr), nullptr);
+    CHECK(second->serial() != firstSerial && second->serial() != 0, "every state has its own serial");
+    CHECK(second->value(0, row, scratch, out) && out == "approved", "the same row in a later state: its value");
+    CHECK(!second->value(0, other, scratch, out), "another row: no record");
+    CHECK(!second->value(2, other, scratch, out), "remembered without a record too");
+    CHECK(second->value(2, row, scratch, out) && out == "C2", "and back to the first row");
+    // Compared by bytes, not by pointer: one buffer, another path in it.
+    std::string buffer = row;
+    CHECK(second->value(0, buffer, scratch, out), "a row in a reused buffer");
+    buffer = other;
+    CHECK(!second->value(0, buffer, scratch, out), "the same buffer holding another row");
+}
+
+// The lookup with no folder test: full normalisation, alias, snapshot.
+static const IntakeRecord *slowRecordFor(const IntakeView &view, const std::string &path) {
+    std::string key;
+    if (normalizePath(path, key) != PathStatus::Ok) return nullptr;
+    return view.snapshot().lookupKey(view.aliases().rewritten(key));
+}
+
+static void testNonASCIIRows() {
+    g_context = "non-ASCII rows";
+    const std::string nfd = "e\xCC\x81";  // "é" decomposed, as SMB shares store it
+    const std::string nfc = "\xC3\xA9";   // "é" composed
+    const std::vector<std::shared_ptr<const MountAliases>> tables = {
+        MountAliases::none(),
+        musicTwice(),
+        // A share whose mount point has a non-ASCII name.
+        MountAliases::build({smb("/Volumes/Caf" + nfc, "//user@nas.local/cafe"),
+                             smb("/Volumes/music", "//user@nas.local/music")}),
+        // A local disk mounted inside a share.
+        MountAliases::build({smb("/Volumes/music", "//user@nas.local/music"),
+                             MountEntry{"/Volumes/music/disk", "/dev/disk4s1", "hfs"}}),
+    };
+    const std::vector<Root> roots = {
+        {"itk_00000011", "/Volumes/music/income/Caf" + nfd + " Album", IntakeStatus::New},
+        {"itk_00000012", "/Volumes/music/income/Plain", IntakeStatus::Proposed},
+        {"itk_00000013", "/Volumes/Caf" + nfc + "/in/A", IntakeStatus::Approved},
+        {"itk_00000014", "/Volumes/music/disk/in/B", IntakeStatus::Placed},
+        {"itk_00000015", "/Users/x/Caf" + nfc + "/C", IntakeStatus::Rejected},
+    };
+    const std::vector<std::string> heads = {
+        "/Volumes/music/income", "/Volumes/music-1/income", "/Volumes/music/library/Artist",
+        "/Volumes/music-1/library", "/Volumes/Caf" + nfd + "/in", "/Volumes/Caf" + nfc + "/in",
+        "/Volumes/CAF" + nfc + "/in", "/Volumes/music/disk/in", "/Volumes/music-1/disk/in", "/Users/x",
+        "/Users/x/Caf" + nfd, "/Users/y", "file:///Volumes/music/income", "/Volumes/music/income/../library",
+        "/Volumes//music/./income", "/VOLUMES/MUSIC/income",
+    };
+    const std::vector<std::string> tails = {
+        "Caf" + nfd + " Album/01.flac", "Caf" + nfc + " Album/CD1/01.flac", "Plain/0" + nfd + ".flac",
+        "A/x" + nfd + ".flac", "B/" + nfd + ".flac", "C/" + nfc + "/1.flac", "Other " + nfd + "/1.flac",
+        "Caf" + nfd + " Album/../Plain/" + nfd,
+        // Pops out of a folder away from every root into one with roots.
+        "Caf" + nfd + "/../../../income/Plain/x.flac", "Plain/01.flac",
+    };
+    size_t rows = 0, found = 0, ruledOut = 0, wrong = 0;
+    for (const auto &aliases : tables) {
+        auto view = makeView(roots, aliases);
+        ViewScratch scratch;  // reused across rows, as decorate() and process_field do
+        for (const std::string &h : heads) {
+            for (const std::string &t : tails) {
+                const std::string path = h + "/" + t;
+                rows++;
+                const IntakeRecord *slow = slowRecordFor(*view, path);
+                if (slow != nullptr) found++;
+                const bool may = view->mayHaveRecord(path, scratch);
+                if (!may) ruledOut++;
+                const IntakeRecord *fast = view->recordFor(path, scratch);
+                if (fast != slow || (!may && slow != nullptr)) {
+                    wrong++;
+                    if (wrong <= 5) printf("    differs: %s (aliases: %s)\n", path.c_str(), aliases->describe().c_str());
+                }
+            }
+        }
+        // mac-volume rows through the volume table, one scratch for all.
+        FieldState state(view, VolumeTable::make({{kIdA, "/Volumes/music-1"}, {kIdB, "/Volumes/Caf" + nfd}}));
+        FieldScratch fieldScratch;
+        for (const std::string &t : tails) {
+            const std::pair<std::string, std::string> volumeRows[] = {
+                {mv(kIdA, "income/" + t), "/Volumes/music-1/income/" + t},
+                {mv(kIdA, "library/" + t), "/Volumes/music-1/library/" + t},
+                {mv(kIdB, "in/" + t), "/Volumes/Caf" + nfd + "/in/" + t},
+            };
+            for (const auto &[row, native] : volumeRows) {
+                rows++;
+                const IntakeRecord *slow = slowRecordFor(*view, native);
+                if (slow != nullptr) found++;
+                if (state.recordFor(row, fieldScratch) != slow) {
+                    wrong++;
+                    if (wrong <= 5) printf("    differs: %s (aliases: %s)\n", row.c_str(), aliases->describe().c_str());
+                }
+            }
+        }
+    }
+    printf("    %zu non-ASCII and ASCII rows: %zu under a root, %zu ruled out by their folder\n", rows, found,
+           ruledOut);
+    CHECK_EQ(wrong, 0, "the folder test never changes an answer");
+    CHECK(found > 40, "rows under roots, in every spelling");
+    CHECK(ruledOut > 100, "and many rows ruled out by their folder alone");
+    CHECK(ruledOut + found < rows, "but not every other row (a mount below the folder, a \"..\", ASCII)");
+}
+
 static void testLookupTiming() {
     g_context = "timing";
     std::vector<Root> roots;
@@ -207,6 +329,28 @@ static void testLookupTiming() {
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     printf("    100,000 mac-volume field lookups over 2,000 roots: %.1f ms (%zu hits)\n", ms, hits);
     CHECK(hits > 0, "lookups hit");
+
+    // Names stored decomposed (an SMB share): NFD "Tra" + U+0301 "ck" in
+    // every row, half of them in the library outside every root (their
+    // ASCII folder rules them out without NFC), half under a root.
+    std::vector<std::string> nfd;
+    for (int i = 0; i < 500; i++) {
+        nfd.push_back(mv(kIdA, "library/Artist " + std::to_string(i) + "/Album/0" + std::to_string(i % 10) +
+                                   " Some Tra\xCC\x81" "ck Name.flac"));
+        nfd.push_back(mv(kIdA, "income/Artist " + std::to_string(i * 3) + "/CD1/0" + std::to_string(i % 10) +
+                                   " Some Tra\xCC\x81" "ck Name.flac"));
+    }
+    size_t nfdHits = 0;
+    const auto nfdStart = std::chrono::steady_clock::now();
+    for (int round = 0; round < 100; round++) {
+        for (const std::string &p : nfd) {
+            if (s.value(0, p, scratch, out)) nfdHits++;
+        }
+    }
+    const double nfdMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - nfdStart).count();
+    printf("    100,000 NFD field lookups, half outside every root: %.1f ms (%zu hits)\n", nfdMs, nfdHits);
+    CHECK_EQ(nfdHits, 50000, "every NFD row under a root hits, none outside");
 }
 
 // --- the dirty set ---
@@ -595,6 +739,8 @@ int main(void) {
         testValues();
         testInertAndEmpty();
         testMembers();
+        testLastRow();
+        testNonASCIIRows();
         testLookupTiming();
         testViewChanges();
         testInertChanges();

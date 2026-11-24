@@ -38,7 +38,9 @@
 //  normalizing it, and the rewritten key carries its members along. Matching is
 //  case-sensitive. lookup() normalizes the query (file:// stripped; other
 //  schemes and relative paths match nothing); lookupKey() takes a query that
-//  is already a match key, e.g. an alias key.
+//  is already a match key, e.g. an alias key. The proper ancestors of every
+//  key of both maps are kept as well, so mayMatchUnder() can tell from a
+//  query's folder alone that nothing under it has a record.
 //
 //  A record without a MemberTable entry counts as whole-directory.
 //
@@ -98,6 +100,13 @@ public:
     const IntakeRecord *lookupKey(std::string_view key) const;
     // By sidecar id, or nullptr.
     const IntakeRecord *recordForId(std::string_view id) const;
+    // False when no match key strictly under `key` (a normalized match key)
+    // can find a record: no directory key is `key` or one of its
+    // ancestors, and no directory or member key lies under it. A few hash
+    // lookups (one per level of `key`), so a caller that knows only a
+    // query's folder can skip normalising the rest of it
+    // (IntakeView::mayHaveRecord). True may still find nothing.
+    bool mayMatchUnder(std::string_view key) const;
 
     const std::vector<IntakeRecord> &records() const { return records_; }
     // The membership this snapshot was built from: the next load's `previous`.
@@ -122,6 +131,7 @@ private:
     MemberTable members_;
     PathMap<uint32_t> byMember_;     // member file key -> record index
     PathMap<uint32_t> byDirectory_;  // whole-directory root key -> record index
+    PathMap<char> ancestors_;        // every proper ancestor of a key of either map, "/" included
     std::unordered_map<std::string, uint32_t, PathKeyHash, std::equal_to<>> byId_;
 };
 

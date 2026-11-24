@@ -5,8 +5,9 @@
 //  Unit tests for IntakeMountAliases (share-relative keys for SMB mounts,
 //  PLAN.md B3) and for IntakeView's per-row lookup through them: two aliases
 //  of one share, different shares, nested mount points, the mount point
-//  itself, no mounts, NFD names, mount points in another case, the changed
-//  bases of two tables, and losing one mount point. Synthetic mount lists
+//  itself, no mounts, NFD names, mount points in another case, mount points
+//  below a folder (hasMountBelow), the changed bases of two tables, and
+//  losing one mount point. Synthetic mount lists
 //  only: nothing here reads the real mount table.
 //
 // TEST_DEPS: src/Core/IntakePath.mm src/Core/IntakeView.mm src/Core/IntakeSnapshot.mm
@@ -235,6 +236,33 @@ static void testMountPointCase() {
           "a nested pass-through mount is matched ignoring case too");
 }
 
+static void testMountBelow() {
+    g_context = "mount-below";
+    auto a = MountAliases::build(withSystem({smb("/Volumes/Music", "//user@host/music"),
+                                             local("/Volumes/Music/Disk", "hfs")}));
+    CHECK(a->hasMountBelow("/Volumes"), "a share mounted in the folder");
+    CHECK(a->hasMountBelow("/volumes"), "ASCII case ignored, as rewrite() does");
+    CHECK(a->hasMountBelow("/"), "everything lies below \"/\"");
+    CHECK(a->hasMountBelow("/Volumes/Music"), "a pass-through mount nested in the share");
+    CHECK(!a->hasMountBelow("/Volumes/Music/Disk"), "a mount point itself is not below itself");
+    CHECK(!a->hasMountBelow("/Volumes/Music/income"), "a folder inside the share with nothing mounted in it");
+    CHECK(!a->hasMountBelow("/Volumes/Mus"), "only at a path boundary");
+    CHECK(!a->hasMountBelow("/Users/x"), "a folder elsewhere");
+    CHECK(!MountAliases::none()->hasMountBelow("/"), "no mounts: nothing below anything");
+
+    // The promise: with no mount below a folder, a key under it is
+    // rewritten as the folder is, plus the rest.
+    const char *folders[] = {"/Volumes/Music/income", "/VOLUMES/MUSIC/INCOME", "/Volumes/Music/Disk", "/Users/x"};
+    int kept = 0;
+    for (const char *f : folders) {
+        if (a->hasMountBelow(f)) continue;
+        if (a->rewritten(std::string(f) + "/A/b.flac") == a->rewritten(f) + "/A/b.flac") kept++;
+    }
+    CHECK_EQ(kept, 4, "rewrite(folder + rest) == rewrite(folder) + rest");
+    CHECK(a->rewritten("/Volumes/Music/a") != a->rewritten("/Volumes") + "/Music/a",
+          "and with a mount below, it may not be");
+}
+
 // --- IntakeView over aliased snapshots ---
 
 static IntakeRecord record(const std::string &id, const std::string &rootPath, IntakeStatus status) {
@@ -369,6 +397,7 @@ int main(void) {
         testStackedAndSame();
         testChangedBases();
         testMountPointCase();
+        testMountBelow();
         testViewThroughAliases();
         testViewInert();
         testViewMountPointCase();

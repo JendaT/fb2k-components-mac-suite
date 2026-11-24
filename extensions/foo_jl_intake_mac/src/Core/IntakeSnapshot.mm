@@ -10,6 +10,24 @@
 
 namespace intake {
 
+namespace {
+
+// Adds every proper ancestor of `key` (a normalized match key) to `out`,
+// "/" included. Stops at the first one already there: its own ancestors
+// went in with it.
+void addAncestors(std::string_view key, PathMap<char> &out) {
+    std::string_view a = key;
+    while (a.size() > 1) {
+        const size_t slash = a.rfind('/');
+        if (slash == std::string_view::npos) return;
+        a = a.substr(0, slash == 0 ? 1 : slash);
+        if (out.find(a) != nullptr) return;
+        out.insert(a, 0, [](char, char) { return false; });
+    }
+}
+
+} // anonymous namespace
+
 bool singlesRootFor(const IntakeRecord &record, const RootMembers *members) {
     if (members != nullptr) {
         switch (members->kind) {
@@ -70,6 +88,7 @@ std::shared_ptr<const IntakeSnapshot> IntakeSnapshot::build(std::vector<IntakeRe
                 // NFC queries. Idempotent on a key that is already normal.
                 if (normalizePath(r.rootKey, normalized) != PathStatus::Ok) break;
                 s.byDirectory_.insert(normalized, i, lowerId("directory", normalized));
+                addAncestors(normalized, s.ancestors_);
                 break;
             case MemberKind::Members:
                 for (const std::string &relative : found->second.relativePaths) {
@@ -78,6 +97,7 @@ std::shared_ptr<const IntakeSnapshot> IntakeSnapshot::build(std::vector<IntakeRe
                     joined += relative;
                     if (normalizePath(joined, normalized) != PathStatus::Ok) continue;
                     s.byMember_.insert(normalized, i, lowerId("member", normalized));
+                    addAncestors(normalized, s.ancestors_);
                 }
                 break;
             case MemberKind::None:
@@ -105,6 +125,14 @@ const IntakeRecord *IntakeSnapshot::lookup(std::string_view path) const {
     std::string_view key;
     if (normalizePath(path, buffer, key) != PathStatus::Ok) return nullptr;
     return lookupKey(key);
+}
+
+bool IntakeSnapshot::mayMatchUnder(std::string_view key) const {
+    if (key.empty() || records_.empty()) return false;
+    // A key under `key` finds a directory key that is `key` or an ancestor
+    // of it, or a directory or member key under `key`, whose ancestors
+    // include `key`.
+    return byDirectory_.findNearest(key) != nullptr || ancestors_.find(key) != nullptr;
 }
 
 const IntakeRecord *IntakeSnapshot::recordForId(std::string_view id) const {

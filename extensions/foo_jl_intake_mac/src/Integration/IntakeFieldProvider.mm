@@ -388,8 +388,14 @@ void learnOnMain(const std::string &id, const std::string &root) {
 }
 
 // Any thread; out of line from fieldsNoteNativePath (an unknown volume).
+// The rows of an id already on its way, or refused, stop at the first
+// check, before anything is allocated.
 void learnVolume(std::string_view itemPath, std::string_view uuid, const char *native) {
     Fields &f = fields();
+    {
+        std::lock_guard<std::mutex> lock(f.learnMutex);
+        if (containsId(f.learnPending, uuid) || containsId(f.learnRefused, uuid)) return;
+    }
     const std::string id(uuid);
     const std::string root = learnedVolumeRoot(itemPath, native);
     {
@@ -443,7 +449,10 @@ void fieldsReseedVolumes(const char *why) {
 }
 
 void fieldsNoteNativePath(const char *itemPath, const char *native) {
-    if (!g_used.load(std::memory_order_relaxed)) return;
+    // Not gated on g_used: a host keeps the decorations of rows it already
+    // drew and does not decorate them again when a field is first used, so
+    // a volume skipped before then would stay unknown (and its rows without
+    // a value) until something else re-decorated one of them.
     if (itemPath == nullptr || native == nullptr || itemPath == native || g_quitting.load(std::memory_order_relaxed)) {
         return;
     }

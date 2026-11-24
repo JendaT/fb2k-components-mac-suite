@@ -17,9 +17,14 @@
 //    empty one, no record          -> no value
 //  and then the record's precomputed value (IntakeRecord::fields; an empty
 //  one is no value). No lock, no shared_ptr copy, no allocation for an
-//  already-normal ASCII path once the caller's scratch buffers have grown
-//  (non-ASCII text goes through CoreFoundation for NFC, as everywhere);
-//  O(path length) plus the snapshot's ancestor walk.
+//  already-normal ASCII path once the caller's scratch buffers have grown;
+//  O(path length) plus the snapshot's ancestor walk. A path with a
+//  non-ASCII byte goes through CoreFoundation for NFC only when its ASCII
+//  folder lies near a root (IntakeView::mayHaveRecord): rows elsewhere on an
+//  SMB share with decomposed names cost about what ASCII rows do. The
+//  scratch remembers the last row it mapped, by state and path bytes, so the
+//  three fields of one row (one format_title, evaluated in turn on one
+//  thread) map it once.
 //
 //  FieldDirtySet: the rows a refresh must reach. Requirement: every
 //  playlist row whose value may differ from what a host last got since the
@@ -79,6 +84,12 @@ namespace intake {
 struct FieldScratch {
     ViewScratch view;
     std::string native;
+    // FieldState::recordFor's last answer: the state's serial (0: none),
+    // the row path and its record. Keyed by serial, never by address, as a
+    // retired state's memory may hold a later state.
+    uint64_t lastSerial = 0;
+    std::string lastPath;
+    const IntakeRecord *lastRecord = nullptr;
 };
 
 class FieldState {
@@ -90,6 +101,8 @@ public:
     const std::shared_ptr<const VolumeTable> &volumes() const { return volumes_; }
     // Some row can have a value (the view is neither inert nor empty).
     bool showsValues() const { return shows_; }
+    // Unique per state in this process, starting at 1.
+    uint64_t serial() const { return serial_; }
 
     // The record owning the row `itemPath` (foobar2000's path, see the top
     // of this file), or nullptr; always nullptr when !showsValues().
@@ -106,6 +119,7 @@ private:
     std::shared_ptr<const IntakeView> view_;
     std::shared_ptr<const VolumeTable> volumes_;
     bool shows_ = false;
+    uint64_t serial_ = 0;
 };
 
 class FieldDirtySet {

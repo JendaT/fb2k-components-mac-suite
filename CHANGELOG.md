@@ -1012,7 +1012,7 @@ First release, contributed by @Scannou (#56).
 - **Quit before follow-ups**: Quitting foobar2000 after a placement ended but before its swap or delete ran logs one console line per run, so they can be done by hand.
 - **Live updates**: Income folders are watched with FSEvents; a sidecar change or a finished command reloads the status.
 - **Income folder guard**: A release root that is an income folder itself (loose files at its top level) is ignored, so stray rows under the folder are not tinted or acted on.
-- **Network shares**: `mac-volume://` rows match, also when a share is mounted twice; a stalled volume is skipped instead of blocking.
+- **Network shares**: `mac-volume://` rows match, also when a share is mounted twice; a stalled volume is skipped instead of blocking; accented names away from every release cost no Unicode normalisation.
 - **Preferences**: Tools > Intake sets the CLI, bun, rules folder, watched folders, library mapping, row colours, confirmations and log level, with a status line, Test CLI and Reload now.
 
 #### Notes

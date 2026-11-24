@@ -24,8 +24,9 @@
 //
 //  "Used": an atomic flag set by the first process_field call. Until then
 //  no host holds a value, so nothing is diffed and nothing is refreshed:
-//  users who never use the fields pay for one FieldState per publish and
-//  the volume seed only. The flag and the state pointer are both
+//  users who never use the fields pay for one FieldState per publish, the
+//  volume seed, and the learn check on decorated mac-volume rows (below)
+//  only. The flag and the state pointer are both
 //  sequentially consistent, so a publish either sees the flag (and diffs)
 //  or the first call reads the new state.
 //
@@ -49,7 +50,10 @@
 //  for a call over 20 ms). The table is published on main. Re-seeded on
 //  every mount or unmount notification and on Refresh, coalesced with a
 //  seed still running. Also learned from the decorate path
-//  (fieldsNoteNativePath) once the fields are used.
+//  (fieldsNoteNativePath), from the start: SimPlaylist keeps the
+//  decorations of rows it drew and does not decorate them again when a
+//  field is first used, so learning only after first use would leave a
+//  stale volume id of rows already on screen unknown.
 //
 //  Thread-safety: as noted per function.
 //
@@ -75,11 +79,12 @@ void fieldsPublishView(std::shared_ptr<const IntakeView> view);
 void fieldsReseedVolumes(const char *why);
 
 // Any thread (decorate): `itemPath` was converted to `native` by
-// g_get_native_path (IntakeNativePath). Once the fields are used, a
-// mac-volume row of a volume id the table does not know teaches it the
-// volume's root (published on main, then refreshed). One relaxed atomic
-// load before first use; after it, an atomic load and an id lookup in a
-// short table for a known volume.
+// g_get_native_path (IntakeNativePath). A mac-volume row of a volume id the
+// table does not know teaches it the volume's root (published on main, and
+// refreshed once the fields are used), whether or not a field was used yet.
+// For a row of a known volume: the id split, an atomic load and an id
+// lookup in a short table. For an id already on its way or refused: that
+// plus a short lock.
 void fieldsNoteNativePath(const char *itemPath, const char *native);
 
 // Main thread, on_quit: no publication, refresh, seed or deletion after

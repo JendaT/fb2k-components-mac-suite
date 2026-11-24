@@ -74,6 +74,20 @@ PathStatus normalizePath(std::string_view input, std::string &buffer, std::strin
 // any status other than Ok).
 PathStatus normalizePath(std::string_view input, std::string &out);
 
+// The ASCII folder of a path that normalizePath() would send through NFC,
+// so a lookup can rule the path out before paying for CoreFoundation
+// (IntakeView::mayHaveRecord). For `input` (a native path or file://) with
+// a non-ASCII byte: true, with `head` viewing the native part of `input` up
+// to the last '/' before the first non-ASCII byte. The match key of `input`
+// then lies strictly under the match key of `head`, which is ASCII and so
+// needs no NFC: NFC never changes ASCII text that ends in a '/' (a '/'
+// composes with nothing and is never reordered), and lexical normalisation
+// can only reach into `head` through a ".." segment after it. False, with
+// `head` empty, for an ASCII path (its full normalisation is cheap anyway),
+// another scheme or a relative path, a non-ASCII byte in the first segment
+// (no folder before it), or a ".." segment after the head.
+bool asciiFolderOf(std::string_view input, std::string_view &head);
+
 // "Ok", "Empty", "Relative" or "UnhandledScheme", for log lines.
 const char *_Nonnull pathStatusName(PathStatus status);
 

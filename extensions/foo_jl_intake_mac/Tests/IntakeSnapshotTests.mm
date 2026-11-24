@@ -2,7 +2,8 @@
 //  IntakeSnapshotTests.mm
 //  foo_jl_intake_mac
 //
-//  Unit tests for IntakeSnapshot (member map first, then the ancestor walk),
+//  Unit tests for IntakeSnapshot (member map first, then the ancestor walk,
+//  and mayMatchUnder over the keys' ancestors),
 //  and the whole B2 pipeline over the mock CLI: version gate, status rows,
 //  member load against the mock's tree in a temp directory, snapshot,
 //  lookups of the tree's real file paths. Also prints the time of 5,000
@@ -232,6 +233,51 @@ static void testUnicode() {
     auto members2 = IntakeSnapshot::build({record("itk_00000054", nfc)},
                                           {{"itk_00000054", members({"Cr\xC3\xA8me.wav"})}});
     CHECK(idAt(*members2, nfd + "/Cre\xCC\x80me.wav") == "itk_00000054", "NFC member, NFD query");
+}
+
+static void testMayMatchUnder() {
+    g_context = "may-match-under";
+    RootMembers none;
+    none.kind = MemberKind::None;
+    auto s = IntakeSnapshot::build(
+        {record("itk_00000061", "/income/dump/Album"), record("itk_00000062", "/income/singles"),
+         record("itk_00000063", "/elsewhere/None Root"), record("itk_00000064", "/income/Cafe\xCC\x81 Box")},
+        {{"itk_00000061", whole()},
+         {"itk_00000062", members({"deep/one.wav", "two.wav"})},
+         {"itk_00000063", none},
+         {"itk_00000064", whole()}});
+    CHECK(s->mayMatchUnder("/income/dump/Album"), "a directory key itself");
+    CHECK(s->mayMatchUnder("/income/dump/Album/CD1"), "a folder under a directory key");
+    CHECK(s->mayMatchUnder("/income/dump"), "an ancestor of a directory key");
+    CHECK(s->mayMatchUnder("/income"), "a further ancestor");
+    CHECK(s->mayMatchUnder("/"), "\"/\" is everyone's ancestor");
+    CHECK(s->mayMatchUnder("/income/singles"), "the folder of a member list");
+    CHECK(s->mayMatchUnder("/income/singles/deep"), "the folder of a nested member");
+    CHECK(s->mayMatchUnder("/income/Caf\xC3\xA9 Box/CD1"), "keys are NFC: under the NFD root, spelled NFC");
+    CHECK(!s->mayMatchUnder("/income/singles/other"), "a folder no member lies in");
+    CHECK(!s->mayMatchUnder("/income/dump/Album2"), "a name-prefix sibling");
+    CHECK(!s->mayMatchUnder("/library/Artist"), "a folder away from every root");
+    CHECK(!s->mayMatchUnder("/elsewhere/None Root"), "a root that matches nothing (MemberKind::None)");
+    CHECK(!s->mayMatchUnder("/elsewhere"), "nor do its ancestors");
+    CHECK(!s->mayMatchUnder(""), "an empty key");
+    CHECK(!IntakeSnapshot::empty()->mayMatchUnder("/"), "the empty snapshot: nothing");
+
+    // The promise, over every query below a few folders: a query that finds
+    // a record lies under a folder for which mayMatchUnder() is true.
+    const char *folders[] = {"/income", "/income/dump", "/income/dump/Album", "/income/singles",
+                             "/income/singles/deep", "/income/singles/other", "/library", "/elsewhere/None Root"};
+    const char *tails[] = {"x.wav", "deep/one.wav", "two.wav", "Album/01.wav", "one.wav", "CD1/01.wav"};
+    int found = 0;
+    int broken = 0;
+    for (const char *f : folders) {
+        for (const char *t : tails) {
+            if (s->lookupKey(std::string(f) + "/" + t) == nullptr) continue;
+            found++;
+            if (!s->mayMatchUnder(f)) broken++;
+        }
+    }
+    CHECK(found >= 6, "some queries find a record");
+    CHECK_EQ(broken, 0, "every one of them under a folder that may match");
 }
 
 static void testTiesAndKinds() {
@@ -552,6 +598,7 @@ int main(void) {
         testSinglesKind();
         testNested();
         testUnicode();
+        testMayMatchUnder();
         testTiesAndKinds();
         testKeysAndVisuals();
         testConcurrentReaders();

@@ -240,7 +240,10 @@ probe, 2026-11-15). What the component does with them:
     unmount and Refresh.
   - Stale volume ids (an earlier mount of the share that foobar2000 still
     resolves) are learned from rows the decorate path converted: the
-    native path minus the row's remainder is the root. That check also
+    native path minus the row's remainder is the root. This runs before a
+    field is first used too: SimPlaylist keeps the decorations of rows it
+    drew and does not decorate them again when a field column is added,
+    so a gate on first use left those ids unknown. That check also
     tests the assumption that the remainder is stored raw, not
     percent-encoded: a volume that fails it is not learned (one Debug
     line).

@@ -90,6 +90,12 @@ public:
     std::string_view rewrite(std::string_view key, std::string &buffer) const;
     // Same, as a copy.
     std::string rewritten(std::string_view key) const;
+    // Some mount point of the table lies strictly under `key` (a match key;
+    // the mount point's part compared ignoring ASCII case, as rewrite()
+    // does). When none does, every key under `key` is rewritten by the same
+    // entry as `key` itself, or by none: rewrite(key + "/" + rest) is
+    // rewrite(key) + "/" + rest (IntakeView::mayHaveRecord relies on it).
+    bool hasMountBelow(std::string_view key) const;
 
     // smbfs mounts with a usable source.
     size_t aliasCount() const { return aliasCount_; }
