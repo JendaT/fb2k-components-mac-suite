@@ -23,8 +23,8 @@
 //  invalidate-all after its first load. A row that g_get_native_path
 //  converted is also handed to fieldsNoteNativePath (B13,
 //  IntakeFieldProvider), so the title-formatting fields learn volume ids
-//  their seed did not find; before a field was used that is one relaxed
-//  atomic load.
+//  their seed did not find, whether or not a field is in use yet; for a
+//  known volume that is the id split and a lookup in a short table.
 //
 //  decorate_group (B6): the same per-row pipeline for each member the host
 //  passes (at most 64): get_path -> IntakeNativePath -> IntakeView::recordFor.
