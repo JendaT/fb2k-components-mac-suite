@@ -83,7 +83,7 @@ static void testKeys() {
 
 static void testRunningTexts() {
     g_context = "running-texts";
-    const std::string album = "Basher Toe" + kDash + "Orenda";
+    const std::string album = "Fixture Artist" + kDash + "Fixture Album";
     CHECK(runningText(ActivityKind::Propose, 3, album) == "Proposing 3 albums" + kDots, "propose, 3");
     CHECK(runningText(ActivityKind::Propose, 1, album) == "Proposing " + album + kDots, "propose, one: its label");
     CHECK(runningText(ActivityKind::Propose, 1, "") == "Proposing 1 album" + kDots, "one without a label: 1 album");
@@ -116,7 +116,7 @@ static void testRunningTexts() {
 
 static void testResultTexts() {
     g_context = "result-texts";
-    const std::string album = "Basher Toe" + kDash + "Orenda";
+    const std::string album = "Fixture Artist" + kDash + "Fixture Album";
     const ActivityResult ok;
     CHECK(resultText(ActivityKind::Propose, 3, album, ok) == "Proposed 3 albums", "proposed");
     CHECK(resultText(ActivityKind::Propose, 1, album, ok) == "Proposed " + album, "proposed, one");
@@ -331,7 +331,7 @@ static void testOrderAndMore() {
 static void testProgress() {
     g_context = "progress";
     const std::string first = "Fixture Artist" + kDash + "First";
-    const std::string current = "Basher Toe" + kDash + "Orenda";
+    const std::string current = "Fixture Artist" + kDash + "Fixture Album";
     ActivityModel m;
     m.begin("run:x", ActivityKind::Execute, 40, first, 0);
     CHECK(lineText(m, 0) == "Placing 40 albums" + kDots, "nothing reported yet");
