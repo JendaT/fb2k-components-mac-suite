@@ -38,7 +38,9 @@ and the two confirmations apply immediately, from the next context menu).
 They are described below because in-app checks set them with `sqlite3`
 while foobar2000 is quit.
 
-**Hidden (config store only):** `decor_stats` and `log_file`.
+**Hidden (config store only):** `decor_stats`, `log_file`,
+`recent_collections` (kept by the picker, not a setting) and
+`execute_swap_after` (kept by the Execute sheet).
 
 # Keys on the preferences page
 
@@ -77,6 +79,14 @@ source in use (`[intake] load: rules from ...`).
 Debug lines show each CLI call's arguments, how it ended (outcome, exit code,
 duration, error codes) and the member-list I/O. They never show the CLI's
 output. The `decor_stats` lines ignore this setting.
+
+The title-formatting fields (B13) have no setting of their own. At level 2
+the console shows each volume table seed (`[intake] fields: volume table
+(start): N volume id(s), M mount(s) under /Volumes, X ms: <UUID> -> <root>`),
+each volume learned from a decorated row, and, once a field has been used,
+one line per refresh (`[intake] fields: refreshed N of M playlist rows in X
+ms (main thread Y ms, K root key(s))`). A seed call that takes over 20 ms is
+logged at level 1.
 
 ## foo_jl_intake.watch_folders
 
@@ -323,15 +333,65 @@ appended, timestamped, to `~/Library/Logs/foobar2000/jl_intake.log`. For
 in-app checks that cannot open the console window. The file is never
 truncated or rotated; delete it by hand.
 
+## foo_jl_intake.recent_collections
+
+`configStrings`, default empty. The "Recent" section of the "Assign to other
+collection…" picker: the last five collections the user confirmed Assign
+for, one name per line, most recent first. The picker writes it when Assign
+is confirmed and reads it when it opens; names the CLI no longer lists are
+left out of the section and dropped at the next write. Not a preference: to
+clear the list, delete the row while foobar2000 is quit:
+
+```bash
+sqlite3 ~/Library/foobar2000-v2/config.sqlite \
+  "DELETE FROM configStrings WHERE name='foo_jl_intake.recent_collections';"
+```
+
+## foo_jl_intake.execute_swap_after
+
+`configInts`, `0` off, any other value on; default `1`. The Execute placement
+sheet's "Swap playlist rows to the library copies when done". The sheet opens
+with this value and writes the confirmed choice back when Execute is clicked
+(Cancel writes nothing). There is no preferences UI for it.
+
+The sheet's second checkbox, "Then delete the local copies" (enabled only
+while the first is ticked), has no key: it opens unticked every time and its
+choice is never saved. Earlier builds kept it in `execute_delete_after`; a
+leftover row is no longer read.
+
+The choice applies to that run only and is stored in its run file, so it
+still applies when the run ends after a restart. When the run ends, the rows
+of the roots it placed are swapped to their library copies in every
+playlist; with delete on, `gc` then runs for each root that is still
+`placed` with `placed.verified` and has no playlist row left on its income
+files (a row that could not be checked on a slow volume keeps every root).
+Kept roots get one console line and a tooltip saying why. The ticked box is
+the confirmation: no Delete sheet appears, whatever `confirm_gc` says.
+
+```bash
+# quit foobar2000 first: open the sheet with swap off
+sqlite3 ~/Library/foobar2000-v2/config.sqlite \
+  "INSERT INTO configInts(name,value) VALUES('foo_jl_intake.execute_swap_after',0)
+   ON CONFLICT(name) DO UPDATE SET value=excluded.value;"
+# back to the defaults
+sqlite3 ~/Library/foobar2000-v2/config.sqlite \
+  "DELETE FROM configInts WHERE name='foo_jl_intake.execute_swap_after';"
+```
+
 # Execute run files
 
 Execute runs leave two files in `~/Library/Caches/foo_jl_intake/` while they
 run: `execute-<stamp>.json` (the CLI's stdout) and `execute-<stamp>.run` (pid,
-start time, ids, root paths, output name, command). The run file is written
+start time, ids, root paths, output name, command, and for an execute the
+sheet's follow-ups as `swap_after` / `delete_after`; a run file without them,
+from an older build, gets no swap or delete when it ends). The run file is written
 before the CLI starts, without the pid and start time, and rewritten with
 them as soon as the child exists. Both are deleted when the component has
-read the result. A run still going when foobar2000 quits keeps running and
-keeps its files; the next start adopts it (live) or finishes it (ended). A
+read the result, before the swap and delete run (they wait for the reload
+after the run): a quit in between drops them, with one console line per run,
+and the next start does not do them. A run still going when foobar2000 quits
+keeps running and keeps its files; the next start adopts it (live) or
+finishes it (ended). A
 run file still without a pid (foobar2000 was gone before it was rewritten)
 is adopted when one of this user's processes still has the output open (that
 process is then watched), finished when the output exists and nobody has it

@@ -265,6 +265,16 @@ std::string MountAliases::rewritten(std::string_view key) const {
     return std::string(rewrite(key, buffer));
 }
 
+bool MountAliases::hasMountBelow(std::string_view key) const {
+    // A mount point longer than `key` that a key under `key` lies under
+    // agrees with `key` up to its length (ASCII case aside) and has a '/'
+    // right after it: exactly isUnder(mount, key).
+    for (const Entry &e : entries_) {
+        if (e.mountKey.size() > key.size() && isUnder(e.mountKey, key)) return true;
+    }
+    return false;
+}
+
 bool MountAliases::sameAs(const MountAliases &other) const {
     if (entries_.size() != other.entries_.size() || links_.size() != other.links_.size() ||
         notes_ != other.notes_) {

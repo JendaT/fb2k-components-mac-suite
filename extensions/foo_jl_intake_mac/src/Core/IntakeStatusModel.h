@@ -51,6 +51,7 @@
 #include <vector>
 
 #include "IntakeDecorationMap.h"
+#include "IntakeFields.h"
 #include "IntakeGroupBadge.h"
 
 namespace intake {
@@ -129,6 +130,13 @@ struct IntakeRecord {
     // Derived and runtime state, not parsed from the row:
     IntakeRowVisual visual; // set by IntakeSnapshot::build (IntakeDecorationMap)
     IntakeBadge badge;      // set by IntakeSnapshot::build (IntakeGroupBadge)
+    // The title-formatting field values (IntakeFields), set by
+    // IntakeSnapshot::build after the visual and badge.
+    IntakeFieldValues fields;
+    // A singles root (IntakeSnapshot.h singlesRootFor), set by
+    // IntakeSnapshot::build before the visual and badge: its null
+    // target_path is "slot pending", any other root's "cannot be placed".
+    bool singlesRoot = false;
     // A per-command error, set before the snapshot is built
     // (LoaderSettings::annotateRecords, IntakeRootErrors) and kept until
     // the root's status changes.

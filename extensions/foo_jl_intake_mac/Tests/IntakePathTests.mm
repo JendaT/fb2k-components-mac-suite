@@ -2,7 +2,8 @@
 //  IntakePathTests.mm
 //  foo_jl_intake_mac
 //
-//  Unit tests for IntakePath (file:// strip, lexical normalization, NFC).
+//  Unit tests for IntakePath (file:// strip, lexical normalization, NFC,
+//  the ASCII folder of a non-ASCII path).
 //  Compiled standalone under ASan+UBSan; see Scripts/run_tests.sh.
 //
 //  All paths are synthetic.
@@ -202,6 +203,57 @@ int main(void) {
                     "/smbfs:fixture-share/income/Fixture Artist - Test Album");
         checkNormal("/smbfs:fixture-share/income//A/", "/smbfs:fixture-share/income/A");
         checkStatus("smbfs:fixture-share/income/A", PathStatus::Relative);
+
+        // --- the ASCII folder of a non-ASCII path (asciiFolderOf) ---
+        g_context = "ascii-folder";
+        {
+            auto folder = [](const char *input) {
+                std::string_view head = "stale";
+                if (!intake::asciiFolderOf(input, head)) return std::string(head.empty() ? "-" : "stale!");
+                return std::string(head);
+            };
+            CHECK(folder("/income/Artist/Cafe\xCC\x81 Album/01.flac") == "/income/Artist",
+                  "NFD name: the folder before its segment");
+            CHECK(folder("/income/Artist/Caf\xC3\xA9 Album/01.flac") == "/income/Artist", "NFC name: the same");
+            CHECK(folder("/income/Artist/Album/01 Cafe\xCC\x81.flac") == "/income/Artist/Album",
+                  "a non-ASCII file name");
+            CHECK(folder("FILE:///income/Cafe\xCC\x81/a.flac") == "/income", "file://, any case: the native part");
+            CHECK(folder("/a/./b//Cafe\xCC\x81") == "/a/./b/", "the head is raw, not normalized");
+            CHECK(folder("/a/Cafe\xCC\x81/./x//y") == "/a", "'.' and empty segments after it are harmless");
+            CHECK(folder("/a/Cafe\xCC\x81/..b/x") == "/a", "a \"..b\" segment is a name");
+            CHECK(folder("/a/b/Cafe\xCC\x81/../../c") == "-", "a \"..\" after the head could pop into it");
+            CHECK(folder("/a/b/Cafe\xCC\x81/..") == "-", "a trailing \"..\" too");
+            CHECK(folder("/Cafe\xCC\x81/a.flac") == "-", "non-ASCII in the first segment: no folder");
+            CHECK(folder("/income/Artist/01.flac") == "-", "an ASCII path");
+            CHECK(folder("relative/Cafe\xCC\x81") == "-", "a relative path");
+            CHECK(folder("mac-volume://X/Cafe\xCC\x81") == "-", "another scheme");
+            CHECK(folder("file://host/a/Cafe\xCC\x81") == "-", "file:// with a host");
+            CHECK(folder("") == "-", "empty");
+            CHECK(folder("/a/\xFF/b") == "/a", "invalid UTF-8 counts as non-ASCII");
+
+            // The promise: normalize(input) lies strictly under normalize(head).
+            const char *inputs[] = {
+                "/income/Artist/Cafe\xCC\x81 Album/01.flac", "file:///x/../income/Cafe\xCC\x81/",
+                "/a/./b//Cafe\xCC\x81/./x", "/a/b/../c/\xE1\x84\x92\xE1\x85\xA1/d", "//a/\xFF/../b",
+                "/a/..//Cafe\xCC\x81",
+            };
+            int under = 0;
+            int tried = 0;
+            for (const char *in : inputs) {
+                std::string_view head;
+                if (!intake::asciiFolderOf(in, head)) continue;
+                tried++;
+                std::string full, folderKey;
+                if (intake::normalizePath(in, full) != PathStatus::Ok ||
+                    intake::normalizePath(head, folderKey) != PathStatus::Ok) {
+                    continue;
+                }
+                const std::string prefix = folderKey == "/" ? "/" : folderKey + "/";
+                if (full.size() > prefix.size() && full.compare(0, prefix.size(), prefix) == 0) under++;
+            }
+            CHECK_EQ(tried, 5, "five of the inputs have a folder (\"//a/\\xFF/../b\" has a \"..\")");
+            CHECK_EQ(under, tried, "each normalized input lies strictly under its normalized folder");
+        }
 
         // --- status names ---
         g_context = "names";

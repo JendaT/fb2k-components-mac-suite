@@ -768,6 +768,13 @@ ROWS=""
 ROOT_ERRS=""
 handle_id() {
     local id="$1" verb="$2" row st path
+    # per-root: the reply decided before the walk changed the root's status.
+    if walked_reply "$id"; then
+        if [ "$SYNTH_KIND" = "error" ]; then ROOT_ERRS="$ROOT_ERRS${ROOT_ERRS:+,}$REPLY"
+        else ROWS="$ROWS${ROWS:+,}$REPLY"
+        fi
+        return
+    fi
     if [ -f "$RESP/$KEY.d/$id.error" ]; then
         read_line "$RESP/$KEY.d/$id.error"
         ROOT_ERRS="$ROOT_ERRS${ROOT_ERRS:+,}$REPLY"
@@ -785,6 +792,14 @@ handle_id() {
     json_field status "$row"; st="$REPLY"
     json_field root_path "$row"; path="$REPLY"
     if status_legal "$verb" "$st"; then
+        if [ $SYNTH -eq 1 ] && [ "$CMD" = "execute" ]; then
+            # per-root and slow-dry-run: a reply made from the summary.
+            synth_reply "$id" "$verb" "$row"
+            if [ "$SYNTH_KIND" = "error" ]; then ROOT_ERRS="$ROOT_ERRS${ROOT_ERRS:+,}$REPLY"
+            else ROWS="$ROWS${ROWS:+,}$REPLY"
+            fi
+            return
+        fi
         die "scenario gap: no responses/$KEY.d/$id.json or .error for $verb on $id (status $st)"
     fi
     # CLI 0.2.1 gc filtered named roots to placed ones silently; 0.3.0 refuses
@@ -907,7 +922,14 @@ cmd_rows() {
                     return
                 fi
                 [ -f "$RESP/$KEY.envelope" ] && emit_verbatim "$KEY"
-                if [ $RESUME -eq 1 ]; then ids_with_status placing; else ids_with_status approved; fi
+                if [ $WALK_PICKED -eq 1 ]; then
+                    # per-root: the roots the walk picked before it rewrote
+                    # their statuses, as the CLI replies for the roots it
+                    # took at the start.
+                    IDS=(${WALK[@]+"${WALK[@]}"})
+                elif [ $RESUME -eq 1 ]; then ids_with_status placing
+                else ids_with_status approved
+                fi
                 run_ids "$verb" ${IDS[@]+"${IDS[@]}"}
                 finish_rows
                 return
@@ -1023,9 +1045,226 @@ run_command() {
 }
 
 # ---------------------------------------------------------------------------
+# per-root and slow-dry-run (B14, the status bar's n/m): an execute that a
+# file watcher sees walk its roots one by one, as the real CLI does
+# (commands-p3.ts cmdExecute: each root's sidecar goes placing before its
+# copy, then placed; a failure before the commit point reverts it to
+# approved; resume writes no placing), and an execute dry run slower than
+# the component's 10 s budget. In both modes a root in a status the CLI
+# accepts that has no execute reply file gets one made from its summary
+# (synth_reply), so generated scenarios (perf-200) can run them.
+# ---------------------------------------------------------------------------
+
+SYNTH=0          # 1 in per-root and slow-dry-run
+FAIL_IDS=" "     # per-root: the roots that fail, " id1 id2 "
+WALKED_IDS=()    # per-root: replies decided before the walk changed statuses
+WALKED_KIND=()   # row | error
+WALKED_JSON=()
+SYNTH_KIND=""
+JOURNAL_SEQ=100
+WALK=()          # per-root: the roots of the walk
+WALK_PICKED=0    # 1 when the walk picked them itself (--approved, --resume, no ids)
+
+# The reply the walk decided for root $1 -> REPLY and SYNTH_KIND; or 1.
+walked_reply() {
+    local i=0
+    while [ $i -lt ${#WALKED_IDS[@]} ]; do
+        if [ "${WALKED_IDS[$i]}" = "$1" ]; then
+            SYNTH_KIND="${WALKED_KIND[$i]}"
+            REPLY="${WALKED_JSON[$i]}"
+            return 0
+        fi
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# A reply for root $1 (verb $2: execute or resume) made from its summary row
+# $3, in the CLI's shapes -> REPLY and SYNTH_KIND (row | error). Execute
+# without a target is E_NO_TARGET, as in the CLI. A root in FAIL_IDS fails a
+# real call: execute with E_VERIFY (the copy failed, the CLI reverts it to
+# approved), resume with reverted_to_approved.
+synth_reply() {
+    local id="$1" verb="$2" row="$3" rp tp fail=0
+    json_field root_path "$row"; rp="$REPLY"
+    json_field target_path "$row"; tp="$REPLY"
+    case "$FAIL_IDS" in *" $id "*) [ $DRY -eq 0 ] && fail=1 ;; esac
+    SYNTH_KIND=row
+    if [ "$verb" = "resume" ]; then
+        if [ $fail -eq 1 ] || [ -z "$tp" ]; then
+            REPLY="{\"id\":\"$id\",\"root_path\":\"$rp\",\"resumed\":\"reverted_to_approved\"}"
+        else
+            REPLY="{\"id\":\"$id\",\"root_path\":\"$rp\",\"resumed\":\"completed\",\"target_path\":\"$tp\"}"
+        fi
+        return
+    fi
+    if [ -z "$tp" ]; then
+        SYNTH_KIND=error
+        error_json E_NO_TARGET "approved sidecar has no target_path" "$rp"
+    elif [ $DRY -eq 1 ]; then
+        REPLY="{\"id\":\"$id\",\"root_path\":\"$rp\",\"target_path\":\"$tp\",\"dry_run\":true,\"files\":1,\"artifacts\":0,\"skipped_shadows\":0}"
+    elif [ $fail -eq 1 ]; then
+        SYNTH_KIND=error
+        error_json E_VERIFY "verify failed: mock per-root failure" "$rp"
+    else
+        # The seq the sidecar gets when the walk writes placed.
+        REPLY="{\"id\":\"$id\",\"root_path\":\"$rp\",\"target_path\":\"$tp\",\"journal_seq\":$((JOURNAL_SEQ + 1)),\"files\":1,\"artifacts\":0,\"skipped_shadows\":0,\"issues\":[]}"
+    fi
+}
+
+# Root $1 goes to status $2, in its summary row and in its sidecar
+# (.intake.<id>.json for a virtual root, else .intake.json), each written
+# whole through a temp file and mv, so a reader never sees half a file.
+# placed also gets placed {target_path, verified, journal_seq} from the
+# proposal's target_path. Only files under $RESP and $ROOT are written.
+set_root_status() {
+    local id="$1" new="$2" row old tp rp side s
+    status_row "$id" || return 0
+    row="$REPLY"
+    json_field status "$row"; old="$REPLY"
+    json_field target_path "$row"; tp="$REPLY"
+    json_field root_path "$row"; rp="$REPLY"
+    [ -n "$old" ] && [ "$old" != "$new" ] || return 0
+    replace_all "$row" "\"status\":\"$old\"" "\"status\":\"$new\""; row="$REPLY"
+    if [ "$new" = "placed" ] && [ -n "$tp" ]; then
+        replace_all "$row" '"placed":null' "\"placed\":{\"verified\":true,\"target_path\":\"$tp\"}"; row="$REPLY"
+    fi
+    printf '%s\n' "$row" > "$RESP/status.d/.$id.tmp" && mv -f "$RESP/status.d/.$id.tmp" "$RESP/status.d/$id.json"
+    case "$rp" in "$ROOT"/*) ;; *) return 0 ;; esac
+    case "$rp" in */.. | */../*) return 0 ;; esac
+    side="$rp/.intake.$id.json"
+    [ -f "$side" ] || side="$rp/.intake.json"
+    [ -f "$side" ] || return 0
+    read_joined "$side"; s="$REPLY"
+    replace_all "$s" "\"status\": \"$old\"" "\"status\":\"$old\""; s="$REPLY"
+    if [ "$new" = "placed" ] && [ -n "$tp" ]; then
+        replace_all "$s" '"placed": null,' ""; s="$REPLY"
+        replace_all "$s" '"placed":null,' ""; s="$REPLY"
+        JOURNAL_SEQ=$((JOURNAL_SEQ + 1))
+        replace_all "$s" "\"status\":\"$old\"" \
+            "\"placed\":{\"target_path\":\"$tp\",\"verified\":true,\"journal_seq\":$JOURNAL_SEQ},\"status\":\"placed\""
+        s="$REPLY"
+    else
+        replace_all "$s" "\"status\":\"$old\"" "\"status\":\"$new\""; s="$REPLY"
+    fi
+    printf '%s\n' "$s" > "$side.mock-tmp" && mv -f "$side.mock-tmp" "$side"
+}
+
+# The library copy of placed whole-folder root $1: its *.wav (fixtures hold
+# no other audio) copied under its target path, when that lies under $ROOT.
+copy_library() {
+    local id="$1" row rp tp f
+    status_row "$id" || return 0
+    row="$REPLY"
+    json_field root_path "$row"; rp="$REPLY"
+    json_field target_path "$row"; tp="$REPLY"
+    [ -n "$tp" ] && [ -f "$rp/.intake.json" ] || return 0
+    case "$rp" in "$ROOT"/*) ;; *) return 0 ;; esac
+    case "$tp" in "$ROOT"/*) ;; *) return 0 ;; esac
+    case "$tp" in */.. | */../*) return 0 ;; esac
+    mkdir -p "$tp" || return 0
+    for f in "$rp"/*.wav; do
+        [ -f "$f" ] && cp "$f" "$tp/"
+    done
+}
+
+check_seconds() { # mode seconds
+    case "$2" in '' | . | *[!0-9.]* | *.*.*) die "$1 takes seconds like 4 or 0.5: $2" ;; esac
+}
+
+# per-root [SECONDS] [ID...]: SECONDS per root (INTAKE_MOCK_ROOT_SECONDS, else
+# 4), and the roots that fail.
+PER_ROOT_SECS=""
+parse_per_root_args() {
+    local word
+    PER_ROOT_SECS="${INTAKE_MOCK_ROOT_SECONDS:-4}"
+    set -f
+    set -- $MODE_ARG
+    set +f
+    if [ $# -gt 0 ]; then
+        case "$1" in *[!0-9.]*) ;; *) PER_ROOT_SECS="$1"; shift ;; esac
+    fi
+    for word in "$@"; do
+        [[ $word =~ $ID_RE ]] || die "per-root takes seconds and root ids: $word"
+        FAIL_IDS="$FAIL_IDS$word "
+    done
+    check_seconds per-root "$PER_ROOT_SECS"
+}
+
+# The walk of a real execute (or resume), one root after the other in the
+# order named: execute writes placing, waits $1 seconds (the copy), copies
+# the library files and writes placed, or approved for a root that fails
+# after placing (E_VERIFY); resume waits, then writes placed, or approved
+# for a root it reverts. A root refused before anything is written (another
+# error, a status the CLI does not accept) is not walked. Then the reply,
+# as a normal call: .next applies, .start does not (the walk writes the
+# states itself).
+mode_per_root() {
+    local secs="$1" verb=execute key=execute id row st reply outcome seen=" " child
+    if [ $RESUME -eq 1 ]; then verb=resume; key=execute.resume; fi
+    if [ -n "$(find "$ROOT" "$RESP" -type l 2>/dev/null | head -n 1)" ]; then
+        die "symlink found under $STATE; refusing to write through it"
+    fi
+    collect_refs
+    WALK=()
+    if [ ${#ALLREFS[@]} -eq 0 ]; then
+        IDS=()
+        if [ $RESUME -eq 1 ]; then ids_with_status placing
+        elif [ $APPROVED -eq 1 ]; then ids_with_status approved
+        fi
+        WALK=(${IDS[@]+"${IDS[@]}"})
+        # The reply covers these roots (cmd_rows), not the ones still in
+        # that status once the walk has rewritten them.
+        WALK_PICKED=1
+    else
+        resolve_refs
+        WALK=(${RESOLVED[@]+"${RESOLVED[@]}"})
+    fi
+    for id in ${WALK[@]+"${WALK[@]}"}; do
+        case "$seen" in *" $id "*) continue ;; esac
+        seen="$seen$id "
+        status_row "$id" || continue
+        row="$REPLY"
+        json_field status "$row"; st="$REPLY"
+        status_legal "$verb" "$st" || continue
+        case "$FAIL_IDS" in
+            *" $id "*) synth_reply "$id" "$verb" "$row"; reply="$REPLY"
+                WALKED_IDS+=("$id"); WALKED_KIND+=("$SYNTH_KIND"); WALKED_JSON+=("$REPLY") ;;
+            *)
+                if [ -f "$RESP/$key.d/$id.error" ]; then read_line "$RESP/$key.d/$id.error"; reply="$REPLY"
+                elif [ -f "$RESP/$key.d/$id.json" ]; then read_line "$RESP/$key.d/$id.json"; reply="$REPLY"
+                else
+                    synth_reply "$id" "$verb" "$row"; reply="$REPLY"
+                    WALKED_IDS+=("$id"); WALKED_KIND+=("$SYNTH_KIND"); WALKED_JSON+=("$REPLY")
+                fi ;;
+        esac
+        case "$reply" in
+            *'"E_VERIFY"'*) outcome=approved ;;
+            *'"code"'*) continue ;;
+            *'"reverted_to_approved"'*) outcome=approved ;;
+            *) outcome=placed ;;
+        esac
+        [ "$verb" = "execute" ] && set_root_status "$id" placing
+        sleep "$secs" &
+        child=$!
+        wait "$child"
+        if [ "$outcome" = "placed" ]; then
+            copy_library "$id"
+            set_root_status "$id" placed
+        else
+            set_root_status "$id" approved
+        fi
+    done
+    run_command
+    emit
+    exit "$EXIT"
+}
+
+# ---------------------------------------------------------------------------
 # Modes: $STATE/<cmd>.mode holds one word (plus an optional argument) and
 # stays in force until removed. Modes never apply .start or .next states,
-# except slow and slow-real, which end as a normal call.
+# except slow and slow-real, which end as a normal call, and per-root and
+# slow-dry-run, whose real execute applies .next.
 # ---------------------------------------------------------------------------
 
 mode_hang() {
@@ -1104,6 +1343,30 @@ case "$MODE" in
         # dry run answers at once, as with no mode file.
         if [ $DRY -eq 1 ]; then run_command; emit; exit "$EXIT"; fi
         mode_slow ;;
+    per-root)
+        # A real execute or resume walks its roots (mode_per_root); a dry
+        # run answers at once, as with no mode file (replies made up where
+        # the scenario has none).
+        SYNTH=1
+        parse_per_root_args
+        [ "$CMD" = "execute" ] && [ $DRY -eq 0 ] && mode_per_root "$PER_ROOT_SECS"
+        run_command; emit; exit "$EXIT" ;;
+    slow-dry-run)
+        # An execute --dry-run sleeps (15 s unless SECONDS or
+        # INTAKE_MOCK_DRY_SECONDS is given), then answers; a real execute or
+        # resume walks its roots as per-root does with its default pause.
+        SYNTH=1
+        secs="${MODE_ARG:-${INTAKE_MOCK_DRY_SECONDS:-15}}"
+        check_seconds slow-dry-run "$secs"
+        if [ "$CMD" = "execute" ] && [ $DRY -eq 1 ]; then
+            sleep "$secs" &
+            wait $!
+            run_command; emit; exit "$EXIT"
+        fi
+        PER_ROOT_SECS="${INTAKE_MOCK_ROOT_SECONDS:-4}"
+        check_seconds per-root "$PER_ROOT_SECS"
+        [ "$CMD" = "execute" ] && mode_per_root "$PER_ROOT_SECS"
+        run_command; emit; exit "$EXIT" ;;
     fds) mode_fds ;;
     big) mode_big ;;
     garbage)

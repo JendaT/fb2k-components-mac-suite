@@ -19,10 +19,17 @@
 //     <stem>.tmp, fsync, rename):
 //       {"format":1, "command":"execute"|"resume", "pid":<int>,
 //        "start_sec":<int>, "start_usec":<int>, "ids":["itk_..."],
-//        "root_paths":["..."], "output":"<stem>.json"}
+//        "root_paths":["..."], "output":"<stem>.json",
+//        "swap_after":true|false, "delete_after":true|false}
 //     `root_paths` is optional (aligned with `ids`; used to place errors on
-//     their roots when the run is finished by a later session). Unknown
-//     keys are ignored. Everything else is required: format 1, a pid of 2
+//     their roots when the run is finished by a later session).
+//     `swap_after` and `delete_after` are optional too: the Execute sheet's
+//     follow-ups (RunFollowUps, IntakeExecuteFollowUp), JSON booleans,
+//     written together when the run starts. Both present as booleans: the
+//     choice is recorded (delete_after counts only with swap_after true);
+//     either missing or of another type: no follow-ups (a file of an older
+//     build, a resume), and the file still parses. Unknown keys are
+//     ignored. Everything else is required: format 1, a pid of 2
 //     or more, start_sec 1 or more, start_usec 0 to 999999, at least one
 //     sidecar id (repeats dropped), and an output name of this module's
 //     form. Except: a provisional run file has none of pid, start_sec and
@@ -130,6 +137,15 @@ std::string uniqueRunStem(const std::string &dir, std::chrono::system_clock::tim
 
 // --- the run file ---
 
+// The follow-ups chosen in the Execute sheet (IntakeExecuteFollowUp): kept
+// in the run file from its start, applied when the run ends, whoever
+// finishes it (this session, or a later one that adopts or finishes it).
+struct RunFollowUps {
+    bool recorded = false;     // the run file holds the choice; false: no follow-ups
+    bool swap = false;         // swap the playlist rows of the roots now placed
+    bool deleteLocal = false;  // then gc those whose census is clear (only with swap)
+};
+
 struct RunFile {
     CliCommand command = CliCommand::Execute;  // Execute or Resume
     // Written before the spawn: no pid or start time (both left 0).
@@ -139,6 +155,7 @@ struct RunFile {
     std::vector<std::string> ids;
     std::vector<std::string> rootPaths;  // empty, or aligned with ids
     std::string output;                  // the stdout file's name, in the same directory
+    RunFollowUps followUps;              // swap_after, delete_after
 };
 
 // One JSON object (see the top of this file), with a trailing newline.
@@ -227,6 +244,7 @@ struct TrackedRun {
     ProcessStartTime start;
     std::vector<std::string> ids;
     std::vector<std::string> rootPaths;
+    RunFollowUps followUps;  // as the run file holds them
 };
 
 class ExecuteTracker {
@@ -234,10 +252,11 @@ public:
     // A new own run (Starting). False when `stem` is already tracked or
     // `ids` is empty.
     bool begin(const std::string &stem, CliCommand command, std::vector<std::string> ids,
-               std::vector<std::string> rootPaths = {});
+               std::vector<std::string> rootPaths = {}, RunFollowUps followUps = {});
     // Starting -> Running.
     bool spawned(const std::string &stem, pid_t pid, const ProcessStartTime &start);
-    // A leftover live run (Adopted). False when `stem` is already tracked.
+    // A leftover live run (Adopted), with the run file's follow-ups. False
+    // when `stem` is already tracked.
     bool adopt(const std::string &stem, const RunFile &file);
     // Running or Adopted -> Exited.
     bool exited(const std::string &stem);

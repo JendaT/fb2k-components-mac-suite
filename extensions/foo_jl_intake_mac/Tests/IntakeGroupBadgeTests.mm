@@ -214,9 +214,10 @@ static void testSlotPending() {
     IntakeRecord single = rec(IntakeStatus::Proposed, "Test Collection A", 0.95);
     single.proposal.targetPathState = TargetPathState::Null;
     single.proposal.targetPath.clear();
+    single.singlesRoot = true;
     setRanked(single, {"Test Collection A", "Test Collection B"});
     IntakeBadge b = recordBadge(single);
-    CHECK(b.text == badgeText("Test Collection A", kDot + "slot pending"), "null target_path: slot pending");
+    CHECK(b.text == badgeText("Test Collection A", kDot + "slot pending"), "singles, null target_path: slot pending");
     CHECK(b.amber && b.color == kAmberText, "slot pending is amber");
 
     IntakeRecord reviewed = single;
@@ -229,11 +230,27 @@ static void testSlotPending() {
     CHECK(recordBadge(user).text == badgeText("Test Collection A", kDot + "slot pending"),
           "slot pending wins over yours");
 
+    g_context = "cannot-be-placed";
+    IntakeRecord album = single;
+    album.singlesRoot = false;
+    IntakeBadge c = recordBadge(album);
+    CHECK(c.text == badgeText("Test Collection A", kDot + "cannot be placed") && c.amber && c.color == kAmberText,
+          "not singles, engine-assigned: cannot be placed, amber");
+    IntakeRecord albumUser = album;
+    albumUser.proposal.assignedBy = AssignedBy::User;
+    albumUser.needsReview = true;
+    CHECK(recordBadge(albumUser).text == badgeText("Test Collection A", kDot + "cannot be placed"),
+          "not singles, user-assigned: cannot be placed, no yours, no alt hint");
+    IntakeRecord approved = album;
+    approved.status = IntakeStatus::Approved;
+    CHECK(recordBadge(approved).text == badgeText("Test Collection A", kDot + "cannot be placed"),
+          "approved too");
+
     IntakeRecord unknown = rec(IntakeStatus::Proposed, "Test Collection A", 0.95);
     unknown.proposal.targetPathState = TargetPathState::Unknown;
     IntakeBadge ub = recordBadge(unknown);
     CHECK(ub.text == badgeText("Test Collection A", kDot + "0.95") && !ub.amber,
-          "target_path unknown (CLI 0.2.1): no slot pending");
+          "target_path unknown (CLI 0.2.1): neither slot pending nor cannot be placed");
 }
 
 static void testGroupRule() {

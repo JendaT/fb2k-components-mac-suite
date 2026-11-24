@@ -233,6 +233,29 @@ probe, 2026-11-15). What the component does with them:
     `mac-volume` form the playlist's items already use. Failing that, it
     uses the mount whose form foobar2000 resolves back to that mount. If
     neither fits, the row is skipped ("no matching mount").
+- **Title-formatting fields** [`src/Core/IntakeVolumeTable.h`,
+  `src/Integration/IntakeFieldProvider.h`]:
+  - `process_field` may make no foobar2000 call but reading its handle,
+    so it cannot use `g_get_native_path`. A volume table (`<UUID>` ->
+    root) stands in for it. foobar2000's `<UUID>` is not the macOS volume
+    UUID, so the table comes from foobar2000: per mount under `/Volumes`,
+    `g_get_canonical_path("<mount>/")` then `g_get_native_path` of the
+    `mac-volume://<UUID>/` it returns, on a background queue (a share that
+    does not answer never blocks the main thread). Re-seeded on mount,
+    unmount and Refresh.
+  - Stale volume ids (an earlier mount of the share that foobar2000 still
+    resolves) are learned from rows the decorate path converted: the
+    native path minus the row's remainder is the root. This runs before a
+    field is first used too: SimPlaylist keeps the decorations of rows it
+    drew and does not decorate them again when a field column is added,
+    so a gate on first use left those ids unknown. That check also
+    tests the assumption that the remainder is stored raw, not
+    percent-encoded: a volume that fails it is not learned (one Debug
+    line).
+  - Field values are cached by the hosts until `metadb_io::dispatch_refresh`.
+    The refresh is throttled to once per second and limited to playlist
+    rows under changed roots (SimPlaylist re-lays out, and v2 regroups, on
+    each refresh). Items in no playlist are not refreshed.
 
 ## Share links
 

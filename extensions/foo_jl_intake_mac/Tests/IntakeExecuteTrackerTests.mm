@@ -231,6 +231,98 @@ static void testRunFileMalformed() {
     CHECK(parseRunFile(extra, f, error), "unknown keys are ignored");
 }
 
+// The Execute sheet's follow-ups (swap_after, delete_after): written
+// together when recorded, read back; an older build's file (neither key),
+// one key alone or a key of another type gives no follow-ups and still
+// parses; delete counts only with swap.
+static void testRunFileFollowUps() {
+    g_context = "run-file-follow-ups";
+    ProcessStartTime start{1794791491, 628172};
+    RunFile f = sampleRun(4242, start, "execute-f");
+    std::string text = formatRunFile(f);
+    CHECK(text.find("swap_after") == std::string::npos && text.find("delete_after") == std::string::npos,
+          "not recorded (resume, tests): no keys written");
+    RunFile back;
+    std::string error;
+    CHECK(parseRunFile(text, back, error) && !back.followUps.recorded, "and none read back");
+
+    f.followUps = RunFollowUps{true, true, false};
+    text = formatRunFile(f);
+    CHECK(text.find("\"swap_after\":true") != std::string::npos &&
+              text.find("\"delete_after\":false") != std::string::npos,
+          "swap only: both keys, JSON booleans");
+    CHECK(parseRunFile(text, back, error) && back.followUps.recorded && back.followUps.swap &&
+              !back.followUps.deleteLocal,
+          "swap only reads back");
+    f.followUps = RunFollowUps{true, true, true};
+    CHECK(parseRunFile(formatRunFile(f), back, error) && back.followUps.recorded && back.followUps.swap &&
+              back.followUps.deleteLocal,
+          "swap, then delete reads back");
+    f.followUps = RunFollowUps{true, false, true};
+    text = formatRunFile(f);
+    CHECK(text.find("\"delete_after\":false") != std::string::npos, "delete without swap is written as off");
+    CHECK(parseRunFile(text, back, error) && back.followUps.recorded && !back.followUps.swap &&
+              !back.followUps.deleteLocal,
+          "recorded, nothing to do");
+
+    CHECK(parseRunFile(kGoodRun, back, error) && !back.followUps.recorded, "an older build's file: no follow-ups");
+    auto with = [](const std::string &extra) {
+        std::string json = kGoodRun;
+        json.insert(json.size() - 1, extra);
+        return json;
+    };
+    CHECK(parseRunFile(with(R"(,"swap_after":true)"), back, error) && !back.followUps.recorded,
+          "swap_after alone: no follow-ups, still parses");
+    CHECK(parseRunFile(with(R"(,"delete_after":true)"), back, error) && !back.followUps.recorded,
+          "delete_after alone: no follow-ups");
+    CHECK(parseRunFile(with(R"(,"swap_after":1,"delete_after":0)"), back, error) && !back.followUps.recorded,
+          "numbers are not booleans: no follow-ups, still parses");
+    CHECK(parseRunFile(with(R"(,"swap_after":"true","delete_after":"false")"), back, error) &&
+              !back.followUps.recorded,
+          "strings are not booleans");
+    CHECK(parseRunFile(with(R"(,"swap_after":null,"delete_after":null)"), back, error) && !back.followUps.recorded,
+          "null is not a choice");
+    CHECK(parseRunFile(with(R"(,"swap_after":false,"delete_after":true)"), back, error) && back.followUps.recorded &&
+              !back.followUps.swap && !back.followUps.deleteLocal,
+          "a hand-written delete without swap reads as off");
+
+    // The provisional file carries them, and so does its rewrite with the
+    // pid (startRunOnQueue copies the provisional one).
+    RunFile p;
+    p.provisional = true;
+    p.ids = {"itk_00000010"};
+    p.output = runOutputName("execute-pf");
+    p.followUps = RunFollowUps{true, true, true};
+    CHECK(parseRunFile(formatRunFile(p), back, error) && back.provisional && back.followUps.deleteLocal,
+          "a provisional run file keeps them");
+    RunFile full = p;
+    full.provisional = false;
+    full.pid = 4242;
+    full.start = start;
+    CHECK(parseRunFile(formatRunFile(full), back, error) && !back.provisional && back.followUps.recorded &&
+              back.followUps.swap && back.followUps.deleteLocal,
+          "the full rewrite keeps them");
+
+    // A leftover run, live or dead, comes back with them.
+    std::string dir = mock::newDir("follow-ups");
+    RunFile live = sampleRun(4242, start, "execute-fl");
+    live.followUps = RunFollowUps{true, true, false};
+    RunFile dead = sampleRun(4343, start, "execute-fd");
+    dead.followUps = RunFollowUps{true, true, true};
+    mock::writeFile(dir + "/execute-fl.run", formatRunFile(live));
+    mock::writeFile(dir + "/execute-fl.json", "");
+    mock::writeFile(dir + "/execute-fd.run", formatRunFile(dead));
+    mock::writeFile(dir + "/execute-fd.json", "{\"ok\":true,\"data\":[],\"errors\":[]}\n");
+    LeftoverScan scan =
+        scanLeftoverRuns(dir, [](pid_t pid, const ProcessStartTime &) { return pid == 4242; });
+    CHECK(scan.adopt.size() == 1 && scan.adopt[0].file.followUps.recorded && scan.adopt[0].file.followUps.swap &&
+              !scan.adopt[0].file.followUps.deleteLocal,
+          "an adopted run keeps its choice");
+    CHECK(scan.finish.size() == 1 && scan.finish[0].file.followUps.recorded &&
+              scan.finish[0].file.followUps.deleteLocal,
+          "a run to finish keeps its choice");
+}
+
 static void testRunFileWrite() {
     g_context = "run-file-write";
     std::string dir = mock::newDir("write");
@@ -620,6 +712,19 @@ static void testTracker() {
     CHECK(!t.remove("execute-a") && !t.spawned("execute-zz", 1, ProcessStartTime{}), "unknown stems");
     CHECK(t.begin("execute-c", CliCommand::Execute, {"itk_00000010"}) && t.remove("execute-c"),
           "a run can be removed while Starting (refused, spawn failed)");
+
+    CHECK(t.begin("execute-d", CliCommand::Execute, {"itk_00000010"}, {}, RunFollowUps{true, true, true}) &&
+              t.find("execute-d")->followUps.recorded && t.find("execute-d")->followUps.deleteLocal,
+          "an own run keeps the sheet's choice");
+    CHECK(t.begin("execute-e", CliCommand::Execute, {"itk_0000000b"}) && !t.find("execute-e")->followUps.recorded,
+          "no choice given: none");
+    RunFile withChoice = adopted;
+    withChoice.followUps = RunFollowUps{true, true, false};
+    CHECK(t.adopt("execute-f", withChoice) && t.find("execute-f")->followUps.recorded &&
+              t.find("execute-f")->followUps.swap && !t.find("execute-f")->followUps.deleteLocal,
+          "an adopted run keeps the run file's choice");
+    CHECK(t.adopt("execute-g", adopted) && !t.find("execute-g")->followUps.recorded,
+          "an adopted run of an older build has none");
 }
 
 // --- ProcessExitWatch ---
@@ -785,6 +890,7 @@ int main() {
         testNames();
         testRunFileRoundTrip();
         testRunFileMalformed();
+        testRunFileFollowUps();
         testRunFileWrite();
         testProvisional();
         testLiveness();

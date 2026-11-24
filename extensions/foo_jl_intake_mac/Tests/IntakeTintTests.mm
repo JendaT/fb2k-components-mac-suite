@@ -11,6 +11,7 @@
 //  Pure: no files, no configStore.
 //
 // TEST_DEPS: src/Core/IntakeDecorationMap.mm src/Core/IntakeReviewRule.mm
+// TEST_DEPS: src/Core/IntakeTargetPath.mm src/Core/IntakeGroupBadge.mm
 //
 
 #import <Foundation/Foundation.h>

@@ -6,8 +6,10 @@
 //  provider (intake doc 04, Part B).
 //
 //  This component has no layout element of its own in v1: it exists entirely
-//  through SimPlaylist decorations (IntakeDecoratorProvider.mm), fed by the
-//  loader that IntakeService.mm starts in on_init. Its settings live on the
+//  through SimPlaylist decorations (IntakeDecoratorProvider.mm, fed by the
+//  loader that IntakeService.mm starts in on_init), the title-formatting
+//  fields (IntakeFieldProvider.mm) and the status line SimPlaylist shows
+//  (IntakeStatusProvider.mm, B14). Its settings live on the
 //  Tools > Intake preferences page (IntakePreferencesController, B5). The
 //  About text uses the suite's JL_COMPONENT_ABOUT with the names in
 //  ComponentInfo.h.
@@ -29,8 +31,12 @@ JL_COMPONENT_ABOUT(
     "Features:\n"
     "- Row tints and icons by intake status, with a marker on releases that need review\n"
     "- Group header badge with the target collection and confidence\n"
+    "- Title-formatting fields %intake_status%, %intake_target% and %intake_collection% "
+    "for columns and group patterns\n"
     "- Context actions: Propose, Assign, Approve, Reject, Execute, Resume, Swap to library paths "
     "and Delete local copy\n"
+    "- Status line at the bottom right of SimPlaylist: the running command with its progress, "
+    "and its result for 10 seconds\n"
     "- All changes to music files and sidecars go through the intake command-line tool\n"
     "- Watches the income folders and reloads when a sidecar changes\n"
     "- Row colours and confirmations set in the preferences\n\n"

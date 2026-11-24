@@ -17,15 +17,19 @@
 //    "→ X · 0.91"                the target and the confidence, two decimals
 //    "→ X · yours"               proposal.assigned_by is "user" (instead of
 //                                the 1.00 the CLI writes)
-//    "→ X · slot pending"        proposal.target_path is present and null;
+//    "→ X · slot pending"        proposal.target_path is present and null
+//                                on a singles root (IntakeRecord::singlesRoot);
 //                                always amber, no alt hint
+//    "→ X · cannot be placed"    the same on any other root (tier reject, no
+//                                album name: a target that can never be
+//                                built), whoever assigned it; amber, no hint
 //    "→ X"                       no confidence (not a JSON number)
 //  Amber when the review rule fires (IntakeReviewRule) or the confidence is
 //  below 0.6; an amber badge then gets " (alt: Y)", Y being the first
 //  `ranked` entry that is not the target, also as written. No hint when
 //  `ranked` is absent, empty, or holds only the target.
 //  An unknown assigned_by or target_path (CLI before 0.3.0) gives neither
-//  "yours" nor "slot pending": the confidence is shown.
+//  "yours" nor "slot pending" / "cannot be placed": the confidence is shown.
 //
 //  Colour: amber is the review tint at full alpha (opaqueColor), at any
 //  tint alpha: the group header is not tinted, so unlike a row icon
