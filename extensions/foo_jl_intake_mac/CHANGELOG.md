@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Background execute**: Execute and Resume keep running when foobar2000 quits and are picked up at the next start.
 - **Execute follow-ups**: The Execute sheet offers to swap playlist rows to the library copies when the placement ends, then delete the local copies; swap is remembered, delete starts unticked each time; the choice also applies after a restart.
 - **Quit before follow-ups**: Quitting foobar2000 after a placement ended but before its swap or delete ran logs one console line per run, so they can be done by hand.
+- **Status bar**: SimPlaylist shows the running command at the bottom right, with the placement count, and its result for 10 seconds; a click lists running commands and those just ended.
 - **Live updates**: Income folders are watched with FSEvents; a sidecar change or a finished command reloads the status.
 - **Income folder guard**: A release root that is an income folder itself (loose files at its top level) is ignored, so stray rows under the folder are not tinted or acted on.
 - **Network shares**: `mac-volume://` rows match, also when a share is mounted twice; a stalled volume is skipped instead of blocking; rows with decomposed (accented) names away from every release skip Unicode normalisation.
@@ -33,3 +34,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Requirements**: A SimPlaylist build with the row decorator API, and an intake CLI that reports schema 1.
 - **Changes made on the NAS**: Need Refresh; FSEvents sees only changes made through this Mac.
 - **Fields outside playlists**: Items in no playlist (library viewers) are not refreshed when a field value changes; `mac-volume://` rows need a volume foobar2000 resolves, and an older volume id gets values once SimPlaylist has shown one of its rows, also before a field was used.
+- **Placement count on shares**: Moves only when file events report the sidecar changes; on a share without them (SMB untested) it stays at 0/n until Refresh or the run ends.

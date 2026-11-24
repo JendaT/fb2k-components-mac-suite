@@ -505,6 +505,90 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
 The picker, Reject… and Delete local copy… sheets pick their window the same
 way.
 
+### Status bar (B14)
+A `jl_status_provider` (`shared/jl_status_api.h`; user request: "a status
+bar to see the list of ongoing operations ... bottom right in
+simplaylist"). It reports what the component is doing; the host draws it.
+SimPlaylist (status line host, c6ab4891) shows the line as a pill at the
+bottom right of the panel with the active playlist, and the list in a
+popover on click. Nothing shows while idle. Without a host the provider only
+keeps its line up to date.
+
+- **The line:** the operation begun last, plus " (+N more)" while N others
+  run; when nothing runs, the newest result for 10 s (from its end); else no
+  line (`status_line` false). Texts are UTF-8 with "…" (U+2026); one album
+  shows its label "Artist – Album" in place of the count:
+
+  | Operation | While it runs | Result |
+  |---|---|---|
+  | Propose | "Proposing 3 albums…", "Proposing Artist – Album…" | "Proposed 3 albums" |
+  | Assign to X, Assign to other collection… | "Assigning 3 albums…", then "Proposing 2 albums…" for the propose after it | "Assigned 3 albums", "Assigned and proposed 2 albums" |
+  | Approve, Reject… | "Approving 3 albums…", "Rejecting 3 albums…" | "Approved 3 albums", "Rejected 3 albums" |
+  | Execute placement… dry run | "Checking placement of 3 albums…" | "Checked placement of 3 albums" |
+  | Execute (own or adopted at start) | "Placing 40 albums…", then "Placing 12/40: Artist – Album" (12 placed, that album placing now) or "Placing 12/40" | "Placed 40 albums" |
+  | Resume placement | "Resuming placement of 5 albums…", then "Resuming placement 2/5" | "Resumed placement of 5 albums" |
+  | Delete local copy… (`gc`, the Execute follow-up's too) | "Deleting local copies of 3 albums…" | "Deleted local copies of 3 albums" |
+  | Delete local copy…'s sidecar reads (`confirm_gc` on) | "Counting playlist rows for 3 albums…" | "Counted playlist rows for 3 albums" |
+  | Swap to library paths (the Execute follow-up's too) | "Swapping 12 playlist rows…" | "Swapped 12 playlist rows" |
+
+  A failure shows "Propose failed: <reason>" (Assign, Approve, Reject
+  alike), "Placement check failed: …", "Execute failed: …", "Resume failed:
+  …", "Delete failed: …", "Row count failed: …" or "Swap failed: …". The
+  reason is the first root's error without its "<command>: " prefix when no
+  root succeeded, "<k> of <n> albums" when some did. A result carries
+  state succeeded with the check icon, or failed with the cross icon, and no
+  progress. Labels are cut at 60 bytes and reasons at 120, on a character
+  boundary (never between a letter and its combining accent), with "…".
+  Loads, Refresh, Reload now, Test CLI and the picker's `collections` are
+  not shown.
+- **The list** (`status_items`, read only while the popover is open):
+  running entries first, begun last first, then the results still inside
+  their 10 s, newest first. Title: the line's text (an n/m entry: "Placing
+  12/40"). Detail: the album placing now, else "<first album> and N more",
+  empty for one album; a failure's detail is its console line. Ids are
+  stable while the entry exists; started and ended are Unix epoch
+  milliseconds (ended 0 while running).
+- **Lifetimes:** an entry begins when its operation has what it needs (the
+  mutation lane, the run, the swap) and ends on every path that lets it go:
+  result, refusal, timeout. A dry run that outlives its 10 s report keeps
+  showing "Checking placement…" until its late answer, though the lane is
+  free again (user decision Q2); a refusal or quit ends it. The sidecar
+  reads end with their replies or after 10 s ("Row count failed: no answer
+  within 10 s").
+- **Execute progress:** not from the CLI's output (written only at exit)
+  but from the statuses each published load shows: done = the run's roots
+  now `placed`, the album = the root that turned `placing` since the last
+  load; a root reverted to `approved` or still `placing` does not count as
+  done. Resume writes no `placing`, so it shows no album. A load runs when
+  FSEvents reports the CLI's sidecar rewrites (1 s debounce, at most 3 s
+  after the first event; see Refresh and invalidation), so the count moves
+  in steps. **SMB caveat:** FSEvents on SMB shares is untested; without its
+  events the count stays 0/n until a reload (Refresh), or until the run's
+  result replaces it.
+- **Threading and cost:** `status_line` answers from a `jl_status_line`
+  kept on the main thread, taken from the model after every change: no I/O,
+  no lock, no CLI. `status_items` maps the model's few entries. The
+  callbacks fire on the main thread once per model change (begin, progress,
+  rename, end, expiry, quit), from a copy of the list outside its lock,
+  skipping one unregistered since that round began; several callbacks at
+  once, each once; unregistering an unknown one does nothing. Coalescing is
+  the host's (SimPlaylist reads about 4 times a second at most). The host
+  has no timer, so the provider fires when a result's 10 s run out: one
+  `dispatch_after` on the main queue at the earliest expiry, re-armed on
+  every change, none while no result is shown. With no host registered a
+  change costs the line's update and one uncontended lock.
+- **Quit:** `on_quit` empties the model and fires once, so the pill goes;
+  afterwards no hook adds an entry, no timer acts, nothing fires, and the
+  provider answers false and an empty list. Its state is never destroyed: a
+  host may still unregister after `on_quit`.
+- **Testing on the mock** (`Tests/mock-cli/README.md`): `execute.mode`
+  `per-root [SECONDS] [ID...]` walks a real execute root by root (`placing`,
+  a pause of 4 s, then `placed`; a listed id fails with `E_VERIFY` and goes
+  back to `approved`), so the n/m and a failed result can be watched;
+  `slow-dry-run [SECONDS]` answers the dry run after 15 s, past the 10 s
+  report. The `perf-200` scenario has 25 `approved` roots for both. FSEvents
+  sees the mock's sidecar writes when its state folder is on a local disk.
+
 ### CLI invocation
 - **Executable:** the CLI path preference (a `.ts` path runs as
   `<bun> <path>`); argv array, no shell; inherited environment plus bun and

@@ -1010,6 +1010,7 @@ First release, contributed by @Scannou (#56).
 - **Background execute**: Execute and Resume keep running when foobar2000 quits and are picked up at the next start.
 - **Execute follow-ups**: The Execute sheet offers to swap playlist rows to the library copies when the placement ends, then delete the local copies; swap is remembered, delete starts unticked each time; the choice also applies after a restart.
 - **Quit before follow-ups**: Quitting foobar2000 after a placement ended but before its swap or delete ran logs one console line per run, so they can be done by hand.
+- **Status bar**: SimPlaylist shows the running command with its progress at the bottom right, and its result for 10 seconds; a click lists them.
 - **Live updates**: Income folders are watched with FSEvents; a sidecar change or a finished command reloads the status.
 - **Income folder guard**: A release root that is an income folder itself (loose files at its top level) is ignored, so stray rows under the folder are not tinted or acted on.
 - **Network shares**: `mac-volume://` rows match, also when a share is mounted twice; a stalled volume is skipped instead of blocking; accented names away from every release cost no Unicode normalisation.

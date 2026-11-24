@@ -148,6 +148,26 @@ How commands are run, timed out and watched is described in
 the ones not on the preferences page, are in
 [`docs/hidden-options.md`](docs/hidden-options.md).
 
+## Status bar
+
+While a command runs, SimPlaylist shows a line at the bottom right of the
+panel with the active playlist, for example "Proposing 3 albums…" or
+"Placing 12/40: Artist – Album". When it ends, the result stays for 10
+seconds ("Proposed 3 albums", "Execute failed: 1 of 5 albums"), then the
+line goes. Nothing shows while intake is idle. Click the line for the list
+of running commands and those that ended in the last 10 seconds.
+
+- Shown: Propose, Assign, Approve, Reject, Execute (its check, the
+  placement, and a placement picked up at start), Resume, Delete local copy
+  (and its file list reads), and Swap to library paths. Loads and Refresh
+  are not.
+- The placement count moves when a load sees the sidecars change, in steps
+  of a few seconds. On a network share without file events (SMB is
+  untested) it stays at 0/40 until you refresh or the placement ends.
+- Needs a SimPlaylist build that hosts status lines (`jl_status_provider`,
+  `shared/jl_status_api.h`). Older builds show no line; everything else
+  works as before.
+
 ## Building from Source
 
 From this folder:
