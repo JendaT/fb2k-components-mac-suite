@@ -55,6 +55,8 @@
 // TEST_DEPS: src/Core/IntakeSettingsParse.mm
 // TEST_DEPS: src/Core/IntakeGroupBadge.mm src/Core/IntakeRootErrors.mm
 // TEST_DEPS: src/Core/IntakeLibraryIndex.mm src/Core/IntakeSwapPlanner.mm
+// TEST_DEPS: src/Core/IntakeTargetPath.mm
+// TEST_DEPS: src/Core/IntakeFields.mm
 //
 
 #import <Foundation/Foundation.h>
@@ -406,12 +408,13 @@ static void testDefaultLoad() {
     CHECK(blue && blue->icon == IntakeIcon::CircleOpen && blue->bgTint == 0x4A90D938, "new: blue, open circle");
     const IntakeRowVisual *single =
         first.view->visualFor(root + "/income/shop/Loose Tracks/Fixture Artist E - Single Track.wav", scratch);
-    CHECK(single && single->bgTint == 0xE5A50A38 && single->tooltip == "needs review \xC2\xB7 slot pending",
+    CHECK(single && single->bgTint == 0xE5A50A38 && single->tooltip == "Intake: Resolved \xC2\xB7 needs review\nTarget: Test Collection A \xC2\xB7 slot "
+                                                                 "pending\nAssigned by the engine (confidence 0.64)",
           "the single: amber, needs review and slot pending");
     const IntakeRowVisual *member =
         first.view->visualFor(root + "/income/shop/Loose Tracks/Fixture Artist C - Other Two.wav", scratch);
-    CHECK(member && member->icon == IntakeIcon::CircleOpen && member->tooltip.empty(),
-          "a virtual root's member (resolved, no review)");
+    CHECK(member && member->icon == IntakeIcon::CircleOpen && member->tooltip == "Intake: Resolved\nNo target yet: Propose (or Assign to a collection first)",
+          "a virtual root's member (resolved, no review, no proposal)");
     CHECK(first.view->visualFor(root + "/income/dump/Fixture Artist - Collected Album/01 - Test Track One.wav",
                                 scratch) == nullptr,
           "gc_done renders nothing");
@@ -437,7 +440,8 @@ static void testDefaultLoad() {
     Published changed = h->lastPublished();
     CHECK(changed.invalidate, "a visual change invalidates all");
     const IntakeRowVisual *amber = changed.view ? changed.view->visualFor(newAlbum(root), scratch) : nullptr;
-    CHECK(amber && amber->bgTint == 0xE5A50A38 && amber->tooltip == "needs review", "the row is amber now");
+    CHECK(amber && amber->bgTint == 0xE5A50A38 && amber->tooltip == "Intake: Resolved \xC2\xB7 needs review\nNo target yet: Propose (or Assign to a collection first)",
+          "the row is amber now");
 
     g_context = "default-logs";
     CHECK(logCount("[intake] loaded 16 roots (CLI 0.3.0)") == 1, "one Info line for the first load");
@@ -660,7 +664,7 @@ static void testMountAliases() {
     const IntakeRowVisual *memberViaAlias =
         p.view ? p.view->visualFor(alias + "/income/shop/Loose Tracks/Fixture Artist B - Loose One.wav", scratch)
                : nullptr;
-    CHECK(memberViaAlias && memberViaAlias->tooltip == "needs review",
+    CHECK(memberViaAlias && memberViaAlias->tooltip == "Intake: New \xC2\xB7 needs review",
           "a virtual root's member through the alias (members follow the alias key)");
 
     g_context = "mount-lost";
@@ -820,6 +824,47 @@ static void testIncomeAndWatchSet() {
           "offered, no folders, the failure named");
     CHECK(incomeDisplay(st2).note.find("could not list the income folders") != std::string::npos,
           "the page names the failure");
+}
+
+// The income-folder root guard: a root at an income folder itself is left
+// out of the load while `income` answers, and back when it fails.
+static void testIncomeFolderGuard() {
+    g_context = "income-folder-guard";
+    clearLog();
+    std::string state = mock::setupState("default");
+    const std::string root = state + "/root";
+    CHECK(mock::writeFile(state + "/responses/status.d/itk_000000ff.json",
+                          "{\"id\":\"itk_000000ff\",\"root_path\":\"" + root +
+                              "/income/dump\",\"status\":\"resolved\",\"needs_review\":false,\"cluster\":"
+                              "{\"albumartist\":null,\"album\":null},\"proposal\":null,\"placed\":null}\n"),
+          "a root at the income folder itself");
+    auto h = std::make_shared<Harness>();
+    h->setMounts({kLocalRoot});
+    IntakeLoader loader(settingsFor(state, h));
+    loader.reload(true);
+    CHECK(waitFinished(*h, 1) && h->lastFinished().state == LoaderState::Ready, "first load");
+    Published first = h->lastPublished();
+    ViewScratch scratch;
+    CHECK(first.view && first.view->snapshot().size() == 16 &&
+              first.view->snapshot().recordForId("itk_000000ff") == nullptr,
+          "the income-folder root is not in the view");
+    CHECK(first.view && first.view->recordFor(root + "/income/dump/Stray Track.wav", scratch) == nullptr,
+          "a stray row at the folder's top level maps to nothing");
+    CHECK(first.view && first.view->visualFor(newAlbum(root), scratch) != nullptr, "a root inside it still decorates");
+    CHECK_EQ(logCount("root itk_000000ff is the income folder dump itself; ignored (loose files at its top level)"), 1,
+             "one Info line");
+    loader.reload(true);
+    CHECK(waitFinished(*h, 2), "a recheck finishes");
+    CHECK_EQ(logCount("root itk_000000ff is the income folder dump itself"), 1, "once per session");
+
+    g_context = "income-folder-guard-off";
+    mock::setMode(state, "income", "exit2");
+    loader.reload(true);
+    CHECK(waitFinished(*h, 3), "a recheck with a failing income finishes");
+    Published unguarded = h->lastPublished();
+    CHECK(unguarded.view && unguarded.view->snapshot().recordForId("itk_000000ff") != nullptr,
+          "income failed: no guard, the root is back");
+    clearMode(state, "income");
 }
 
 static void testIncomeNotOffered() {
@@ -1455,7 +1500,8 @@ static void testAnnotateAndBadges() {
     Published withError = h->lastPublished();
     CHECK(withError.invalidate, "a new per-root error invalidates");
     const IntakeRowVisual *errorVisual = withError.view ? withError.view->visualFor(resolvedRow, scratch) : nullptr;
-    CHECK(errorVisual && errorVisual->tooltip == "propose: No target collection", "the error is in the tooltip");
+    CHECK(errorVisual && errorVisual->tooltip == "Intake: Resolved\nNo target yet: Propose (or Assign to a collection first)\npropose: No target collection",
+          "the error is the tooltip's last line");
 
     loader.reload(false);
     CHECK(waitFinished(*h, 3), "reload, same status");
@@ -1468,7 +1514,7 @@ static void testAnnotateAndBadges() {
     CHECK(waitFinished(*h, 4), "reload after the status change");
     Published moved = h->lastPublished();
     const IntakeRowVisual *movedVisual = moved.view ? moved.view->visualFor(resolvedRow, scratch) : nullptr;
-    CHECK(moved.invalidate && movedVisual && movedVisual->tooltip.empty() && store->size() == 0,
+    CHECK(moved.invalidate && movedVisual && movedVisual->tooltip == "Intake: Proposed" && store->size() == 0,
           "the status changed: the error is gone");
 }
 
@@ -1880,6 +1926,7 @@ int main(void) {
         testMountAliases();
         testShutdown();
         testIncomeAndWatchSet();
+        testIncomeFolderGuard();
         testIncomeNotOffered();
         testNetworkWatchSet();
         testChangeCoalescing();

@@ -20,7 +20,11 @@
 //  IntakeSlowVolumeGuard, until the next mount change or Refresh). Before the first load
 //  there is no view and every row is answered empty, never pending: v2
 //  commits a pending answer like an empty one, and the loader fires
-//  invalidate-all after its first load.
+//  invalidate-all after its first load. A row that g_get_native_path
+//  converted is also handed to fieldsNoteNativePath (B13,
+//  IntakeFieldProvider), so the title-formatting fields learn volume ids
+//  their seed did not find, whether or not a field is in use yet; for a
+//  known volume that is the id split and a lookup in a short table.
 //
 //  decorate_group (B6): the same per-row pipeline for each member the host
 //  passes (at most 64): get_path -> IntakeNativePath -> IntakeView::recordFor.
@@ -41,6 +45,7 @@
 
 #include "IntakeActions.h"
 #include "IntakeDecoratorProvider.h"
+#include "IntakeFieldProvider.h"
 #include "IntakeNativePath.h"
 
 #include "../Core/IntakeDecorStats.h"
@@ -147,8 +152,13 @@ public:
                 @autoreleasepool {
                     const metadb_handle_ptr handle = items[i];
                     if (!handle.is_valid()) continue;
-                    const char *path = intakeNativePath(handle->get_path(), native);
+                    const char *raw = handle->get_path();
+                    const char *path = intakeNativePath(raw, native);
                     if (path == nullptr) continue;
+                    // A converted mac-volume row: the fields' volume table
+                    // may learn its volume (B13; an id lookup in a short
+                    // table for a known one).
+                    if (path != raw) fieldsNoteNativePath(raw, path);
                     if (const IntakeRowVisual *visual = view->visualFor(path, scratch)) copyVisual(*visual, out[i]);
                 }
             }

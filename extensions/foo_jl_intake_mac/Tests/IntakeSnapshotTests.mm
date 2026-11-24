@@ -2,7 +2,8 @@
 //  IntakeSnapshotTests.mm
 //  foo_jl_intake_mac
 //
-//  Unit tests for IntakeSnapshot (member map first, then the ancestor walk),
+//  Unit tests for IntakeSnapshot (member map first, then the ancestor walk,
+//  and mayMatchUnder over the keys' ancestors),
 //  and the whole B2 pipeline over the mock CLI: version gate, status rows,
 //  member load against the mock's tree in a temp directory, snapshot,
 //  lookups of the tree's real file paths. Also prints the time of 5,000
@@ -14,6 +15,8 @@
 // TEST_DEPS: src/Core/IntakeVersionGate.mm src/Core/IntakeCapabilities.mm
 // TEST_DEPS: src/Core/IntakeCommandArgs.mm src/Core/IntakeSemver.mm src/Core/IntakeSettingsParse.mm
 // TEST_DEPS: src/Core/IntakeGroupBadge.mm
+// TEST_DEPS: src/Core/IntakeTargetPath.mm
+// TEST_DEPS: src/Core/IntakeFields.mm
 //
 
 #import <Foundation/Foundation.h>
@@ -131,6 +134,57 @@ static void testSingles() {
     CHECK(idAt(*discs, "/income/loose/CD2/02.wav") == "-", "its unlisted neighbour");
 }
 
+// The null-target wording follows the root kind (singlesRootFor): a
+// singles root's null target is "slot pending", any other root's "cannot
+// be placed" (tier reject).
+static void testSinglesKind() {
+    g_context = "singles-kind";
+    IntakeRecord named = record("itk_00000021", "/income/shop/Singles", IntakeStatus::Proposed);
+    named.album = "";
+    RootMembers singlesSidecar = members({"Fixture Artist - One.wav"});
+    singlesSidecar.singles = true;
+    RootMembers virtualAlbum = members({"01.wav", "02.wav"});
+    CHECK(singlesRootFor(named, &singlesSidecar), "a named sidecar with singles: true");
+    CHECK(!singlesRootFor(named, &virtualAlbum), "a named sidecar without it: a virtual album, even with no album");
+    IntakeRecord album = record("itk_00000022", "/income/dump/Fixture Artist - Reject Grade", IntakeStatus::Proposed);
+    album.album = "Reject Grade";
+    RootMembers listedWhole = whole();
+    CHECK(!singlesRootFor(named, &listedWhole), "a listed whole-directory root is never singles");
+    RootMembers assumed;  // a lone root, not listed
+    CHECK(!singlesRootFor(album, &assumed) && singlesRootFor(named, &assumed),
+          "kind not verified: an empty album counts as singles, a named album does not");
+    CHECK(!singlesRootFor(album, nullptr) && singlesRootFor(named, nullptr), "no entry: the same fallback");
+    RootMembers previousWhole = whole();
+    previousWhole.source = MemberSource::Previous;
+    CHECK(!singlesRootFor(album, &previousWhole) && singlesRootFor(named, &previousWhole),
+          "a whole-directory kind kept from before is not verified either");
+    RootMembers none;
+    none.kind = MemberKind::None;
+    CHECK(!singlesRootFor(named, &none), "None: false");
+
+    g_context = "singles-kind-build";
+    auto nullTarget = [](IntakeRecord r, AssignedBy by) {
+        r.hasProposal = true;
+        r.proposal.targetCollection = "Test Collection A";
+        r.proposal.assignedBy = by;
+        r.proposal.targetPathState = TargetPathState::Null;
+        return r;
+    };
+    auto s = IntakeSnapshot::build({nullTarget(named, AssignedBy::Engine), nullTarget(album, AssignedBy::User)},
+                                   {{"itk_00000021", singlesSidecar}, {"itk_00000022", listedWhole}});
+    const IntakeRecord *one = s->recordForId("itk_00000021");
+    const IntakeRecord *grade = s->recordForId("itk_00000022");
+    CHECK(one && one->singlesRoot &&
+              one->visual.tooltip.find("Target: Test Collection A \xC2\xB7 slot pending") != std::string::npos &&
+              one->badge.text.find("slot pending") != std::string::npos,
+          "build: the single keeps slot pending (tooltip and badge)");
+    CHECK(grade && !grade->singlesRoot &&
+              grade->visual.tooltip.find("Target: none, cannot be placed (see intake status)") != std::string::npos &&
+              grade->badge.text.find("cannot be placed") != std::string::npos &&
+              grade->visual.tooltip.find("slot pending") == std::string::npos,
+          "build: the user-assigned album graded reject cannot be placed (tooltip and badge)");
+}
+
 static void testNested() {
     g_context = "nested";
     std::vector<IntakeRecord> recs = {record("itk_00000021", "/income/box"),
@@ -179,6 +233,51 @@ static void testUnicode() {
     auto members2 = IntakeSnapshot::build({record("itk_00000054", nfc)},
                                           {{"itk_00000054", members({"Cr\xC3\xA8me.wav"})}});
     CHECK(idAt(*members2, nfd + "/Cre\xCC\x80me.wav") == "itk_00000054", "NFC member, NFD query");
+}
+
+static void testMayMatchUnder() {
+    g_context = "may-match-under";
+    RootMembers none;
+    none.kind = MemberKind::None;
+    auto s = IntakeSnapshot::build(
+        {record("itk_00000061", "/income/dump/Album"), record("itk_00000062", "/income/singles"),
+         record("itk_00000063", "/elsewhere/None Root"), record("itk_00000064", "/income/Cafe\xCC\x81 Box")},
+        {{"itk_00000061", whole()},
+         {"itk_00000062", members({"deep/one.wav", "two.wav"})},
+         {"itk_00000063", none},
+         {"itk_00000064", whole()}});
+    CHECK(s->mayMatchUnder("/income/dump/Album"), "a directory key itself");
+    CHECK(s->mayMatchUnder("/income/dump/Album/CD1"), "a folder under a directory key");
+    CHECK(s->mayMatchUnder("/income/dump"), "an ancestor of a directory key");
+    CHECK(s->mayMatchUnder("/income"), "a further ancestor");
+    CHECK(s->mayMatchUnder("/"), "\"/\" is everyone's ancestor");
+    CHECK(s->mayMatchUnder("/income/singles"), "the folder of a member list");
+    CHECK(s->mayMatchUnder("/income/singles/deep"), "the folder of a nested member");
+    CHECK(s->mayMatchUnder("/income/Caf\xC3\xA9 Box/CD1"), "keys are NFC: under the NFD root, spelled NFC");
+    CHECK(!s->mayMatchUnder("/income/singles/other"), "a folder no member lies in");
+    CHECK(!s->mayMatchUnder("/income/dump/Album2"), "a name-prefix sibling");
+    CHECK(!s->mayMatchUnder("/library/Artist"), "a folder away from every root");
+    CHECK(!s->mayMatchUnder("/elsewhere/None Root"), "a root that matches nothing (MemberKind::None)");
+    CHECK(!s->mayMatchUnder("/elsewhere"), "nor do its ancestors");
+    CHECK(!s->mayMatchUnder(""), "an empty key");
+    CHECK(!IntakeSnapshot::empty()->mayMatchUnder("/"), "the empty snapshot: nothing");
+
+    // The promise, over every query below a few folders: a query that finds
+    // a record lies under a folder for which mayMatchUnder() is true.
+    const char *folders[] = {"/income", "/income/dump", "/income/dump/Album", "/income/singles",
+                             "/income/singles/deep", "/income/singles/other", "/library", "/elsewhere/None Root"};
+    const char *tails[] = {"x.wav", "deep/one.wav", "two.wav", "Album/01.wav", "one.wav", "CD1/01.wav"};
+    int found = 0;
+    int broken = 0;
+    for (const char *f : folders) {
+        for (const char *t : tails) {
+            if (s->lookupKey(std::string(f) + "/" + t) == nullptr) continue;
+            found++;
+            if (!s->mayMatchUnder(f)) broken++;
+        }
+    }
+    CHECK(found >= 6, "some queries find a record");
+    CHECK_EQ(broken, 0, "every one of them under a folder that may match");
 }
 
 static void testTiesAndKinds() {
@@ -414,18 +513,18 @@ static void testMockDefault() {
 
     const IntakeRecord *b1 = s->lookup(shop + "Loose Tracks/Fixture Artist B - Loose One.wav");
     CHECK(b1 && b1->id == "itk_00000016", "a virtual root's member");
-    CHECK(b1 && b1->visual.bgTint == 0x4A90D938 && b1->visual.tooltip == "needs review",
-          "new + needs_review: blue with the tooltip");
+    CHECK(b1 && b1->visual.bgTint == 0x4A90D938 && b1->visual.tooltip == "Intake: New \xC2\xB7 needs review",
+          "new + needs_review: blue, needs review on the status line");
     const IntakeRecord *c1 = s->lookup(shop + "Loose Tracks/Fixture Artist C - Other One.wav");
-    CHECK(c1 && c1->id == "itk_00000017" && c1->visual.icon == IntakeIcon::CircleOpen,
-          "the other virtual root in the same folder");
+    CHECK(c1 && c1->id == "itk_00000017" && c1->visual.icon == IntakeIcon::CircleOpen && !c1->singlesRoot,
+          "the other virtual root in the same folder (not singles)");
     const IntakeRecord *f = s->lookup(dump + "Fixture Artist - Overridden Album/01 - Test Track One.wav");
     CHECK(f && f->id == "itk_0000000f" && f->visual.bgTint == 0xE5A50A38 &&
               f->visual.icon == IntakeIcon::CircleLeftHalf,
           "user-assigned proposal with needs_review: amber half circle");
     const IntakeRecord *c = s->lookup(dump + "Fixture Artist - Unsure Album/02 - Test Track Two.wav");
-    CHECK(c && c->visual.icon == IntakeIcon::Warning && c->visual.tooltip == kTooltipNeedsReview,
-          "resolved + needs_review without a proposal: amber warning, tooltip \"needs review\"");
+    CHECK(c && c->visual.icon == IntakeIcon::Warning && c->visual.tooltip == std::string("Intake: Resolved \xC2\xB7 needs review\n") + kTooltipNoTarget,
+          "resolved + needs_review without a proposal: amber warning, needs review, no target yet");
     const IntakeRecord *e = s->lookup(dump + "Fixture Artist - Close Call/01 - Test Track One.wav");
     CHECK(e && e->visual.bgTint == 0xE5A50A38, "engine proposal with needs_review: amber");
     const IntakeRecord *d = s->lookup(dump + "Fixture Artist - Proposed Album/01 - Test Track One.wav");
@@ -433,8 +532,10 @@ static void testMockDefault() {
     const IntakeRecord *ap = s->lookup(dump + "Fixture Artist - Approved Album/01 - Test Track One.wav");
     CHECK(ap && ap->visual.icon == IntakeIcon::CircleRightHalf, "approved: right half circle");
     const IntakeRecord *pl = s->lookup(dump + "Fixture Artist - Placing Album/01 - Test Track One.wav");
-    CHECK(pl && pl->visual.icon == IntakeIcon::ArrowRight && pl->visual.tooltip == kTooltipPlacing,
-          "placing: arrow and tooltip");
+    CHECK(pl && pl->visual.icon == IntakeIcon::ArrowRight && pl->visual.tooltip == std::string("Intake: Placing\n") + kTooltipPlacing +
+                                           "\nTarget: music.hq/Test Collection B/Fixture Artist/Fixture Artist - 2026 - "
+                                           "Placing Album\nAssigned by the engine (confidence 0.84)",
+          "placing: arrow, the placing line, target and engine");
     const IntakeRecord *pd = s->lookup(dump + "Fixture Artist - Placed Album/01 - Test Track One.wav");
     CHECK(pd && pd->visual.icon == IntakeIcon::CircleFilled && pd->visual.bgTint == 0x3FB95038, "placed: green");
     const IntakeRecord *gc = s->lookup(dump + "Fixture Artist - Collected Album/01 - Test Track One.wav");
@@ -443,12 +544,16 @@ static void testMockDefault() {
     CHECK(rj && rj->visual.strikethrough && rj->visual.icon == IntakeIcon::Cross, "rejected: struck, cross");
     const IntakeRecord *va = s->lookup(dump + "Various Artists - Test Compilation/01 - Test Track One.wav");
     CHECK(va && va->proposal.targetPathState == TargetPathState::Set &&
-              va->proposal.targetPath.find("/[Compilations]/") != std::string::npos && va->visual.tooltip.empty(),
+              va->proposal.targetPath.find("/[Compilations]/") != std::string::npos &&
+              va->visual.tooltip == "Intake: Resolved\nTarget: music.hq/Fixture Downtempo/[Compilations]/Various "
+                                    "Artists - 2026 - Test Compilation\nAssigned by the engine (confidence 0.72)",
           "Various Artists (CLI 0.3.0): a [Compilations] target, no slot pending");
     const IntakeRecord *single = s->lookup(shop + "Loose Tracks/Fixture Artist E - Single Track.wav");
     CHECK(single && single->id == "itk_00000019" && single->visual.icon == IntakeIcon::Warning &&
-              single->visual.bgTint == 0xE5A50A38 && single->visual.tooltip == "needs review \xC2\xB7 slot pending",
+              single->visual.bgTint == 0xE5A50A38 && single->visual.tooltip == "Intake: Resolved \xC2\xB7 needs review\nTarget: Test Collection A \xC2\xB7 slot "
+                                        "pending\nAssigned by the engine (confidence 0.64)",
           "the single (null target, needs_review): amber warning, needs review and slot pending");
+    CHECK(single && single->singlesRoot, "its sidecar's singles: true was read with its files");
     CHECK(s->lookup(p.root + "/library/music.hq/Test Collection A/Fixture Artist/"
                              "Fixture Artist - 2026 - Placed Album/01 - Test Track One.wav") == nullptr,
           "a library copy is not an intake row");
@@ -474,7 +579,8 @@ static void testMockOld() {
     auto s = IntakeSnapshot::build(p.status.records, table);
     const std::string dump = p.root + "/income/dump/";
     const IntakeRecord *va = s->lookup(dump + "Various Artists - Test Compilation/01 - Test Track One.wav");
-    CHECK(va && va->visual.tooltip.empty(), "0.2.1: no target_path, so no slot pending tooltip");
+    CHECK(va && va->visual.tooltip == "Intake: Resolved\nTarget: Fixture Downtempo\nConfidence 0.72",
+          "0.2.1: no target_path or assigned_by: the collection and the confidence, no slot pending");
     const IntakeRecord *f = s->lookup(dump + "Fixture Artist - Overridden Album/01 - Test Track One.wav");
     CHECK(f && f->proposal.assignedBy == AssignedBy::Unknown && f->visual.bgTint == 0xE5A50A38,
           "0.2.1: assigned_by unknown, the needs_review override is amber");
@@ -489,8 +595,10 @@ int main(void) {
         testEmpty();
         testWholeDirectory();
         testSingles();
+        testSinglesKind();
         testNested();
         testUnicode();
+        testMayMatchUnder();
         testTiesAndKinds();
         testKeysAndVisuals();
         testConcurrentReaders();

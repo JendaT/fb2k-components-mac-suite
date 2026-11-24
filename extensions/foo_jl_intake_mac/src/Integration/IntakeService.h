@@ -18,6 +18,13 @@
 //  reads the share links again 2 s and 10 s later, B11), and starts the
 //  first load.
 //
+//  Title-formatting fields (B13, IntakeFieldProvider): on_init starts the
+//  volume seed (fieldsStart) before the loader; every published view goes
+//  to fieldsPublishView as well as to the provider; a mount or unmount
+//  notification and Refresh re-seed the volume table
+//  (fieldsReseedVolumes); on_quit calls fieldsShutdown right after
+//  actionsShutdown.
+//
 //  Settings (B5): the preferences page writes configStore and posts
 //  IntakeSettingsDidChangeNotification on the main thread. The service
 //  reads every key again (config::load) and applies what changed, with no
@@ -107,8 +114,13 @@ void serviceReload(bool recheckVersion, std::function<void(const LoaderStatus &s
 // component started exits, PLAN.md 3.5, doc 04 "Refresh and invalidation"):
 // one coalesced full `status --json` load with a full member listing (the
 // command may have moved or written sidecars anywhere), then the
-// fingerprint diff. A no-op before on_init and after on_quit.
-void serviceRefreshAfterCommand();
+// fingerprint diff. A no-op before on_init and after on_quit. `finished`
+// (optional; the Execute follow-ups wait for it) as for serviceReload: once
+// on the main thread with the loader's status when the load serving this
+// request has ended, at once with state Stopped before on_init and after
+// on_quit, never after on_quit for a request still waiting then. Unlike
+// serviceReload it keeps the slow mac-volume marks.
+void serviceRefreshAfterCommand(std::function<void(const LoaderStatus &status)> finished = nullptr);
 
 // Main thread. B11: reads the share links again (IntakeLoader::relink):
 // no CLI call, a publish only when a link moved, nothing at all while no

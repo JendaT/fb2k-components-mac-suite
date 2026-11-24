@@ -193,6 +193,9 @@ ActionRoot actionRootFor(const IntakeRecord &r) {
     if (r.hasProposal && r.proposal.targetPathState == TargetPathState::Set) a.targetPath = r.proposal.targetPath;
     a.placedVerified = r.hasPlaced && r.placedVerified;
     if (r.hasPlaced) a.placedTargetPath = r.placedTargetPath;
+    if (r.hasProposal && r.proposal.rankedState == RankedState::Present && !r.proposal.ranked.empty()) {
+        a.topRanked = r.proposal.ranked.front().collection;
+    }
     return a;
 }
 

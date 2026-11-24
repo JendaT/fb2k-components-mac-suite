@@ -254,8 +254,19 @@ static void testRecheck() {
               re.dropped[1].second == "its target changed since the check (now /lib/elsewhere)",
           "a root re-assigned while the sheet was open");
     CHECK(re.dropped.size() == 3 && re.dropped[2].first == "itk_0000000d" &&
-              re.dropped[2].second == "it has no target any more (slot pending)",
-          "a root whose target went away");
+              re.dropped[2].second == "it has no target any more (cannot be placed)",
+          "a root whose target went away: not singles, so it cannot be placed (the tooltip's rule)");
+    records[3].singlesRoot = true;
+    ExecuteRecheck single = recheckPlaceable(plan, [&records](const std::string &id) -> const IntakeRecord * {
+        for (const IntakeRecord &r : records) {
+            if (r.id == id) return &r;
+        }
+        return nullptr;
+    });
+    CHECK(single.dropped.size() == 3 && single.dropped[2].first == "itk_0000000d" &&
+              single.dropped[2].second == "it has no target any more (slot pending)",
+          "a singles root whose target went away waits for a slot");
+    records[3].singlesRoot = false;
 
     ExecuteRecheck none = recheckPlaceable(plan, nullptr);
     CHECK(none.keep.size() == roots.size() && none.dropped.empty(), "no lookup: everything kept");

@@ -193,14 +193,20 @@ bool isShareUnreachableError(int error) {
     }
 }
 
-bool parseSidecarMemberPaths(std::string_view json, std::vector<std::string> &paths) {
+bool parseSidecarMemberPaths(std::string_view json, std::vector<std::string> &paths, bool *singles) {
     paths.clear();
+    if (singles) *singles = false;
     const std::string_view text = trimmedJson(json);
     if (text.empty()) return false;
     bool ok = true;
     @autoreleasepool {
         id root = parseJsonValue(text);
         id files = [root isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)root)[@"files"] : nil;
+        if (singles && [root isKindOfClass:[NSDictionary class]]) {
+            id flag = ((NSDictionary *)root)[@"singles"];
+            *singles = [flag isKindOfClass:[NSNumber class]] &&
+                       CFGetTypeID((__bridge CFTypeRef)flag) == CFBooleanGetTypeID() && [flag boolValue];
+        }
         if (![files isKindOfClass:[NSArray class]]) {
             ok = false;
         } else {
@@ -221,7 +227,10 @@ bool parseSidecarMemberPaths(std::string_view json, std::vector<std::string> &pa
             }
         }
     }
-    if (!ok) paths.clear();
+    if (!ok) {
+        paths.clear();
+        if (singles) *singles = false;
+    }
     return ok;
 }
 
@@ -390,7 +399,7 @@ MemberTable loadMembers(const std::vector<IntakeRecord> &records,
                 int readError = 0;
                 const bool read = fs.readFile(path, contents, readError);
                 if (!read) noteFailure(readError, path);
-                parsed = read && parseSidecarMemberPaths(contents, m.relativePaths);
+                parsed = read && parseSidecarMemberPaths(contents, m.relativePaths, &m.singles);
             }
             if (parsed) {
                 m.kind = MemberKind::Members;

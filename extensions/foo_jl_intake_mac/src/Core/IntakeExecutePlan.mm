@@ -159,7 +159,9 @@ ExecuteRecheck recheckPlaceable(const ExecutePlan &plan, const ExecuteRecordLook
         if (!checked.empty() && now->hasProposal) {
             const IntakeProposal &p = now->proposal;
             if (p.targetPathState == TargetPathState::Null) {
-                out.dropped.emplace_back(root.id, "it has no target any more (slot pending)");
+                // The tooltip's rule: only a singles root waits for a slot.
+                out.dropped.emplace_back(root.id, now->singlesRoot ? "it has no target any more (slot pending)"
+                                                                   : "it has no target any more (cannot be placed)");
                 continue;
             }
             if (p.targetPathState == TargetPathState::Set && p.targetPath != checked &&

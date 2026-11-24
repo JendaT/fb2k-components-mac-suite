@@ -11,10 +11,13 @@
 #include "IntakeService.h"
 
 #include "IntakeActions.h"
+#include "IntakeActivityHub.h"
 #include "IntakeConfig.h"
 #include "IntakeDecoratorProvider.h"
+#include "IntakeFieldProvider.h"
 #include "IntakeMounts.h"
 #include "IntakeNativePath.h"
+#include "IntakeStatusProvider.h"
 
 #include "../Core/IntakeCliRunner.h"
 #include "../Core/IntakeCommandArgs.h"
@@ -139,6 +142,12 @@ public:
         ls.cli = cliConfig();
         ls.readMounts = [] { return readMountTable(); };
         ls.publish = [](std::shared_ptr<const IntakeView> view, bool invalidateAll, PublishReason reason) {
+            // B14: the n/m of running execute and resume runs, from the
+            // statuses this view shows (nothing unless a run is tracked).
+            activityViewPublished(view);
+            // B13: the title-formatting fields read every view too (swapped
+            // in on the main thread, refreshed there when they changed).
+            fieldsPublishView(view);
             providerPublish(std::move(view), invalidateAll, reason == PublishReason::Load);
         };
         ls.watchFolders = settings_.watchFolders;
@@ -231,6 +240,8 @@ public:
     void reload(bool recheckVersion, std::function<void(const LoaderStatus &)> finished) {
         // Refresh is the user's way back from a volume the guard marked.
         if (resetSlowVolumes("refresh")) providerInvalidateAll();
+        // And the fields' volume table is read again (B13).
+        fieldsReseedVolumes("refresh");
         if (!loader_) {
             if (finished) finished(status());
             return;
@@ -238,22 +249,28 @@ public:
         // B11: the share links at once, even when this reload waits behind
         // a running load (whose start read them before the re-point).
         loader_->relink();
-        LoadFinishedHandler served;
-        if (finished) {
-            // Loader queue: hand the status to the main thread.
-            served = [finished](const LoaderStatus &st) {
-                std::function<void(const LoaderStatus &)> done = finished;
-                LoaderStatus copy = st;
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    done(copy);
-                });
-            };
-        }
-        loader_->reload(recheckVersion, std::move(served));
+        loader_->reload(recheckVersion, onMainThread(std::move(finished)));
     }
 
-    void refreshAfterCommand() {
-        if (loader_) loader_->reload(false);
+    void refreshAfterCommand(std::function<void(const LoaderStatus &)> finished) {
+        if (!loader_) {
+            if (finished) finished(status());
+            return;
+        }
+        loader_->reload(false, onMainThread(std::move(finished)));
+    }
+
+    // A load-finished handler (loader queue) that hands the status to
+    // `finished` on the main thread; empty for an empty one.
+    static LoadFinishedHandler onMainThread(std::function<void(const LoaderStatus &)> finished) {
+        if (!finished) return LoadFinishedHandler();
+        return [finished](const LoaderStatus &st) {
+            std::function<void(const LoaderStatus &)> done = finished;
+            LoaderStatus copy = st;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                done(copy);
+            });
+        };
     }
 
     // B11 (serviceRelink): no CLI call.
@@ -425,6 +442,8 @@ void Service::volumesChanged() {
     // cached that; a reload that finds nothing changed would not repaint
     // them.
     if (resetSlowVolumes("mount change")) providerInvalidateAll();
+    // The fields' volume ids follow the mounts (B13).
+    fieldsReseedVolumes("mount change");
     if (g_service == nullptr || !g_service->loader_) return;
     g_service->loader_->remount();
     g_service->loader_->reload(false);
@@ -448,6 +467,12 @@ public:
         setLogLevel(settings.logLevel);
         providerSetStatsEnabled(settings.decorStats);
         if (settings.decorStats) logUnfiltered(LogLevel::Info, "decor_stats on: one line per decorate batch");
+        // B14: the status provider follows the activity model before
+        // anything can begin an activity (the run scan below adopts runs).
+        statusProviderStart();
+        // B13: the fields' volume table is seeded off the main thread, so
+        // it is usually ready before the first load is.
+        fieldsStart();
         g_service = new Service(settings);
         g_service->start();
         // B8: adopt or finish execute runs an earlier session left behind
@@ -457,6 +482,7 @@ public:
 
     void on_quit() override {
         actionsShutdown();  // results of running mutating calls are dropped from here on
+        fieldsShutdown();   // no field refresh or seed from here on; the fields keep answering
         if (g_service != nullptr) {
             g_service->stop();
             delete g_service;
@@ -479,8 +505,12 @@ void serviceReload(bool recheckVersion, std::function<void(const LoaderStatus &s
     }
 }
 
-void serviceRefreshAfterCommand() {
-    if (g_service != nullptr) g_service->refreshAfterCommand();
+void serviceRefreshAfterCommand(std::function<void(const LoaderStatus &status)> finished) {
+    if (g_service != nullptr) {
+        g_service->refreshAfterCommand(std::move(finished));
+    } else if (finished) {
+        finished(serviceStatus());
+    }
 }
 
 void serviceRelink() {

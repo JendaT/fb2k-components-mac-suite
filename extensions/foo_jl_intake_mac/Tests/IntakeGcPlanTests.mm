@@ -15,6 +15,7 @@
 // TEST_DEPS: src/Core/IntakeStatusModel.mm src/Core/IntakeEnvelope.mm src/Core/IntakePath.mm
 // TEST_DEPS: src/Core/IntakeLog.mm src/Core/IntakeErrorMap.mm src/Core/IntakeDecorationMap.mm
 // TEST_DEPS: src/Core/IntakeGroupBadge.mm
+// TEST_DEPS: src/Core/IntakeTargetPath.mm
 //
 
 #import <Foundation/Foundation.h>

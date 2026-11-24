@@ -4,8 +4,9 @@
 //
 //  One immutable view of intake state: the records of a `status --json`
 //  load (IntakeStatusModel), their membership (IntakeSidecarMembers), their
-//  visuals (IntakeDecorationMap) and group badges (IntakeGroupBadge),
-//  indexed for the decorate path (PLAN.md 3.2, 3.3).
+//  visuals (IntakeDecorationMap), group badges (IntakeGroupBadge) and
+//  title-formatting field values (IntakeFields, B13), indexed for the
+//  decorate path (PLAN.md 3.2, 3.3).
 //
 //  Lookup of a row path:
 //   1. The member map: an exact match on root_path + "/" + files[].path of
@@ -37,7 +38,9 @@
 //  normalizing it, and the rewritten key carries its members along. Matching is
 //  case-sensitive. lookup() normalizes the query (file:// stripped; other
 //  schemes and relative paths match nothing); lookupKey() takes a query that
-//  is already a match key, e.g. an alias key.
+//  is already a match key, e.g. an alias key. The proper ancestors of every
+//  key of both maps are kept as well, so mayMatchUnder() can tell from a
+//  query's folder alone that nothing under it has a record.
 //
 //  A record without a MemberTable entry counts as whole-directory.
 //
@@ -66,10 +69,24 @@
 
 namespace intake {
 
+// Whether `record` is a singles root, for the null-target wording
+// (IntakeDecorationMap, IntakeGroupBadge). `members` is its entry, or null.
+//  - Members: the named sidecar's `singles` flag (RootMembers::singles).
+//  - Whole-directory from a listing (Listed, Reused): no named sidecar, so
+//    an `.intake.json` root, never a single.
+//  - Kind not verified (Assumed, Previous whole-directory, no entry: a lone
+//    root whose sidecar is not read): a singles root always has a null
+//    cluster.album (doc 01), so an empty album counts as singles. A
+//    non-singles root with no album name keeps "slot pending" then, as
+//    before.
+//  - None: false (it renders nothing).
+bool singlesRootFor(const IntakeRecord &record, const RootMembers *members);
+
 class IntakeSnapshot {
 public:
     // Takes the records and the member table, computes every record's visual
-    // and badge with `palette` and builds both maps. Logs ties at Debug level.
+    // and badge with `palette` and its field values, and builds both maps.
+    // Logs ties at Debug level.
     static std::shared_ptr<const IntakeSnapshot> build(std::vector<IntakeRecord> records,
                                                        MemberTable members,
                                                        const IntakePalette &palette = IntakePalette());
@@ -83,6 +100,13 @@ public:
     const IntakeRecord *lookupKey(std::string_view key) const;
     // By sidecar id, or nullptr.
     const IntakeRecord *recordForId(std::string_view id) const;
+    // False when no match key strictly under `key` (a normalized match key)
+    // can find a record: no directory key is `key` or one of its
+    // ancestors, and no directory or member key lies under it. A few hash
+    // lookups (one per level of `key`), so a caller that knows only a
+    // query's folder can skip normalising the rest of it
+    // (IntakeView::mayHaveRecord). True may still find nothing.
+    bool mayMatchUnder(std::string_view key) const;
 
     const std::vector<IntakeRecord> &records() const { return records_; }
     // The membership this snapshot was built from: the next load's `previous`.
@@ -107,6 +131,7 @@ private:
     MemberTable members_;
     PathMap<uint32_t> byMember_;     // member file key -> record index
     PathMap<uint32_t> byDirectory_;  // whole-directory root key -> record index
+    PathMap<char> ancestors_;        // every proper ancestor of a key of either map, "/" included
     std::unordered_map<std::string, uint32_t, PathKeyHash, std::equal_to<>> byId_;
 };
 

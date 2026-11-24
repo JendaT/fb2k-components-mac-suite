@@ -18,6 +18,15 @@
 //  No filesystem access, no allocation for an already-normal ASCII path that
 //  is not under an smbfs mount.
 //
+//  A path with a non-ASCII byte (names stored decomposed on an SMB share)
+//  would go through CoreFoundation for NFC in step 1, whether or not it is
+//  near a root. mayHaveRecord() runs first and rules most such rows out by
+//  their ASCII folder (IntakePath asciiFolderOf): normalized, aliased, and
+//  neither under a root nor an ancestor of one
+//  (IntakeSnapshot::mayMatchUnder). Skipped, so the full lookup runs, when a
+//  mount point lies below that folder (the alias could then differ). The
+//  answer is the same either way; only the cost changes.
+//
 //  B9: the view also carries the library index (IntakeLibraryIndex) built
 //  with the same snapshot and alias table. Only the context menu asks it
 //  (libraryRecordFor), so a row already swapped to its library path still
@@ -79,6 +88,10 @@ public:
 
     // The record owning `path` (a native POSIX path or file://), or nullptr.
     const IntakeRecord *_Nullable recordFor(std::string_view path, ViewScratch &scratch) const;
+    // False only when recordFor(path) is nullptr, decided without NFC (see
+    // the top of this file); true for every ASCII path. recordFor() asks it
+    // first.
+    bool mayHaveRecord(std::string_view path, ViewScratch &scratch) const;
     // Its visual, or nullptr when the row gets no decoration. The pointer
     // stays valid while the caller holds this view.
     const IntakeRowVisual *_Nullable visualFor(std::string_view path, ViewScratch &scratch) const;

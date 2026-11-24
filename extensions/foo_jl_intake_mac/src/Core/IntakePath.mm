@@ -165,6 +165,37 @@ PathStatus normalizePath(std::string_view input, std::string &buffer, std::strin
     return PathStatus::Ok;
 }
 
+bool asciiFolderOf(std::string_view input, std::string_view &head) {
+    head = std::string_view();
+    if (input.empty()) return false;
+    std::string_view p = input;
+    if (p[0] != '/') {
+        // normalizePath accepts "file://" (any case) and then needs a '/'.
+        if (p.size() < kFileScheme.size() ||
+            !equalsIgnoringASCIICase(p.substr(0, kFileScheme.size()), kFileScheme)) {
+            return false;
+        }
+        p.remove_prefix(kFileScheme.size());
+        if (p.empty() || p[0] != '/') return false;
+    }
+    size_t first = 0;
+    while (first < p.size() && !(static_cast<unsigned char>(p[first]) & 0x80)) first++;
+    if (first == p.size()) return false;  // ASCII
+    const size_t slash = p.rfind('/', first);
+    if (slash == std::string_view::npos || slash == 0) return false;  // non-ASCII in the first segment
+    // A ".." segment after the head could pop into it ("/a/b/é/../../c").
+    const std::string_view rest = p.substr(slash + 1);
+    size_t start = 0;
+    while (start <= rest.size()) {
+        size_t end = rest.find('/', start);
+        if (end == std::string_view::npos) end = rest.size();
+        if (end - start == 2 && rest[start] == '.' && rest[start + 1] == '.') return false;
+        start = end + 1;
+    }
+    head = p.substr(0, slash);
+    return true;
+}
+
 PathStatus normalizePath(std::string_view input, std::string &out) {
     std::string buffer;
     std::string_view view;

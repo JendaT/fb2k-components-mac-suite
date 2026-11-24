@@ -120,6 +120,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     std::vector<IncomeFolder> incomeFolders;  // the same call, for the status (B5)
     bool incomeOffered = false;               // the last passing `version` listed `income`
     std::string incomeError;                  // why the last `income` call failed; "" after a good one
+    std::unordered_set<std::string> ignoredIncomeRootsLogged;  // income-folder roots already logged
     WatchSet watchSet;                        // the last one built
     std::vector<std::string> watchInputs;     // the candidates it was built from
     bool watchBuilt = false;
@@ -443,6 +444,13 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         }
 
         applyMountAliases(parsed.records, *aliases);
+        // The income-folder root guard, only while the last `income` call
+        // answered (not offered or failed: no guard).
+        if (incomeOffered && incomeError.empty()) {
+            for (const IgnoredIncomeRoot &ignored : dropIncomeFolderRoots(parsed.records, incomeFolders, *aliases)) {
+                if (ignoredIncomeRootsLogged.insert(ignored.id).second) logInfo(ignoredIncomeRootLine(ignored));
+            }
+        }
         if (!unreadable.directories.empty()) noteUnreadable(unreadable);
         if (settings.annotateRecords) settings.annotateRecords(parsed.records, statusStartedAt);
 

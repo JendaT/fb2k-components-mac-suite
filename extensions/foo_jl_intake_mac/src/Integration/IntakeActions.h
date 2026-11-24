@@ -33,6 +33,14 @@
 //   - Propose, Approve: run at once.
 //   - Assign to X (B7): runs at once, `assign <id> --collection X --by
 //     user`, X being the collection the menu showed (kept in the entry).
+//     Then `propose` (B13-lite) for the roots that were resolved at menu
+//     time and that the assign did not fail (IntakeAssignPropose; exit 2
+//     proposes nothing; new, proposed and approved roots are skipped with
+//     one Debug line). The lane is held from the assign's start to the
+//     propose's end, and released on every other path (nothing to
+//     propose, the propose refused or failed, quit); one refresh after the
+//     last call. Propose errors show as usual (tooltip, console line); a
+//     root whose propose fails keeps its assignment.
 //   - Assign to other collection… (B7): the picker. The sheet's window is
 //     chosen at the click, as for Reject. `collections --json` runs first,
 //     off the main thread (read-only: E_CLI_TIMEOUT at 10 s and killed,
@@ -41,19 +49,33 @@
 //     window, or, when it can no longer take one, on the main, key or
 //     foobar2000 main window, else app-modal (started from a run-loop callout, never inside
 //     a main-queue block, so the main queue keeps draining while it is
-//     up). It has an NSComboBox (type-ahead completion) listing the
-//     collection names in the CLI's order and the albums it applies to (up
-//     to 10, then "and N more"; for one root also its current target).
-//     Nothing is preselected: the field starts empty, so an engine proposal
-//     is never turned into a user choice by Return. "Assign" is enabled
-//     only while the text stands for a listed name (case-sensitive; a
+//     up). It has a search field over a list visible from the start
+//     (JLIntakeCollectionPicker, IntakeCollectionSearch), in sections:
+//     "Suggested" (the selected roots' proposal.ranked[0]: one when they
+//     agree, else their distinct values, up to 3; left out when none),
+//     "Recent" (the last five collections assigned to, the hidden
+//     recent_collections key, names no longer listed dropped) and "All
+//     collections" in the CLI's order; headers are not choosable and a name
+//     may repeat across sections. Above it, the albums it applies to (up to
+//     10, then "and N more"; for one root also its current target).
+//     Nothing is highlighted at first, so an engine proposal is never
+//     turned into a user choice by Return. Typing filters the list live
+//     into one ranked list (substring, ignoring case, diacritics and the
+//     square brackets: "folk" finds "[Folktronica & Ezo techno]") and
+//     highlights the first match. Keys stay in the field: Up and Down, or a
+//     click, highlight a row and show its name in the field. The
+//     highlighted row is the choice: Return or a double-click assigns it;
+//     Escape or Cancel runs nothing. "Assign" is enabled while a name is
+//     highlighted, or the field holds a listed name (case-sensitive; a
 //     spelling that differs only in Unicode normalisation counts, and the
 //     listed name's own bytes go to the CLI: IntakeCollections
-//     listedCollectionFor). Cancel or Escape runs nothing.
+//     listedCollectionFor). Confirming moves the name to the front of
+//     Recent.
 //     Assign checks the lane and the configuration again, then runs
 //     `assign <ids> --collection <name> --by user` on the roots the menu
-//     captured. One picker flow at a time: a request while `collections`
-//     runs or the sheet is open logs one Info line and does nothing. A
+//     captured, followed by `propose` as for Assign to X. One picker flow
+//     at a time: a request while `collections` runs or the sheet is open
+//     logs one Info line and does nothing. A
 //     failed `collections` (an E_* error, a timeout, a reply that is not
 //     an envelope or whose data is not an array or has more than 10000
 //     entries, a partial reply) or an empty list logs one Error line and
@@ -62,9 +84,15 @@
 //   - Reject…: with confirm_reject on (default), an NSAlert first, as a
 //     sheet on the window under the pointer (where the menu was opened),
 //     else the main, key or foobar2000 main window, else app-modal; it lists
-//     up to 10 albums ("and N more") with an optional reason field; off:
-//     at once, no reason (the item then has no ellipsis). Only when the
-//     CLI has `reject`. No alert when the call could not start anyway.
+//     up to 10 albums ("and N more") and has a reason pop-up ("Already in
+//     library", "Lower quality than library copy", "Not wanted", "Other…";
+//     IntakeRejectReason) above a free-text field. A preset's text is the
+//     reason and the field shows it, disabled; "Other…" enables the field
+//     (empty: no reason). The last choice is kept for the session only
+//     ("Already in library" at first, IntakeRejectReason
+//     rejectInitialChoice). Return rejects, Escape cancels. Off: at once, no
+//     reason (the item then has no ellipsis). Only when the CLI has
+//     `reject`. No alert when the call could not start anyway.
 //   - Execute placement… (B8): describe, then confirm. The sheet's window
 //     is chosen at the click, as for the picker. `execute <ids> --dry-run
 //     --json` runs on the lane (class ExecuteDryRun: no E_CLI_TIMEOUT,
@@ -80,13 +108,19 @@
 //     "artist – album → target (n files, k shadows skipped)" rows, then the
 //     excluded roots with their error, as a sheet on that window (or the
 //     main, key or foobar2000 main window, else app-modal from a run-loop callout, never
-//     inside a main-queue block), buttons Execute and Cancel. Execute leaves
-//     out the roots that changed while the sheet was open (no longer
-//     approved, or another target than the sheet showed: one Error line
-//     each, IntakeExecutePlan recheckPlaceable), checks the lane and the
-//     configuration again and starts the run on the roots that remain. One
-//     execute flow at a time (dry run running or sheet
-//     open): another request logs one Info line and does nothing.
+//     inside a main-queue block), buttons Execute and Cancel, and two
+//     checkboxes (JLIntakeExecuteFollowUps, IntakeExecuteFollowUp): "Swap
+//     playlist rows to the library copies when done" and "Then delete the
+//     local copies" (enabled only while the first is ticked). Swap opens as
+//     last confirmed (hidden configInt execute_swap_after, default 1,
+//     written on Execute); delete opens unticked every time and is never
+//     saved. Execute leaves out the roots that changed while the sheet was
+//     open (no longer approved, another target than the sheet showed, or
+//     no target now: one Error line each, IntakeExecutePlan
+//     recheckPlaceable), checks the lane and the configuration again and
+//     starts the run on the roots that remain, with the follow-ups in its
+//     run file. One execute flow at a time (dry run running or sheet open):
+//     another request logs one Info line and does nothing.
 //   - Resume placement (B8): no confirmation; starts `execute <ids>
 //     --resume --json` as a detached run at once.
 //   - Swap to library paths (B9, IntakeSwap): the selected rows that map to
@@ -148,6 +182,28 @@
 //  the lane is released and both files are deleted. After on_quit results
 //  are dropped and the files stay: the next session finishes the run.
 //
+//  Execute follow-ups (IntakeExecuteFollowUp): an execute run whose run
+//  file records swap on (own, adopted, or finished by the leftover scan;
+//  the last two log "run <stem>: swap/delete as chosen at its start")
+//  waits for the refresh after its result (serviceRefreshAfterCommand's
+//  `finished`; one that did not succeed stops it, one Info line). Then the
+//  rows of its roots now placed with placed.verified are swapped in every
+//  playlist (the chain "Swap, then delete" uses, IntakeSwap, no lane);
+//  with delete on, the lane is taken, the Delete census counts the entries
+//  still on their income paths, and gc runs (runMutation on that token)
+//  for the roots that pass the gc guard and whose census is clear: the
+//  checkbox is their confirm_gc confirmation, no sheet. The others get one
+//  Info line and a tooltip each (baseline: their status then) and a
+//  refresh shows them. The lane is released on every path (nothing to
+//  delete, a refusal, gc's exit). One chain at a time, queued in the order
+//  the refreshes come back; a chain ends when its gc ends. A quit drops
+//  the chains not done, and the next start cannot do them (the run file
+//  went when the run's result was read): actionsShutdown logs one Info
+//  line per run whose follow-ups had not finished, from its end to its
+//  chain's end (waiting for the refresh, queued, or swapping; nothing was
+//  deleted; IntakeExecuteFollowUp followUpQuitLine). A gc already running
+//  is not stopped and finishes on its own: no line for it.
+//
 //  Leftover runs (actionsStartRunScan, from on_init, once): the cache
 //  folder is scanned on the mutation queue (IntakeExecuteTracker
 //  scanLeftoverRuns). A live run is adopted (lane held, its roots marked
@@ -176,6 +232,15 @@
 //  results are dropped: no refresh, no UI; the processes keep running
 //  (doc 03: mutating calls are not killed before the 15-minute cap, the
 //  runner enforces it).
+//
+//  Status bar (B14, IntakeActivityHub): every mutating call, the execute dry
+//  run, each detached run (own or adopted), each swap and the Delete flow's
+//  sidecar reads is an entry from the moment it holds its lane token, run
+//  stem or serial until every path that lets go of it (result, refusal,
+//  timeout) calls activityEnd; the propose after an assign renames the
+//  assign's entry and its end folds in the assign's result; the dry run's
+//  entry outlives its 10 s report until its answer, at most 15 minutes.
+//  actionsShutdown clears them. The list of pairs is in IntakeActivityHub.h.
 //
 //  Nothing here is modal for an error, and no error makes the provider
 //  inert.

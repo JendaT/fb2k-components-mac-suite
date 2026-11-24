@@ -39,7 +39,10 @@
 //  failed version) runs `income --json` between `version` and `status`. Its
 //  folders feed the watch set. A failed income call is a per-command error:
 //  one log line, the last good folder list is kept, and the load goes on
-//  with `status` (never inert).
+//  with `status` (never inert). While the last `income` call answered, a
+//  root that is an income folder itself is left out of each load
+//  (dropIncomeFolderRoots, IntakeLoadPolicy), with one Info line per root
+//  per session; with income not offered or failed there is no guard.
 //
 //  Settings changes (B5, the preferences page through IntakeService):
 //  reconfigure() replaces the CLI path, bun path, rules folder and

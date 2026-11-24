@@ -7,16 +7,13 @@
 //  jl_row_decoration (B3), with a static_assert that IntakeIcon matches
 //  jl_icon_id.
 //
-//   status                          tint   icon               note
+//   status                          tint   icon
 //   new, resolved                   blue   open circle
-//   new + needs_review              blue   open circle        tooltip "needs review"
-//   resolved + needs review         amber  warning            tooltip "needs review" (IntakeReviewRule)
+//   resolved + needs review         amber  warning            (IntakeReviewRule)
 //   proposed                        teal   left half circle
-//   proposed + needs review         amber  left half circle   tooltip "needs review"; also when
-//                                                             user-assigned
+//   proposed + needs review         amber  left half circle   also when user-assigned
 //   approved                        teal   right half circle
-//   placing                         teal   right arrow        tooltip "placing - see intake status"
-//                                                             (an em dash, U+2014, in the text)
+//   placing                         teal   right arrow
 //   placed, verified true           green  filled circle
 //   placed verified false, gc_done,
 //   unknown                         none   none
@@ -29,19 +26,38 @@
 //  icons always use the host's label colour (0). placing uses the approved
 //  tint (it follows approve).
 //
-//  Every amber row (resolved or proposed needing review) and a new root
-//  with needs_review start their tooltip with "needs review" (doc 04 v1.2).
-//
-//  Tooltip additions, joined with " \u00B7 " (a middle dot):
-//   - a proposal whose `target_path` is present and null adds
-//     "slot pending" on new, resolved, proposed and approved roots (doc 04
-//     v1.2 wording). From CLI 0.3.0 null means the singles slot or a tier
-//     `reject` root (compilations get a `[Compilations]` target, amendment
-//     003); doc 04 leaves tier reject's own wording open. Absent (CLI
-//     0.2.1) adds nothing: unknown, not pending.
-//   - a non-empty IntakeRecord::lastError (a per-command error that
-//     Integration keeps until the root's status changes) is appended, and
-//     on its own gives a tooltip-only visual.
+//  Tooltip (B13): every row whose status renders (statusHasVisual) gets one,
+//  lines joined with "\n" (SimPlaylist shows it as a plain NSString), in
+//  this order, a line left out when it has nothing to say:
+//   1. "Intake: <status>" (intakeStatusLabel), plus " \u00B7 needs review"
+//      when needs_review is set on a new, resolved or proposed root (so on
+//      every amber row and on new + needs_review, doc 04 v1.2). Reasons are
+//      not in `status --json` (doc 03 v1.2): only the flag.
+//   2. "placing \u2014 see intake status" on placing (an em dash, U+2014).
+//   3. The target, from the proposal:
+//      - target_path set: "Target: " + displayTargetPath (IntakeTargetPath:
+//        from the tier folder on, "music.hq/[Collection]/Artist/Release");
+//      - target_path null, on new, resolved, proposed or approved: on a
+//        singles root (IntakeRecord::singlesRoot) "Target: <collection>
+//        \u00B7 slot pending" ("Target: slot pending" without a
+//        collection); on any other root kTooltipCannotBePlaced, "Target:
+//        none, cannot be placed (see intake status)", whoever assigned it.
+//        From CLI 0.3.0 null means the singles slot, or a target that can
+//        never be built (tier `reject`, no album name, a tier not
+//        configured); status --json carries no tier or slot, so the root
+//        kind is the only signal (compilations get a target, amendment 003);
+//      - target_path absent (CLI 0.2.1): "Target: <collection>";
+//      - no proposal on a resolved root: kTooltipNoTarget.
+//   4. Who assigned, when there is a proposal: "Assigned by you"
+//      (assigned_by user; its confidence is always 1), "Assigned by the
+//      engine (confidence 0.91)", "Assigned by <other> (confidence ...)",
+//      or, with assigned_by absent (CLI 0.2.1), "Confidence 0.91". The
+//      confidence part is left out when the CLI sent none.
+//   5. A non-empty IntakeRecord::lastError (a per-command error that
+//      Integration keeps until the root's status changes).
+//  A root whose status renders nothing gets its lastError alone, as a
+//  tooltip-only visual, or nothing, as before B13: no row that was not
+//  decorated gains a tooltip.
 //
 //  Thread-safety: pure functions, no shared state.
 //
@@ -107,9 +123,22 @@ struct IntakeRowVisual {
 };
 
 // Tooltip texts (UTF-8), exposed for tests and for B6's badge wording.
-extern const char *_Nonnull const kTooltipNeedsReview;  // "needs review"
-extern const char *_Nonnull const kTooltipPlacing;      // "placing \u2014 see intake status"
-extern const char *_Nonnull const kTooltipSlotPending;  // "slot pending"
+extern const char *_Nonnull const kTooltipNeedsReview;   // "needs review"
+extern const char *_Nonnull const kTooltipPlacing;       // "placing \u2014 see intake status"
+extern const char *_Nonnull const kTooltipSlotPending;   // "slot pending"
+extern const char *_Nonnull const kTooltipStatusPrefix;  // "Intake: "
+extern const char *_Nonnull const kTooltipTargetPrefix;  // "Target: "
+// "No target yet: Propose (or Assign to a collection first)"
+extern const char *_Nonnull const kTooltipNoTarget;
+// "Target: none, cannot be placed (see intake status)"
+extern const char *_Nonnull const kTooltipCannotBePlaced;
+
+enum class IntakeStatus;
+
+// The status in words for the tooltip: "New", "Resolved", "Proposed",
+// "Approved", "Placing", "Placed", "Local copy deleted" (gc_done),
+// "Rejected", "Unknown".
+const char *_Nonnull intakeStatusLabel(IntakeStatus status);
 
 // The visual for `record` (status, needs_review, proposal, placed, lastError).
 IntakeRowVisual rowVisualFor(const IntakeRecord &record, const IntakePalette &palette = IntakePalette());

@@ -11,6 +11,7 @@
 
 #include "IntakeSwap.h"
 
+#include "IntakeActivityHub.h"
 #include "IntakeMounts.h"
 #include "IntakeNativePath.h"
 
@@ -44,6 +45,7 @@ struct SwapState {
     // main
     bool stopped = false;
     bool running = false;
+    uint64_t serial = 0;  // the last swap's (B14: its status-bar key)
     // set once
     dispatch_queue_t queue = nil;      // the swap's reads and stats
     dispatch_queue_t readQueue = nil;  // swapReadPlacedFiles (the Delete confirmation)
@@ -72,6 +74,7 @@ struct PlannedRow {
 };
 
 struct SwapJob {
+    uint64_t serial = 0;  // activitySwapKey
     PlaylistRef playlist;
     std::vector<std::string> playlistForms;  // the volume forms of the playlist's items at the click
     PlaylistLinkForms linkForms;             // B11: the share links its items lie under at the click (view's table)
@@ -342,11 +345,24 @@ void finish(SwapJob &job, SwapResult &result) {
     SwapState &st = swapState();
     st.running = false;
     result.line = swapResultLine(result.tally);
-    if (result.tally.swapped == 0 && result.tally.skippedTotal() > 0) {
+    const size_t skipped = result.tally.skippedTotal();
+    const bool failed = result.tally.swapped == 0 && skipped > 0;
+    if (failed) {
         logError(result.line);
     } else {
         logInfo(result.line);
     }
+    // B14: the swap's entry ends before `done`, which may start the next
+    // swap of a chain. Succeeded: "Swapped N playlist rows" (the rows
+    // swapped); nothing swapped: failed, the console line as its detail.
+    ActivityResult activity;
+    activity.succeeded = !failed;
+    if (failed) {
+        activity.reason = std::to_string(skipped) + (skipped == 1 ? " row skipped" : " rows skipped");
+        activity.detail = result.line;
+    }
+    activityEnd(activitySwapKey(job.serial), activity,
+                failed ? std::nullopt : std::optional<size_t>(result.tally.swapped));
     if (job.done) job.done(result);
 }
 
@@ -709,8 +725,11 @@ bool swapStart(t_size playlist, std::vector<SwapRow> rows, std::shared_ptr<const
     job->prefix = std::move(prefix);
     job->done = std::move(done);
     st.running = true;
+    job->serial = ++st.serial;
     logInfo("swap: starting for " + std::to_string(job->rows.size()) + " row(s) of " +
             std::to_string(job->records.size()) + " root(s)");
+    // B14: until finish() (or quit, which clears the status bar).
+    activityBegin(activitySwapKey(job->serial), ActivityKind::Swap, job->rows.size(), std::string());
     dispatch_async(st.queue, ^{
         planOnQueue(*job);
         dispatch_async(dispatch_get_main_queue(), ^{

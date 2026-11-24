@@ -11,6 +11,7 @@
 //
 // TEST_DEPS: src/Core/IntakeEnvelope.mm src/Core/IntakePath.mm src/Core/IntakeLog.mm
 // TEST_DEPS: src/Core/IntakeDecorationMap.mm src/Core/IntakeReviewRule.mm
+// TEST_DEPS: src/Core/IntakeTargetPath.mm src/Core/IntakeGroupBadge.mm
 //
 
 #import <Foundation/Foundation.h>
@@ -147,6 +148,20 @@ static void testParse() {
     CHECK(!parseSidecarMemberPaths("", paths) && !parseSidecarMemberPaths("[]", paths), "empty or an array fails");
     CHECK(parseSidecarMemberPaths(R"({"files":[{"path":"a.wav","tags":{"title":"bad \ud800 slice"}}]})", paths),
           "an unpaired surrogate escape elsewhere does not fail the sidecar");
+    bool singles = true;
+    CHECK(parseSidecarMemberPaths(R"({"files":[{"path":"a.wav"}],"singles":true})", paths, &singles) && singles,
+          "singles: true is read with the files");
+    CHECK(parseSidecarMemberPaths(R"({"files":[{"path":"a.wav"}],"singles":false})", paths, &singles) && !singles,
+          "singles: false");
+    CHECK(parseSidecarMemberPaths(R"({"files":[{"path":"a.wav"}]})", paths, &singles) && !singles,
+          "no singles member: not singles");
+    CHECK(parseSidecarMemberPaths(R"({"files":[{"path":"a.wav"}],"singles":"true"})", paths, &singles) && !singles,
+          "only the JSON boolean counts (a string does not)");
+    CHECK(parseSidecarMemberPaths(R"({"files":[{"path":"a.wav"}],"singles":1})", paths, &singles) && !singles,
+          "nor a number");
+    singles = true;
+    CHECK(!parseSidecarMemberPaths(R"({"files":[{"path":"../a.wav"}],"singles":true})", paths, &singles) && !singles,
+          "a sidecar that fails says not singles");
     CHECK(parseSidecarMemberPaths("{\"files\":[{\"path\":\"Cafe\\u0301.wav\"}]}", paths) &&
               paths[0] == "Cafe\xCC\x81.wav",
           "an NFD path keeps its bytes");

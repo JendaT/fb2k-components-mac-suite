@@ -35,8 +35,23 @@ IntakeView::IntakeView(Token, std::shared_ptr<const IntakeSnapshot> snapshot,
     if (!inertReason_.empty()) inertVisual_ = inertVisual(inertReason_);
 }
 
+bool IntakeView::mayHaveRecord(std::string_view path, ViewScratch &scratch) const {
+    if (snapshot_->isEmpty() || path.empty()) return false;
+    std::string_view head;
+    if (!asciiFolderOf(path, head)) return true;
+    // ASCII: normalizePath makes no CoreFoundation call, and copies only
+    // a folder that is not already normal.
+    std::string_view headKey;
+    if (normalizePath(head, scratch.normalized, headKey) != PathStatus::Ok) return true;
+    // A mount point below the folder may give the row another alias.
+    if (aliases_->hasMountBelow(headKey)) return true;
+    // `headKey` views `path` or scratch.normalized, never scratch.aliased.
+    return snapshot_->mayMatchUnder(aliases_->rewrite(headKey, scratch.aliased));
+}
+
 const IntakeRecord *IntakeView::recordFor(std::string_view path, ViewScratch &scratch) const {
     if (snapshot_->isEmpty() || path.empty()) return nullptr;
+    if (!mayHaveRecord(path, scratch)) return nullptr;
     std::string_view key;
     if (normalizePath(path, scratch.normalized, key) != PathStatus::Ok) return nullptr;
     // `key` views `path` or scratch.normalized, never scratch.aliased.

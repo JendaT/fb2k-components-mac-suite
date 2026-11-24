@@ -5,8 +5,9 @@
 //  Unit tests for IntakeLoadPolicy (the inert-state decision of doc 03 v1.2,
 //  the invalidation diffs of a load and of a remount, alias application,
 //  keeping the last record of a root whose sidecar a partial `status` could
-//  not read, status lines, the rules source line) and IntakeDecorStats (the
-//  hidden decor_stats counters). Synthetic records only.
+//  not read, the income-folder root guard, status lines, the rules source
+//  line) and IntakeDecorStats (the hidden decor_stats counters). Synthetic
+//  records only.
 //
 // TEST_DEPS: src/Core/IntakeErrorMap.mm src/Core/IntakeEnvelope.mm src/Core/IntakePath.mm
 // TEST_DEPS: src/Core/IntakeSnapshot.mm src/Core/IntakeLog.mm src/Core/IntakeDecorationMap.mm
@@ -14,6 +15,8 @@
 // TEST_DEPS: src/Core/IntakeWatchFilter.mm
 // TEST_DEPS: src/Core/IntakeGroupBadge.mm
 // TEST_DEPS: src/Core/IntakeWatchSet.mm src/Core/IntakeSettingsParse.mm
+// TEST_DEPS: src/Core/IntakeTargetPath.mm
+// TEST_DEPS: src/Core/IntakeFields.mm src/Core/IntakeStatusModel.mm
 //
 
 #import <Foundation/Foundation.h>
@@ -137,10 +140,13 @@ static void testRendersAlike() {
 
     std::vector<IntakeRecord> sameVisual = base;
     sameVisual[0].album = "Another Album";
-    sameVisual[0].hasProposal = true;
-    sameVisual[0].proposal.targetCollection = "Test Collection A";
-    sameVisual[0].proposal.rankedState = RankedState::Present;
+    sameVisual[0].albumartist = "Another Artist";
     CHECK(rendersAlike(*a, *IntakeSnapshot::build(sameVisual, table)), "fields that do not render do not count");
+    std::vector<IntakeRecord> proposalShown = base;
+    proposalShown[0].hasProposal = true;
+    proposalShown[0].proposal.targetCollection = "Test Collection A";
+    CHECK(!rendersAlike(*a, *IntakeSnapshot::build(proposalShown, table)),
+          "B13: a proposal shows in the row tooltip, so it differs");
 
     // B6: the group badge renders too, so a change that leaves the row
     // visual alone (a new confidence or target) still invalidates.
@@ -151,12 +157,23 @@ static void testRendersAlike() {
     badged[2].proposal.hasConfidence = true;
     auto withBadge = IntakeSnapshot::build(badged, table);
     CHECK(withBadge->recordForId("itk_00000003")->badge.shown(), "build computes the badge");
+    // The amber badge names the first alternate, which the row tooltip
+    // does not show (B13): a new alternate changes the badge only.
+    std::vector<IntakeRecord> amberBadge = badged;
+    amberBadge[2].proposal.confidence = 0.5;
+    amberBadge[2].proposal.rankedState = RankedState::Present;
+    amberBadge[2].proposal.ranked = {{"Test Collection A", 0.5, true}, {"Test Collection B", 0.3, true}};
+    auto withAlt = IntakeSnapshot::build(amberBadge, table);
+    std::vector<IntakeRecord> newAlt = amberBadge;
+    newAlt[2].proposal.ranked[1].collection = "Test Collection C";
+    auto other = IntakeSnapshot::build(newAlt, table);
+    CHECK(other->recordForId("itk_00000003")->visual == withAlt->recordForId("itk_00000003")->visual &&
+              other->recordForId("itk_00000003")->badge != withAlt->recordForId("itk_00000003")->badge,
+          "same row visual, another badge");
+    CHECK(!rendersAlike(*withAlt, *other), "a badge-only change differs");
     std::vector<IntakeRecord> newConfidence = badged;
     newConfidence[2].proposal.confidence = 0.85;
-    auto other = IntakeSnapshot::build(newConfidence, table);
-    CHECK(other->recordForId("itk_00000003")->visual == withBadge->recordForId("itk_00000003")->visual,
-          "same row visual");
-    CHECK(!rendersAlike(*withBadge, *other), "a badge-only change differs");
+    CHECK(!rendersAlike(*withBadge, *IntakeSnapshot::build(newConfidence, table)), "a new confidence differs");
     std::vector<IntakeRecord> newTarget = badged;
     newTarget[2].proposal.targetCollection = "Test Collection B";
     CHECK(!rendersAlike(*withBadge, *IntakeSnapshot::build(newTarget, table)), "a new target differs");
@@ -211,6 +228,71 @@ static void testApplyAliases() {
     std::vector<IntakeRecord> bad = {record("itk_00000004", "relative/path")};
     applyMountAliases(bad, *aliases);
     CHECK(bad[0].rootKey.empty(), "an unusable rootPath gets an empty key");
+}
+
+static IncomeFolder income(const std::string &name, const std::string &path) {
+    IncomeFolder f;
+    f.name = name;
+    f.path = path;
+    return f;
+}
+
+static void testIncomeFolderGuard() {
+    g_context = "income-guard";
+    auto none = MountAliases::none();
+    std::vector<IntakeRecord> records = {record("itk_00000001", "/Users/someone/income/dump"),
+                                         record("itk_00000002", "/Users/someone/income/dump/Artist - Album"),
+                                         record("itk_00000003", "/Users/someone/income/shop/")};
+    applyMountAliases(records, *none);
+    const std::vector<IncomeFolder> folders = {income("dump", "/Users/someone/income/dump"),
+                                               income("shop", "/Users/someone/income/shop")};
+    std::vector<IgnoredIncomeRoot> dropped = dropIncomeFolderRoots(records, folders, *none);
+    CHECK(dropped.size() == 2 && dropped[0].id == "itk_00000001" && dropped[0].incomeName == "dump" &&
+              dropped[1].id == "itk_00000003" && dropped[1].incomeName == "shop",
+          "a root equal to an income folder is ignored (a trailing slash too), in record order");
+    CHECK(records.size() == 1 && records[0].id == "itk_00000002", "a root in a subfolder is kept");
+    CHECK(ignoredIncomeRootLine(dropped[0]) ==
+              "root itk_00000001 is the income folder dump itself; ignored (loose files at its top level)",
+          "the Info line");
+
+    g_context = "income-guard-none";
+    std::vector<IntakeRecord> unguarded = {record("itk_00000001", "/Users/someone/income/dump")};
+    applyMountAliases(unguarded, *none);
+    CHECK(dropIncomeFolderRoots(unguarded, {}, *none).empty() && unguarded.size() == 1,
+          "no income list (not offered or failed): no guard");
+    std::vector<IntakeRecord> other = {record("itk_00000001", "/Users/someone/income/dump")};
+    applyMountAliases(other, *none);
+    CHECK(dropIncomeFolderRoots(other, {income("x", "relative/path"), income("y", "/Users/someone/income")}, *none)
+                  .empty() &&
+              other.size() == 1,
+          "an unusable income path and a parent folder match nothing");
+    std::vector<IntakeRecord> cased = {record("itk_00000001", "/Users/someone/income/Dump")};
+    applyMountAliases(cased, *none);
+    CHECK(dropIncomeFolderRoots(cased, folders, *none).empty(), "matching stays case-sensitive");
+
+    g_context = "income-guard-aliases";
+    // The CLI reports the root under one mount of the share and the income
+    // folder under the other: both meet on the share's alias key.
+    auto aliases = MountAliases::build({MountEntry{"/Volumes/share", "//user@host-a/share", "smbfs"},
+                                        MountEntry{"/Volumes/share-1", "//user@host-b/share", "smbfs"}});
+    std::vector<IntakeRecord> shared = {record("itk_00000004", "/Volumes/share-1/income/dump"),
+                                        record("itk_00000005", "/Volumes/share-1/income/dump/Artist - Album")};
+    applyMountAliases(shared, *aliases);
+    dropped = dropIncomeFolderRoots(shared, {income("dump", "/Volumes/share/income/dump")}, *aliases);
+    CHECK(dropped.size() == 1 && dropped[0].id == "itk_00000004" && shared.size() == 1 &&
+              shared[0].id == "itk_00000005",
+          "another mount point of the same share still matches");
+
+    g_context = "income-guard-unicode";
+    std::vector<IntakeRecord> nfd = {record("itk_00000006", "/Users/someone/income/Mu\xCC\x81sica")};
+    applyMountAliases(nfd, *none);
+    dropped = dropIncomeFolderRoots(nfd, {income("musica", "/Users/someone/income/M\xC3\xBAsica")}, *none);
+    CHECK(dropped.size() == 1 && nfd.empty(), "an NFD root path meets an NFC income path");
+    std::vector<IntakeRecord> nfc = {record("itk_00000007", "/Users/someone/income/M\xC3\xBAsica")};
+    applyMountAliases(nfc, *none);
+    dropped = dropIncomeFolderRoots(nfc, {income("", "/Users/someone/income/Mu\xCC\x81sica/")}, *none);
+    CHECK(dropped.size() == 1 && nfc.empty() && dropped[0].incomeName == "/Users/someone/income/Mu\xCC\x81sica/",
+          "an NFC root path meets an NFD income path; no name: the path names it");
 }
 
 static CliError parseError(const std::string &path, const std::string &code = "E_PARSE") {
@@ -558,6 +640,7 @@ int main(void) {
         testFailureEffect();
         testRendersAlike();
         testApplyAliases();
+        testIncomeFolderGuard();
         testCarryOverUnreadable();
         testRemountChangesRows();
         testStatusLine();
