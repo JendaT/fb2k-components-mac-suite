@@ -191,12 +191,14 @@ income folder is scanned without a menu item:
   this Mac's disks is scanned once. Folders on a network share are scanned
   only when files arrive in them through this Mac.
 - **Then propose.** Releases the scan wrote as resolved are proposed in the
-  same run. Releases it left as new are not.
+  same run. Releases it left as new, or resolved but needing review, are
+  not.
 - **Ignored.** Sidecars, partial downloads (`.part`, `.download`, ...),
   Finder files such as `.DS_Store`, removals, and the files a scan or a
   Delete local copy moves around itself.
-- **One at a time.** A scan waits for a running command and blocks the
-  other command items while it runs. The reload follows when it ends.
+- **One at a time.** A scan waits for a running command (and for the swap
+  and delete after an Execute) and blocks the other command items while it
+  runs. The reload follows when it ends.
 - **Errors** go to the console only, never a dialog. A scan stopped at the
   15-minute limit is not run automatically again for that folder until
   foobar2000 restarts. A missing folder or an unmounted share is skipped.

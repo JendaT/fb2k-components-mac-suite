@@ -636,7 +636,10 @@ are CLI commands on the mutation lane.
   resolved, e.g. `/private/var/...` for `/var/...`; a share path as
   written), only while `version` lists `scan`. Without it nothing is
   counted or scanned, with one Info line per session while `auto_scan` is
-  on. Folders that only the watched-folders preference names are never
+  on. Nothing is counted or scanned either while a load leaves the
+  provider inert (doc 03 "Inert state": nothing mutating goes to that CLI,
+  as for the menu); the next load that is not inert brings the folders
+  back. Folders that only the watched-folders preference names are never
   scanned.
 - **What counts:** the watcher hands every event of each FSEvents callback
   (before the reload filter, rescans and markers included) to a pure
@@ -670,10 +673,12 @@ are CLI commands on the mutation lane.
 - **When:** 60 s after the latest counted event in that income; later
   events postpone it. A file created and not yet closed (FSEvents reports
   a content change when the writer closes the file) holds its income too,
-  for at most 30 min from when it appeared. One scan at a time, the
-  income pending longest first, and at most one pending scan per income;
-  events during an income's scan give it exactly one more, 60 s after the
-  latest. Only that income: `scan <name> --json`, never `--all` (a name
+  for at most 30 min from when it appeared. A clone (`cp -c`, `ditto`, a
+  Finder copy within one APFS volume) arrives as Created and Cloned with no
+  content change after it; it is complete when it appears and holds
+  nothing. One scan at a time, the income pending longest first, and at
+  most one pending scan per income; events during an income's scan give it
+  exactly one more, 60 s after the latest. Only that income: `scan <name> --json`, never `--all` (a name
   starting with `-` is sent as the income's absolute path from `income
   --json`, which the CLI also matches, since it would parse the name as a
   flag).
@@ -691,9 +696,12 @@ are CLI commands on the mutation lane.
   mounted share counts as present without a look. A missing folder or an
   unmounted share skips the scan (one Debug line) until the next event.
 - **Lane:** a due scan waits until the mutation lane is free (nothing
-  running, the leftover-run check done), checked every 5 s while it is
-  busy; a user command that takes the lane first goes first. The scan
-  holds the lane from its start until its exit, and on through the
+  running, the leftover-run check done, no Execute follow-up waiting for
+  its reload or running), checked every 5 s while it is busy; a user
+  command that takes the lane first goes first. The lane is free between
+  an execute run's end and its follow-up's delete step, which refuses
+  while a scan holds the lane, so a scan never starts in that gap. The
+  scan holds the lane from its start until its exit, and on through the
   propose after it. Meanwhile the menu's mutating items read
   "(scan running)", and a click that finds the lane taken logs "a
   background scan is running".
@@ -708,15 +716,18 @@ are CLI commands on the mutation lane.
   the scan's order, each once. Never a `new` root, a row with another
   status or none, a root the scan kept (`kept`: without `--force` the CLI
   never rewrites a folder that has a sidecar, so `written` holds only new
-  roots), or a root that is the income folder itself (see Income-folder
-  guard); those skipped get one Debug line. Doc 03 pins no `data` for
-  `scan`, so the reply is read leniently; a missing or mistyped member
-  adds nothing. A resolved root that needs review is proposed too (the
-  flag stays). The propose's root errors become tooltips like any
+  roots), a root that is the income folder itself (see Income-folder
+  guard), or a resolved root whose row has `needs_review` true (resolver
+  confidence 0.50-0.79: doc 01 makes only roots at 0.80 or above
+  auto-eligible for propose, and the CLI's own `propose --all-resolved`
+  skips them; proposing by id would not, so the component leaves them for
+  Propose by hand); those skipped get one Debug line. Doc 03 pins no
+  `data` for `scan`, so the reply is read leniently; a missing or mistyped
+  member adds nothing. The propose's root errors become tooltips like any
   propose's; an `E_NO_TARGET` root stays resolved. Its 10 s report is one
   Info line like the scan's, and a cap kill of the propose disables
-  nothing. Nothing to propose, or no CLI configuration (one Info line),
-  ends the run.
+  nothing. Nothing to propose, no CLI configuration or an inert provider
+  (one Info line) ends the run.
 - **End:** every path releases the lane once; a run in which a process
   ran is followed by one reload. Errors never open a sheet or alert.
 - **Log,** all Info, never an Error line: `auto-scan: scanning income
@@ -983,8 +994,9 @@ and the context menu. (v2 idea, out of scope: a dedicated intake queue panel.)
   synthetic corpus): a release lands in an income folder → the automatic
   scan about 60 s later (B12; at launch for a local income folder) → rows
   tint, a resolved release already proposed by the same run (Propose by
-  hand for one left resolved) → adjust one target via picker → approve →
-  execute → green ● → swap to library paths → delete local.
+  hand for one left resolved, e.g. one that needs review) → adjust one
+  target via picker → approve → execute → green ● → swap to library paths
+  → delete local.
 - Automatic scan (B12), in the app on the mock CLI, pending: the startup
   scan, then one reload; a copy into the income folder scans once, about
   60 s after the last of several copies; no scan for a `.part` file,
@@ -992,6 +1004,7 @@ and the context menu. (v2 idea, out of scope: a dedicated intake queue panel.)
   while it runs; the checkbox off and on again; a failing scan (exit 2)
   logs and opens nothing, and frees the lane; a gc in the income folder
   starts no scan; resolved roots the scan wrote are proposed in the same
-  run with one reload; the status bar shows the scan and its result.
+  run with one reload, except one that needs review; the status bar shows
+  the scan and its result.
   Network income folders, mount events, the open-file hold and the cap
   kill are covered by unit tests only.

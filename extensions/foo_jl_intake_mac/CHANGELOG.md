@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Status bar**: SimPlaylist shows the running command at the bottom right, with the placement count, and its result for 10 seconds; a click lists running commands and those just ended.
 - **Live updates**: Income folders are watched with FSEvents; a sidecar change or a finished command reloads the status.
 - **Automatic scan**: New files in an income folder are scanned (`intake scan <income>`) 60 s after they stop arriving, one scan at a time; income folders on this Mac are also scanned once at startup; errors go to the console only.
-- **Propose after scan**: Releases an automatic scan writes as resolved are proposed in the same run, followed by one reload.
+- **Propose after scan**: Releases an automatic scan writes as resolved are proposed in the same run, unless they need review, followed by one reload.
 - **Income folder guard**: A release root that is an income folder itself (loose files at its top level) is ignored, so stray rows under the folder are not tinted or acted on.
 - **Network shares**: `mac-volume://` rows match, also when a share is mounted twice; a stalled volume is skipped instead of blocking; rows with decomposed (accented) names away from every release skip Unicode normalisation.
 - **Share links**: Rows kept under a local symlink to the music share (`file://<link>/...`, the plorg shadow link) match the share's releases; the link is read without touching the share.

@@ -218,7 +218,10 @@ fallback). The loader pairs each one with the spelling FSEvents reports,
 taken from the watch set it builds on its own queue (`autoScanIncomes`:
 `/private/var/...` for `/var/...` on a local disk, a share path as
 written), and hands the list over with every load attempt
-(`LoaderStatus::autoScanIncomes`). Folders only in `watch_folders` are
+(`LoaderStatus::autoScanIncomes`). A load that leaves the provider inert
+hands none (`autoScanAfterLoad`): after a failed version gate the status
+still holds the last passing version's commands and income folders, and
+nothing mutating may go to that CLI. Folders only in `watch_folders` are
 never scanned.
 
 **From events to a scan.**
@@ -243,11 +246,14 @@ never scanned.
   `*.unpacked.partial`, `.intake-gc-*`.
 - **Quiet period.** An income is due 60 s after its latest counted event.
   Later events postpone it.
-- **Open files.** A file event with Created and none of Modified, Renamed
-  or Removed marks the path open (FSEvents reports the content change when
-  the writer closes the file); a later event for the path with any of them
-  closes it. An open path holds its income, for at most 30 min from when
-  it opened.
+- **Open files.** A file event with Created and none of Modified, Renamed,
+  Removed or Cloned marks the path open (FSEvents reports the content
+  change when the writer closes the file); a later event for the path with
+  any of them closes it. An open path holds its income, for at most 30 min
+  from when it opened. A clone (`cp -c`, `ditto`, a Finder copy within one
+  APFS volume) arrives as `Cloned`, then `Created Cloned`, and no Modified
+  ever follows (checked with a scratch FSEvents probe on APFS), so Cloned
+  counts as closed.
 - **One at a time** (`AutoScanScheduler`, main thread). One job in flight
   (presence check or scan); the income pending longest first; one pending
   entry per income. Events during an income's job give it exactly one more
@@ -274,10 +280,13 @@ share, a symlink loop): no scan, one Debug line.
 **The run** (`actionsStartAutoScan`, main thread).
 
 - It starts only when the lane is free (not after quit, the leftover-run
-  scan done, nothing holding the lane) and the CLI is configured. It takes
-  the lane as `LaneHolder::Scan`, begins its status-bar entry and starts
-  `scan <name> --json` (class Mutating: output files in the cache folder,
-  reported at 10 s, killed at the 15-minute cap).
+  scan done, nothing holding the lane, no Execute follow-up waiting for its
+  reload or running: the lane is free between those steps, and the
+  follow-up's delete refuses while a scan holds it), the CLI is configured
+  and the provider is not inert. It takes the lane as `LaneHolder::Scan`,
+  begins its status-bar entry and starts `scan <name> --json` (class
+  Mutating: output files in the cache folder, reported at 10 s, killed at
+  the 15-minute cap).
 - At 10 s: one Info line, no tooltip, no reload; the entry stays.
 - Its exit (`autoScanOutcome`): `E_NO_CLI` ends the run; the cap kill ends
   it and the income is not scanned automatically again this session (one
@@ -285,9 +294,11 @@ share, a symlink loop): no scan, one Debug line.
 - **The propose after it** (`proposeAfterScan`): after exit 0 or 1, the
   rows of the reply's `data[].written` with a string id and `status`
   exactly `resolved`, each once, in the scan's order, except a root that is
-  the income folder itself, go to `propose <ids>` on the same lane token
-  (`LaneRun::ProposeAfterScan`). `data` is not pinned by doc 03 and is read
-  leniently. The lane stays `LaneHolder::Scan`, so the menu keeps
+  the income folder itself and one whose row has `needs_review` true (doc
+  01: only 0.80 and above is auto-eligible; the CLI's `--all-resolved`
+  skips them, proposing by id would not), go to `propose <ids>` on the same
+  lane token (`LaneRun::ProposeAfterScan`). `data` is not pinned by doc 03
+  and is read leniently. The lane stays `LaneHolder::Scan`, so the menu keeps
   "(scan running)". The propose's root errors become tooltips (baseline
   resolved); its console line and its 10 s report are Info.
 - **The end** (`endAutoScanRun`, the only path that lets go of the token):
@@ -329,11 +340,13 @@ checks the stopped flag.
 [intake] auto-scan: local cancelled
 [intake] auto-scan: local not started (<refusal>)
 [intake] auto-scan: local not started: intake is not running or has no CLI path
+[intake] auto-scan: local not started: intake is inert: <reason>
 [intake] auto-scan: income local is not scanned automatically again this session (its scan was stopped at the 15-minute cap)
 [intake] propose: starting after auto-scan of local for 2 roots: itk_0000000a itk_0000000b
 [intake] propose: still running after auto-scan of local (E_CLI_TIMEOUT: no reply after 10 s; the propose continues)
 [intake] propose: not started after auto-scan of local (<refusal>)
 [intake] propose: not run after auto-scan of local: intake is not running or has no CLI path
+[intake] propose: not run after auto-scan of local: intake is inert: <reason>
 [intake] auto-scan: the CLI 0.2.1 does not offer scan; income folders are not scanned automatically
 [intake] auto-scan off: income folders are no longer scanned automatically
 [intake] auto-scan on: new files in an income folder are scanned
@@ -345,7 +358,7 @@ Debug: an income that became pending (`auto-scan: new files in income
 local; scanning it once they stopped for 60 s`), each income's startup
 classification, a missing folder, each gc mute, and the roots written but
 not proposed (`auto-scan: local: no propose for 2 roots: itk_0000000c
-(new), ...`).
+(new), itk_0000000d (needs review)`).
 
 **Limits.**
 
