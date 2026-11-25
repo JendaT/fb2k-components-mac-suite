@@ -6,11 +6,13 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
-import type { IdentCandidate } from "./types.ts";
+import { CLI_VERSION, type IdentCandidate } from "./types.ts";
 import type { SimilarArtist } from "./assign.ts";
 import { sha1Hex } from "./util.ts";
 
-const USER_AGENT = "jl-intake/0.1 (+https://github.com/jendalen)";
+// The tool name and version only: no URL, no account handle, nothing that
+// identifies the person running it reaches Discogs or Last.fm.
+const USER_AGENT = `jl-intake/${CLI_VERSION}`;
 
 export interface DiscogsSearchQuery {
   artist?: string;
