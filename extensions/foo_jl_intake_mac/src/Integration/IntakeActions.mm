@@ -875,20 +875,21 @@ void startOnQueue(uint64_t token, std::shared_ptr<const CliConfig> config, std::
 //
 // A propose of more than kProposeChunkSize roots (the user's Propose, the
 // propose after an assign, the auto-propose after a scan) runs as a chain
-// of `propose` calls of up to 5 roots (IntakeProposeChain), each its own
-// lane run (LaneRun::ProposeChunk, LaneHolder::Mutating): the lane is free
-// between chunks, and a chunk killed at the hard cap stops the chain having
-// lost only that chunk. One chain at a time; roots asked for while it runs
-// join it (chainJoin). Each chunk starts after a refresh that succeeded:
-// the one after the chunk before, the one chainJoin asks for when roots
-// join while no chunk runs (a new chain included), or the one after a wait
-// for the lane, so the status re-check sees what the last call, the scan,
-// the assign or the lane's other holder wrote; a refresh that fails stops
-// the chain (its statuses would be the old view's). A busy lane, or an
-// Execute follow-up still to run (as actionsLaneFree), is waited for with a
-// 2 s retry (one timer at most, one Info line per wait), never a queued
-// call. A chain with nothing left finishes without the lane. The status
-// bar has one entry for the whole chain (activityChainKey).
+// of `propose` calls of up to kProposeChunkSize (4) roots
+// (IntakeProposeChain), each its own lane run (LaneRun::ProposeChunk,
+// LaneHolder::Mutating): the lane is free between chunks, and a chunk
+// killed at the hard cap stops the chain having lost only that chunk. One
+// chain at a time; roots asked for while it runs join it (chainJoin). Each
+// chunk starts after a refresh that succeeded: the one after the chunk
+// before, the one chainJoin asks for when roots join while no chunk runs
+// (a new chain included), or the one after a wait for the lane, so the
+// status re-check sees what the last call, the scan, the assign or the
+// lane's other holder wrote; a refresh that fails stops the chain (its
+// statuses would be the old view's). A busy lane, or an Execute follow-up
+// still to run (as actionsLaneFree), is waited for with a 2 s retry (one
+// timer at most, one Info line per wait), never a queued call. A chain
+// with nothing left finishes without the lane. The status bar has one
+// entry for the whole chain (activityChainKey).
 
 // The lane as the chain may take it: as actionsLaneFree (the caller checks
 // st.stopped): between an execute run's end and its follow-up's gc the
@@ -916,7 +917,7 @@ std::string chainLaneHolderText() {
     return "busy";
 }
 
-// "chunk 2 of 10" (the count is the model's estimate now).
+// "chunk 2 of 13" (the count is the model's estimate now).
 std::string chainChunkText(size_t number) {
     return "chunk " + std::to_string(number) + " of " + std::to_string(actionsState().chain.chunkCount());
 }

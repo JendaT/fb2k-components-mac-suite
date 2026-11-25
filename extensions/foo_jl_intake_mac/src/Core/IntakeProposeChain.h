@@ -10,7 +10,8 @@
 //  chunks and a kill loses at most one chunk. Integration (IntakeActions)
 //  runs the chain for a propose of more than kProposeChunkSize roots: the
 //  user's Propose, the propose after an assign and the one after an
-//  auto-scan; 5 or fewer keep their single call. Pure: no I/O.
+//  auto-scan; kProposeChunkSize (4) or fewer keep their single call. Pure:
+//  no I/O.
 //
 //  The roots (add). In the order added; a root is known by its id, and one
 //  already pending, in the chunk in flight or handled by this chain (done,
@@ -55,8 +56,8 @@
 //  its label when it is one). A chain whose every root was skipped
 //  proposed nothing: failed, "all 49 albums skipped (not resolved now)",
 //  never a check. Its detail is summaryLine():
-//   "propose: done for 49 roots in 10 chunks"
-//   "propose: done for 46 of 49 roots in 10 chunks; failed: itk_a itk_b itk_c"
+//   "propose: done for 49 roots in 13 chunks"
+//   "propose: done for 46 of 49 roots in 13 chunks; failed: itk_a itk_b itk_c"
 //  plus "; skipped: itk_x (proposed), itk_y (not in the view)" when roots
 //  were skipped ("propose: nothing proposed; skipped: ..." when every root
 //  was), and "; <reason>" when chunks reported an error but failed no
@@ -65,10 +66,10 @@
 //  failed none), the reason is the first failing chunk's own
 //  (activityResultFor of that chunk: "cancelled", the envelope's error).
 //
-//  A stop (stopLine): "propose: stopped after chunk 9 of 10 (<reason>)", or
+//  A stop (stopLine): "propose: stopped after chunk 9 of 13 (<reason>)", or
 //  "stopped before the first chunk (<reason>)" when none was recorded, then
-//  the tally so far ("; done for 34 of 40 roots; failed: <ids>", the
-//  skipped) and "; 4 roots not proposed: <ids>" (notProposed()).
+//  the tally so far ("; done for 34 of 36 roots; failed: <ids>", the
+//  skipped) and "; 13 roots not proposed: <ids>" (notProposed()).
 //
 //  Progress (progress): done of total for the status bar's n/m, and the
 //  root the chunk in flight starts with (its album is the one worked on
@@ -107,8 +108,11 @@ namespace intake {
 
 // The most roots one `propose` call of a chain names. A propose of more
 // roots than this goes through the chain; one of this many or fewer stays a
-// single call.
-inline constexpr size_t kProposeChunkSize = 5;
+// single call. Why 4: the CLI's per-root time limit (a shim timeout,
+// default 180 s) times 4 is 720 s, under the 15-minute hard cap; 5 times
+// 180 s reaches it exactly. Change this one constant when that limit
+// changes: Integration, the log lines and the tests follow it.
+inline constexpr size_t kProposeChunkSize = 4;
 
 // A root's current status by id; nullopt when the current view has no such
 // root.
@@ -197,7 +201,7 @@ public:
 
 private:
     bool known(const std::string &id) const { return known_.count(id) != 0; }
-    // "done for 46 of 49 roots[ in 10 chunks]; failed: <ids>[; skipped: ...]"
+    // "done for 46 of 49 roots[ in 13 chunks]; failed: <ids>[; skipped: ...]"
     std::string tallyText(bool withChunks) const;
 
     std::vector<MutationRoot> added_;         // every root added, in order

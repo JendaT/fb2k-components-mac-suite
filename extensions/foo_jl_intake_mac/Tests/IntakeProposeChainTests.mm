@@ -3,8 +3,9 @@
 //  foo_jl_intake_mac
 //
 //  Unit tests for IntakeProposeChain (B12: a propose of many roots in chunks
-//  of 5): add (order, repeats against pending, in-flight and handled roots,
-//  the total), nextChunk (the size, the current status re-check, skipped
+//  of kProposeChunkSize): add (order, repeats against pending, in-flight and
+//  handled roots, the total), nextChunk (the size: fewer, exactly, one more,
+//  several chunks; the current status re-check, skipped
 //  roots and their Debug line, nothing while a chunk is in flight), record
 //  (done and failed per root, roots the call did not name), the stop
 //  decision per envelope outcome (the hard-cap kill through
@@ -15,8 +16,10 @@
 //  roots of a join that already failed, finished() after the last chunk
 //  (the chain ends without another chunk) and the label of the end. Also
 //  through summarizeMutation on synthetic envelopes (a hard-cap kill, E_NO_CLI)
-//  and the ActivityModel texts, as Integration uses them. Synthetic ids,
-//  paths and labels only.
+//  and the ActivityModel texts, as Integration uses them. Chunk boundaries
+//  and counts are written in terms of kProposeChunkSize (K below), so the
+//  suite follows the constant (any K of 3 or more). Synthetic ids, paths
+//  and labels only.
 //
 // TEST_DEPS: src/Core/IntakeMutationResult.mm src/Core/IntakeEnvelope.mm src/Core/IntakeErrorMap.mm
 // TEST_DEPS: src/Core/IntakePath.mm src/Core/IntakeLog.mm src/Core/IntakeCommandArgs.mm
@@ -40,6 +43,20 @@ using namespace intake;
 namespace {
 
 const std::string kDots = "\xE2\x80\xA6";  // U+2026
+
+// The chunk size; the tests below put a failed or skipped root at ids 2
+// and 3 inside the first chunk.
+constexpr int K = static_cast<int>(kProposeChunkSize);
+static_assert(K >= 3, "the tests assume chunks of at least 3 roots");
+
+// How many chunks n resolved roots take.
+size_t chunksFor(size_t n) {
+    return (n + kProposeChunkSize - 1) / kProposeChunkSize;
+}
+
+std::string countText(size_t n, const char *one, const char *many) {
+    return std::to_string(n) + " " + (n == 1 ? one : many);
+}
 
 std::string idFor(int n) {
     char buf[16];
@@ -66,6 +83,33 @@ std::vector<MutationRoot> range(int from, int to) {
 std::vector<std::string> ids(std::initializer_list<int> numbers) {
     std::vector<std::string> out;
     for (int n : numbers) out.push_back(idFor(n));
+    return out;
+}
+
+std::vector<std::string> idRange(int from, int to) {
+    std::vector<std::string> out;
+    for (int n = from; n <= to; n++) out.push_back(idFor(n));
+    return out;
+}
+
+std::vector<std::string> concat(std::vector<std::string> a, const std::vector<std::string> &b) {
+    a.insert(a.end(), b.begin(), b.end());
+    return a;
+}
+
+// "itk_1 itk_2 ..." (the lines' id lists).
+std::string spaced(const std::vector<std::string> &list) {
+    std::string out;
+    for (const std::string &id : list) out += (out.empty() ? "" : " ") + id;
+    return out;
+}
+
+// The ids of `chunk` but `except`.
+std::vector<std::string> idsBut(const ProposeChunk &chunk, const std::string &except) {
+    std::vector<std::string> out;
+    for (const std::string &id : chunk.ids()) {
+        if (id != except) out.push_back(id);
+    }
     return out;
 }
 
@@ -133,16 +177,16 @@ static void testAdd() {
         size_t added;
         size_t total;
     };
-    // After the first chunk: 1..5 in flight, 6 pending; then 1 and 2 done,
-    // 3 failed, 4 and 5 skipped would be handled.
+    // After the first chunk: 1..K in flight, K+1 pending; then 3 failed,
+    // the rest of the chunk done, K+1 skipped.
     ProposeChain d;
-    d.add(range(1, 6));
+    d.add(range(1, K + 1));
     const ProposeChunk first = d.nextChunk(kAllResolved);
     const Row table[] = {
-        {"a root in flight", roots({3}), 0, 6},
-        {"a pending root", roots({6}), 0, 6},
-        {"two new, one in flight", roots({7, 1, 8}), 2, 8},
-        {"nothing new", roots({7, 8}), 0, 8},
+        {"a root in flight", roots({3}), 0, K + 1},
+        {"a pending root", roots({K + 1}), 0, K + 1},
+        {"two new, one in flight", roots({K + 2, 1, K + 3}), 2, K + 3},
+        {"nothing new", roots({K + 2, K + 3}), 0, K + 3},
     };
     for (const Row &row : table) {
         g_context = std::string("add/") + row.what;
@@ -151,15 +195,15 @@ static void testAdd() {
     }
     g_context = "add/handled";
     MutationOutcome partial;
-    partial.succeeded = ids({1, 2, 4, 5});
+    partial.succeeded = idsBut(first, idFor(3));
     partial.rootErrors.push_back({idFor(3), "propose: No target found"});
     d.record(first.roots, partial);
-    CHECK_EQ(d.add(roots({1, 3, 9})), 1, "done and failed roots do not join again");
+    CHECK_EQ(d.add(roots({1, 3, K + 4})), 1, "done and failed roots do not join again");
     Statuses gone;
-    gone.except[idFor(6)] = IntakeStatus::Proposed;
+    gone.except[idFor(K + 1)] = IntakeStatus::Proposed;
     d.nextChunk(gone.fn());
-    CHECK_EQ(d.add(roots({6})), 0, "a skipped root does not join again");
-    CHECK_EQ(d.total(), 9, "the total counts every root added");
+    CHECK_EQ(d.add(roots({K + 1})), 0, "a skipped root does not join again");
+    CHECK_EQ(d.total(), K + 4, "the total counts every root added");
     CHECK(d.firstRoot()->id == idFor(1), "the first root stays");
 
     // failedAmong: the roots of a join that this chain already failed.
@@ -170,8 +214,8 @@ static void testAdd() {
     };
     const FailedRow failedTable[] = {
         {"a failed root", roots({3}), ids({3})},
-        {"done, skipped, pending and new roots", roots({1, 6, 9, 10}), {}},
-        {"in the join's order, each once", roots({10, 3, 3, 1}), ids({3})},
+        {"done, skipped, in-flight and new roots", roots({1, K + 1, K + 4, K + 5}), {}},
+        {"in the join's order, each once", roots({K + 5, 3, 3, 1}), ids({3})},
         {"nothing", {}, {}},
     };
     for (const FailedRow &row : failedTable) {
@@ -191,14 +235,16 @@ static void testNextChunk() {
         std::vector<std::string> pendingAfter;
     };
     const Row table[] = {
-        {"five of seven", range(1, 7), {}, ids({1, 2, 3, 4, 5}), {}, ids({6, 7})},
-        {"fewer than five", range(1, 3), {}, ids({1, 2, 3}), {}, {}},
+        {"fewer than the size", range(1, K - 1), {}, idRange(1, K - 1), {}, {}},
+        {"exactly the size", range(1, K), {}, idRange(1, K), {}, {}},
+        {"the size plus one", range(1, K + 1), {}, idRange(1, K), {}, ids({K + 1})},
+        {"the size plus two", range(1, K + 2), {}, idRange(1, K), {}, ids({K + 1, K + 2})},
         {"skipped roots are passed over",
-         range(1, 8),
+         range(1, K + 3),
          {{idFor(2), IntakeStatus::Proposed}, {idFor(4), std::nullopt}},
-         ids({1, 3, 5, 6, 7}),
+         concat(ids({1, 3}), idRange(5, K + 2)),
          {idFor(2) + " (proposed)", idFor(4) + " (not in the view)"},
-         ids({8})},
+         ids({K + 3})},
         {"every other status is skipped",
          range(1, 6),
          {{idFor(1), IntakeStatus::New},
@@ -250,15 +296,22 @@ static void testNextChunk() {
     CHECK(none.nextChunk(kAllResolved).skippedLine.empty(), "nothing skipped: no line");
 
     g_context = "next-chunk/in-flight";
+    // Several chunks: two full ones, then 2 roots.
     ProposeChain f;
-    f.add(range(1, 12));
+    f.add(range(1, 2 * K + 2));
     const ProposeChunk a = f.nextChunk(kAllResolved);
     const ProposeChunk b = f.nextChunk(kAllResolved);
-    CHECK(a.roots.size() == 5 && b.roots.empty() && b.number == 0, "nothing while a chunk is in flight");
-    CHECK_EQ(f.pendingCount(), 7, "the pending roots stay");
+    CHECK(a.roots.size() == kProposeChunkSize && b.roots.empty() && b.number == 0,
+          "nothing while a chunk is in flight");
+    CHECK_EQ(f.pendingCount(), K + 2, "the pending roots stay");
     f.record(a.roots, succeededAll(a));
     const ProposeChunk next = f.nextChunk(kAllResolved);
-    CHECK(next.number == 2 && next.ids() == ids({6, 7, 8, 9, 10}), "the second chunk, in order");
+    CHECK(next.number == 2 && next.ids() == idRange(K + 1, 2 * K), "the second chunk, in order");
+    f.record(next.roots, succeededAll(next));
+    const ProposeChunk last = f.nextChunk(kAllResolved);
+    CHECK(last.number == 3 && last.ids() == ids({2 * K + 1, 2 * K + 2}), "the last chunk: what is left");
+    f.record(last.roots, succeededAll(last));
+    CHECK(f.finished() && f.chunksRecorded() == 3 && f.done() == f.total(), "three chunks, every root done");
 
     g_context = "next-chunk/no-lookup";
     ProposeChain n;
@@ -269,33 +322,36 @@ static void testNextChunk() {
 
 static void testRecord() {
     g_context = "record";
+    // The first chunk (1..K): 2 fails with an error, K without one.
     ProposeChain c;
-    c.add(range(1, 7));
+    c.add(range(1, K + 2));
     const ProposeChunk chunk = c.nextChunk(kAllResolved);
+    const std::vector<std::string> done = concat(ids({1}), idRange(3, K - 1));
     MutationOutcome o;
-    o.succeeded = ids({1, 3, 5});
+    o.succeeded = done;
     o.rootErrors.push_back({idFor(2), "propose: No target found"});
-    o.failedWithoutError.push_back(idFor(4));
+    o.failedWithoutError.push_back(idFor(K));
     o.isError = true;
     c.record(chunk.roots, o);
-    CHECK(c.succeeded() == ids({1, 3, 5}), "done: in data");
-    CHECK(c.failed() == ids({2, 4}), "failed: the rest, in order");
+    CHECK(c.succeeded() == done, "done: in data");
+    CHECK(c.failed() == ids({2, K}), "failed: the rest, in order");
     CHECK(!c.inFlight() && c.chunksRecorded() == 1, "nothing in flight after");
-    CHECK_EQ(c.done(), 5, "done counts handled roots");
-    CHECK_EQ(c.named(), 5, "named: done and failed");
+    CHECK_EQ(c.done(), K, "done counts handled roots");
+    CHECK_EQ(c.named(), K, "named: done and failed");
+    CHECK(c.pendingIds() == ids({K + 1, K + 2}), "the roots after the chunk stay pending");
 
     g_context = "record/not-named";
     ProposeChain d;
-    d.add(range(1, 7));
+    d.add(range(1, K + 2));
     const ProposeChunk dc = d.nextChunk(kAllResolved);
-    // The call named only the first three (a caller bug): the other two go
-    // back to the front.
-    const std::vector<MutationRoot> named(dc.roots.begin(), dc.roots.begin() + 3);
+    // The call named all but the chunk's last root (a caller bug): that one
+    // goes back to the front.
+    const std::vector<MutationRoot> named(dc.roots.begin(), dc.roots.end() - 1);
     MutationOutcome ok;
-    ok.succeeded = ids({1, 2, 3});
+    ok.succeeded = idRange(1, K - 1);
     d.record(named, ok);
-    CHECK(d.pendingIds() == ids({4, 5, 6, 7}), "roots in flight the call did not name are pending again");
-    CHECK_EQ(d.done(), 3, "only the named ones are handled");
+    CHECK(d.pendingIds() == idRange(K, K + 2), "roots in flight the call did not name are pending again");
+    CHECK_EQ(d.done(), K - 1, "only the named ones are handled");
 
     g_context = "record/nothing-in-flight";
     ProposeChain e;
@@ -306,14 +362,14 @@ static void testRecord() {
     g_context = "record/summary";
     // As Integration calls it: summarizeMutation on the chunk's envelope.
     ProposeChain s;
-    s.add(range(1, 6));
+    s.add(range(1, K + 1));
     const ProposeChunk sc = s.nextChunk(kAllResolved);
     const EnvelopeResult partial =
-        env(CliOutcome::Partial, rows(ids({1, 2, 4, 5})),
+        env(CliOutcome::Partial, rows(idsBut(sc, idFor(3))),
             {err("E_NO_TARGET", "no collection matched", "/income/fixture/" + idFor(3))});
     const MutationOutcome po = summarizeMutation(CliCommand::Propose, sc.roots, partial);
     s.record(sc.roots, po);
-    CHECK(s.succeeded() == ids({1, 2, 4, 5}) && s.failed() == ids({3}), "exit 1: the subset in data");
+    CHECK(s.succeeded() == idsBut(sc, idFor(3)) && s.failed() == ids({3}), "exit 1: the subset in data");
     CHECK(!proposeChainStopFor(partial).stop, "and the chain goes on");
 }
 
@@ -371,8 +427,9 @@ static void testStop() {
 
 static void testResult() {
     g_context = "result";
-    // 49 roots: 10 chunks, each handed out against a view where every root
-    // is resolved; `fail` names the roots whose propose failed.
+    // `count` roots in chunks (49 roots: 13 chunks of 4), each handed out
+    // against a view where every root is resolved except those in
+    // `except`; `fail` names the roots whose propose failed.
     auto run = [](size_t count, const std::map<std::string, std::string> &fail,
                   const std::map<std::string, std::optional<IntakeStatus>> &except) {
         ProposeChain c;
@@ -398,11 +455,12 @@ static void testResult() {
         return c;
     };
 
+    const std::string in49 = " in " + countText(chunksFor(49), "chunk", "chunks");  // " in 13 chunks"
     ProposeChain all = run(49, {}, {});
     ActivityResult r = all.result();
-    CHECK(all.finished() && all.chunksRecorded() == 10, "49 roots in 10 chunks");
+    CHECK(all.finished() && all.chunksRecorded() == chunksFor(49), "49 roots in ceil(49 / K) chunks");
     CHECK(r.succeeded && r.reason.empty(), "all done: succeeded");
-    CHECK(all.summaryLine() == "propose: done for 49 roots in 10 chunks", "the summary line");
+    CHECK(all.summaryLine() == "propose: done for 49 roots" + in49, "the summary line");
 
     const std::map<std::string, std::string> three = {{idFor(7), "propose: No target found"},
                                                       {idFor(23), "propose: No target found"},
@@ -410,7 +468,7 @@ static void testResult() {
     ProposeChain partial = run(49, three, {});
     r = partial.result();
     CHECK(!r.succeeded && r.reason == "3 of 49 albums", "partial: Propose failed: 3 of 49 albums");
-    CHECK(r.detail == "propose: done for 46 of 49 roots in 10 chunks; failed: " + idFor(7) + " " + idFor(23) + " " +
+    CHECK(r.detail == "propose: done for 46 of 49 roots" + in49 + "; failed: " + idFor(7) + " " + idFor(23) + " " +
                           idFor(41),
           "its detail names the failed roots");
 
@@ -420,11 +478,15 @@ static void testResult() {
     r = none.result();
     CHECK(!r.succeeded && r.reason == "No target found", "every root failed: the first root's error");
 
+    // Skipped roots are passed over while a chunk fills: the 10 resolved
+    // ones take ceil(10 / K) chunks.
     ProposeChain skipped = run(12, {{idFor(3), "propose: No target found"}},
                                {{idFor(5), IntakeStatus::Proposed}, {idFor(9), std::nullopt}});
     r = skipped.result();
     CHECK(skipped.named() == 10 && !r.succeeded && r.reason == "1 of 10 albums", "skipped roots count neither way");
-    CHECK(skipped.summaryLine() == "propose: done for 9 of 10 roots in 2 chunks; failed: " + idFor(3) +
+    CHECK(skipped.chunksRecorded() == chunksFor(10), "the skipped take no room in a chunk");
+    CHECK(skipped.summaryLine() == "propose: done for 9 of 10 roots in " +
+                                       countText(chunksFor(10), "chunk", "chunks") + "; failed: " + idFor(3) +
                                        "; skipped: " + idFor(5) + " (proposed), " + idFor(9) + " (not in the view)",
           "the skipped in the summary, with why");
 
@@ -469,9 +531,9 @@ static void testResult() {
 
     g_context = "result/chunk-error";
     // A chunk whose call reported an error but failed no root (exit 1 with
-    // every id in data).
+    // every id in data), then the last root in a chunk of its own.
     ProposeChain c;
-    c.add(range(1, 6));
+    c.add(range(1, K + 1));
     ProposeChunk chunk = c.nextChunk(kAllResolved);
     const EnvelopeResult odd = env(CliOutcome::Partial, rows(chunk.ids()), {err("E_JOURNAL", "journal lagging")});
     c.record(chunk.roots, summarizeMutation(CliCommand::Propose, chunk.roots, odd));
@@ -480,7 +542,8 @@ static void testResult() {
     r = c.result();
     CHECK(!r.succeeded, "the chunk's error keeps the cross");
     CHECK(r.reason == "journal lagging", "its own reason (the envelope's error as summarizeMutation renders it)");
-    CHECK(c.summaryLine() == "propose: done for 6 roots in 2 chunks; journal lagging", "the summary, then the reason");
+    CHECK(c.summaryLine() == "propose: done for " + std::to_string(K + 1) + " roots in 2 chunks; journal lagging",
+          "the summary, then the reason");
 
     g_context = "result/without-error";
     // Every failed root failed without an error (a cancelled call).
@@ -510,28 +573,32 @@ static void testStopLine() {
     };
     for (const Row &row : table) {
         g_context = std::string("stop-line/") + row.what;
-        // 14 roots: chunk 1 proposes 4 and fails 1, chunk 2 stops the chain.
+        // 3K - 1 roots: chunk 1 fails 3 and proposes the rest, chunk 2 stops
+        // the chain, K - 1 roots are left (one more chunk: "of 3").
         ProposeChain c;
-        c.add(range(1, 14));
+        c.add(range(1, 3 * K - 1));
         ProposeChunk chunk = c.nextChunk(kAllResolved);
         const EnvelopeResult partial =
-            env(CliOutcome::Partial, rows(ids({1, 2, 4, 5})),
+            env(CliOutcome::Partial, rows(idsBut(chunk, idFor(3))),
                 {err("E_NO_TARGET", "no collection matched", "/income/fixture/" + idFor(3))});
         c.record(chunk.roots, summarizeMutation(CliCommand::Propose, chunk.roots, partial));
         chunk = c.nextChunk(kAllResolved);
         const EnvelopeResult stopped = env(row.outcome, nil, row.errors);
         const MutationOutcome o = summarizeMutation(CliCommand::Propose, chunk.roots, stopped);
-        CHECK(o.succeeded.empty() && o.rootErrors.size() == 5, "every root of the chunk failed, with the error");
+        CHECK(o.succeeded.empty() && o.rootErrors.size() == kProposeChunkSize,
+              "every root of the chunk failed, with the error");
         c.record(chunk.roots, o);
         const ProposeChainStop stop = proposeChainStopFor(stopped);
         CHECK(stop.stop && stop.reason == row.reason, "it stops the chain");
-        CHECK(c.failed() == ids({3, 6, 7, 8, 9, 10}), "the chunk's roots count as failed");
-        CHECK(c.notProposed() == ids({11, 12, 13, 14}), "not proposed: the pending roots");
-        CHECK(c.stopLine(stop.reason) == "propose: stopped after chunk 2 of 3 (" + row.reason +
-                                             "); done for 4 of 10 roots; failed: " + idFor(3) + " " + idFor(6) + " " +
-                                             idFor(7) + " " + idFor(8) + " " + idFor(9) + " " + idFor(10) +
-                                             "; 4 roots not proposed: " + idFor(11) + " " + idFor(12) + " " +
-                                             idFor(13) + " " + idFor(14),
+        const std::vector<std::string> failed = concat(ids({3}), idRange(K + 1, 2 * K));
+        const std::vector<std::string> left = idRange(2 * K + 1, 3 * K - 1);
+        CHECK(c.failed() == failed, "the chunk's roots count as failed");
+        CHECK(c.notProposed() == left, "not proposed: the pending roots");
+        CHECK(c.stopLine(stop.reason) == "propose: stopped after chunk 2 of 3 (" + row.reason + "); done for " +
+                                             std::to_string(K - 1) + " of " + std::to_string(2 * K) +
+                                             " roots; failed: " + spaced(failed) + "; " +
+                                             countText(left.size(), "root", "roots") +
+                                             " not proposed: " + spaced(left),
               "the stop line: the tally so far, then the roots not proposed");
     }
 
@@ -542,21 +609,22 @@ static void testStopLine() {
         std::map<std::string, std::optional<IntakeStatus>> except;
         std::string line;
     };
+    // K + 2 roots; with 2 skipped, the first chunk is 1, 3..K+1 and K+2 is
+    // left (one more chunk: "of 2").
+    const std::string allLeft = std::to_string(K + 2) + " roots not proposed: " + spaced(idRange(1, K + 2));
     const LineRow lines[] = {
         {"before the first chunk", 0, false, {},
-         "propose: stopped before the first chunk (intake is inert: fixture); 7 roots not proposed: " + idFor(1) + " " +
-             idFor(2) + " " + idFor(3) + " " + idFor(4) + " " + idFor(5) + " " + idFor(6) + " " + idFor(7)},
+         "propose: stopped before the first chunk (intake is inert: fixture); " + allLeft},
         {"the first chunk refused", 0, true, {},
-         "propose: stopped before the first chunk (intake is inert: fixture); 7 roots not proposed: " + idFor(1) + " " +
-             idFor(2) + " " + idFor(3) + " " + idFor(4) + " " + idFor(5) + " " + idFor(6) + " " + idFor(7)},
+         "propose: stopped before the first chunk (intake is inert: fixture); " + allLeft},
         {"after a chunk, with a skipped root", 1, false, {{idFor(2), IntakeStatus::Proposed}},
-         "propose: stopped after chunk 1 of 2 (intake is inert: fixture); done for 5 roots; skipped: " + idFor(2) +
-             " (proposed); 1 root not proposed: " + idFor(7)},
+         "propose: stopped after chunk 1 of 2 (intake is inert: fixture); done for " + std::to_string(K) +
+             " roots; skipped: " + idFor(2) + " (proposed); 1 root not proposed: " + idFor(K + 2)},
     };
     for (const LineRow &row : lines) {
         g_context = std::string("stop-line/") + row.what;
         ProposeChain c;
-        c.add(range(1, 7));
+        c.add(range(1, K + 2));
         Statuses s;
         s.except = row.except;
         for (int i = 0; i < row.done; i++) {
@@ -572,8 +640,9 @@ static void testStopLine() {
 // without the lane, a view or another chunk; and the end's label.
 static void testEnd() {
     g_context = "end/finished";
+    // A full chunk, then 2 roots.
     ProposeChain c;
-    c.add(range(1, 7));
+    c.add(range(1, K + 2));
     ProposeChunk chunk = c.nextChunk(kAllResolved);
     c.record(chunk.roots, succeededAll(chunk));
     CHECK(!c.finished(), "roots pending: not finished");
@@ -581,7 +650,7 @@ static void testEnd() {
     CHECK(!c.finished() && c.inFlight(), "the last chunk in flight: not finished");
     c.record(chunk.roots, succeededAll(chunk));
     CHECK(c.finished() && c.pendingCount() == 0 && !c.inFlight(), "the last chunk recorded: finished");
-    CHECK(c.result().succeeded && c.named() == 7, "the result at once");
+    CHECK(c.result().succeeded && c.named() == kProposeChunkSize + 2, "the result at once");
 
     struct Row {
         const char *what;
@@ -621,29 +690,41 @@ static void testEnd() {
 
 static void testProgress() {
     g_context = "progress";
+    // Three full chunks.
     ProposeChain c;
-    c.add(range(1, 12));
+    c.add(range(1, 3 * K));
     ProposeChainProgress p = c.progress();
-    CHECK(p.done == 0 && p.total == 12 && p.current.id.empty(), "nothing yet");
+    CHECK(p.done == 0 && p.total == 3 * kProposeChunkSize && p.current.id.empty(), "nothing yet");
+    CHECK(c.chunksStarted() == 0 && c.chunkCount() == 3, "the estimate before the first chunk");
     ProposeChunk chunk = c.nextChunk(kAllResolved);
     p = c.progress();
     CHECK(p.done == 0 && p.current.id.empty(), "the first chunk: no current root (the plain line)");
     CHECK(c.chunksStarted() == 1 && c.chunkCount() == 3, "chunk 1 of 3");
     c.record(chunk.roots, succeededAll(chunk));
     p = c.progress();
-    CHECK(p.done == 5 && p.total == 12 && p.current.id.empty(), "between chunks: 5/12, no current root");
+    CHECK(p.done == kProposeChunkSize && p.total == 3 * kProposeChunkSize && p.current.id.empty(),
+          "between chunks: K/3K, no current root");
     chunk = c.nextChunk(kAllResolved);
     p = c.progress();
-    CHECK(p.done == 5 && p.current.id == idFor(6) && p.current.rootPath == "/income/fixture/" + idFor(6),
+    CHECK(p.done == kProposeChunkSize && p.current.id == idFor(K + 1) &&
+              p.current.rootPath == "/income/fixture/" + idFor(K + 1),
           "the second chunk: its first root");
     CHECK(c.chunksStarted() == 2 && c.chunkCount() == 3, "chunk 2 of 3");
-    c.add(range(13, 20));
+    // The estimate rounds up: one root more needs a chunk of its own, K - 1
+    // more fill it.
+    c.add(range(3 * K + 1, 3 * K + 1));
     p = c.progress();
-    CHECK(p.total == 20 && c.chunkCount() == 4, "roots join: the total and the estimate grow");
+    CHECK(p.total == 3 * kProposeChunkSize + 1 && c.chunkCount() == 4, "a root joins: the total and the estimate grow");
+    c.add(range(3 * K + 2, 4 * K));
+    CHECK(c.total() == 4 * kProposeChunkSize && c.chunkCount() == 4, "roots that fill the last chunk add none");
+    c.add(range(4 * K + 1, 4 * K + 1));
+    CHECK(c.chunkCount() == 5, "one more does");
 
     g_context = "progress/skipped";
+    // K + 3 roots, the first 3 skipped: one chunk instead of two.
     ProposeChain s;
-    s.add(range(1, 8));
+    s.add(range(1, K + 3));
+    CHECK(s.chunkCount() == 2, "the estimate before");
     Statuses st;
     st.except[idFor(1)] = IntakeStatus::Proposed;
     st.except[idFor(2)] = IntakeStatus::Proposed;
@@ -651,14 +732,14 @@ static void testProgress() {
     chunk = s.nextChunk(st.fn());
     p = s.progress();
     CHECK(p.done == 3 && p.current.id == idFor(4), "skipped roots count as done");
-    CHECK(s.chunkCount() == 1, "the estimate shrinks");
+    CHECK(chunk.ids() == idRange(4, K + 3) && s.chunkCount() == 1, "the estimate shrinks");
 
     g_context = "progress/not-proposed";
     ProposeChain q;
-    q.add(range(1, 8));
+    q.add(range(1, K + 3));
     q.nextChunk(kAllResolved);
-    CHECK(q.notProposed() == ids({1, 2, 3, 4, 5, 6, 7, 8}), "a refused chunk: in flight, then pending");
-    CHECK(q.pendingIds() == ids({6, 7, 8}), "pending only (quit: the chunk in flight runs on)");
+    CHECK(q.notProposed() == idRange(1, K + 3), "a refused chunk: in flight, then pending");
+    CHECK(q.pendingIds() == idRange(K + 1, K + 3), "pending only (quit: the chunk in flight runs on)");
 }
 
 // The status bar texts the chain's entry goes through (ActivityModel).

@@ -153,7 +153,7 @@ qualify. "(2 of 3)" in a title means it runs on only some of them.
 
 | Item | Runs | Enabled on |
 |---|---|---|
-| Propose | `propose` (more than 5 releases: in chunks of 5, see below) | resolved |
+| Propose | `propose` (more than 4 releases: in chunks of 4, see below) | resolved |
 | Assign to *X* | `assign --collection X --by user` | one release that has other candidates (up to 4 shown) |
 | Assign to other collection… | `collections`, then `assign` with the collection picked | new, resolved, proposed, approved |
 | Approve | `approve` | proposed with a target |
@@ -172,10 +172,10 @@ qualify. "(2 of 3)" in a title means it runs on only some of them.
   Refresh stay available.
 - An Execute keeps running when foobar2000 quits. The next start picks it
   up again, with the swap and delete chosen in its sheet.
-- Propose on more than 5 releases (also the propose after an Assign and
-  after an automatic scan) runs `propose` for 5 at a time, one after the
+- Propose on more than 4 releases (also the propose after an Assign and
+  after an automatic scan) runs `propose` for 4 at a time, one after the
   other, because each release can take the CLI a minute or two. A batch
-  killed at the 15-minute limit loses only its 5 releases. While a batch
+  killed at the 15-minute limit loses only its 4 releases. While a batch
   runs, the menu's other commands stay disabled, as for any command; a
   click or an automatic scan gets in only in the short gap between two
   batches, and the next batch then waits for it. Releases proposed in such
@@ -205,7 +205,7 @@ income folder is scanned without a menu item:
   only when files arrive in them through this Mac.
 - **Then propose.** Releases the scan wrote as resolved are proposed in the
   same run, also those that need review (the flag stays until you
-  approve). Releases it left as new are not. More than 5 are proposed 5 at
+  approve). Releases it left as new are not. More than 4 are proposed 4 at
   a time, as for the menu's Propose.
 - **Ignored.** Sidecars, partial downloads (`.part`, `.download`, ...),
   Finder files such as `.DS_Store`, removals, and the files a scan or a
@@ -227,7 +227,7 @@ The status bar shows the scan ("Scanning income local…") and its result
 
 While a command runs, SimPlaylist shows a line at the bottom right of the
 panel with the active playlist, for example "Proposing 3 albums…",
-"Proposing 10/49: Artist – Album" (a propose in batches of 5) or "Placing
+"Proposing 10/49: Artist – Album" (a propose in batches of 4) or "Placing
 12/40: Artist – Album". When it ends, the result stays for 10
 seconds ("Proposed 3 albums", "Execute failed: 1 of 5 albums"), then the
 line goes. Nothing shows while intake is idle. Click the line for the list

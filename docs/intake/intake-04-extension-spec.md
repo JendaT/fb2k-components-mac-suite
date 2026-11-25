@@ -7,7 +7,7 @@ built and accepted in-app on the mock, user acceptance pending; share links
 built, in-app run pending; automatic income scan built, untested in the app).
 v1.5 adds the automatic income scan (B12): `scan <income>` on new files in an
 income folder and at startup, the propose after it, the `auto_scan`
-preference, and a propose of more than 5 roots in chunks of 5 (Chunked
+preference, and a propose of more than 4 roots in chunks of 4 (Chunked
 propose). v1.4 (2026-11-20) adds share links (B11, the plorg shadow
 link, `docs/shadow-link.md`): path matching, preferences page, Swap, Delete
 local copy. v1.3 (2026-11-16) applies CR-EXT-002 (`docs/intake/CR-EXT-002-doc04.md`):
@@ -450,7 +450,7 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
 
 | Action | Enabled on roots in | Runs |
 |---|---|---|
-| Propose | `resolved` | `propose <ids>`; more than 5 roots in chunks (see below) |
+| Propose | `resolved` | `propose <ids>`; more than 4 roots in chunks (see below) |
 | Assign to X (≤ 4 alternates) | one root: `new`, `resolved`, `proposed`, `approved`; non-empty `ranked` | `assign <id> --collection X --by user`, then `propose` (see below) |
 | Assign to other collection… | `new`, `resolved`, `proposed`, `approved` | picker, then `assign`, then `propose` (see below) |
 | Approve | `proposed`, non-null `target_path` | `approve <ids>` |
@@ -465,16 +465,19 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
   `resolved` at menu time and that the assign did not fail; new, proposed
   and approved roots are skipped (one Debug line), and an assign that fails
   entirely (exit 2) proposes nothing. The lane is held across both calls and
-  released on every path; one reload after the last call. More than 5
+  released on every path; one reload after the last call. More than 4
   roots to propose go to the chunked propose instead: the assign's run ends
   as when nothing is proposed, and the chain's first reload shows it.
-- **Chunked propose (B12):** a propose of more than 5 roots (Propose, the
+- **Chunked propose (B12):** a propose of more than 4 roots (Propose, the
   propose after an assign, the one after an automatic scan) runs as a chain
-  of `propose <ids>` calls of up to 5 roots, each its own lane run. The CLI
+  of `propose <ids>` calls of up to 4 roots, each its own lane run. The CLI
   takes 18-114 s per root (identify, MusicBrainz): one call for 49 roots
   ran into the 15-minute cap (2026-11-25), every root got the timeout
-  tooltip, and the lane was held the whole time. 5 or fewer roots keep
-  their single call. One chain at a time; roots asked for while it runs
+  tooltip, and the lane was held the whole time. 4 or fewer roots keep
+  their single call. The size is one constant (`kProposeChunkSize`): the
+  CLI's per-root time limit (a shim timeout, default 180 s) times 4 is
+  720 s, under the cap, where 5 would reach it exactly; it follows that
+  limit if it changes. One chain at a time; roots asked for while it runs
   join it, by id, against the roots still pending and those it already
   handled (the total grows; one Info line, also when none is new). A root
   the chain already failed does not join again: the line names it, to be
@@ -495,10 +498,10 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
   provider is inert or the CLI path gone; per-root and other envelope
   errors do not stop it. After its last chunk the chain ends at once,
   without waiting for the lane. Lines: `propose: starting for 49 roots, in
-  chunks of 5: <ids>` (or `starting after assign` / `after auto-scan of
-  <name>`), `propose: chunk 2 of 10 starting for 5 roots: <ids>`, the
-  chunk's result line with `(chunk 2 of 10)`, at the end `propose: done for
-  46 of 49 roots in 10 chunks; failed: <ids>` (plus `; skipped: <id>
+  chunks of 4: <ids>` (or `starting after assign` / `after auto-scan of
+  <name>`), `propose: chunk 2 of 13 starting for 4 roots: <ids>`, the
+  chunk's result line with `(chunk 2 of 13)`, at the end `propose: done for
+  46 of 49 roots in 13 chunks; failed: <ids>` (plus `; skipped: <id>
   (proposed), <id> (not in the view)`); a stop `propose: stopped after
   chunk k of n (<reason>); done for 34 of 40 roots; failed: <ids>; M roots
   not proposed: <ids>` (`stopped before the first chunk (<reason>)` when
@@ -767,7 +770,7 @@ are CLI commands on the mutation lane.
   resolved. Its 10 s report is one
   Info line like the scan's, and a cap kill of the propose disables
   nothing. Nothing to propose, no CLI configuration or an inert provider
-  (one Info line) ends the run. More than 5 roots go to the chunked propose
+  (one Info line) ends the run. More than 4 roots go to the chunked propose
   (see Context actions): the scan's run ends with the scan's own result, as
   when nothing is proposed, and the chain's first reload, before its first
   chunk, is the run's one reload.
@@ -779,7 +782,7 @@ are CLI commands on the mutation lane.
   with errors: …; <errors>`, `auto-scan: <name> failed: <errors>`,
   `auto-scan: <name> cancelled`, `auto-scan: <name> not started (…)`;
   `propose: starting after auto-scan of <name> for 2 roots: <ids>`, then
-  the propose's own result line (more than 5 roots: the chunked propose's
+  the propose's own result line (more than 4 roots: the chunked propose's
   lines, Error only when a whole chunk failed). `<errors>` is up to three `CODE: msg
   (path)`, then `(+N more)`. Debug: an income that became pending, each
   income's startup classification, a missing folder, gc mutes, the roots
@@ -830,7 +833,7 @@ keeps its line up to date.
   | Operation | While it runs | Result |
   |---|---|---|
   | Propose | "Proposing 3 albums…", "Proposing Artist – Album…" | "Proposed 3 albums" |
-  | Chunked propose (more than 5 roots: Propose, after an assign or a scan) | "Proposing 49 albums…" until the first chunk ends or roots are skipped, then "Proposing 10/49: Artist – Album" (10 handled, skipped ones included; the chunk running starts with that album) or "Proposing 10/49" between chunks | "Proposed 49 albums", "Propose failed: 3 of 49 albums" (counting the roots proposed or failed; skipped ones are left out), "Propose failed: all 49 albums skipped (not resolved now)", "Propose failed: <stop reason>" |
+  | Chunked propose (more than 4 roots: Propose, after an assign or a scan) | "Proposing 49 albums…" until the first chunk ends or roots are skipped, then "Proposing 10/49: Artist – Album" (10 handled, skipped ones included; the chunk running starts with that album) or "Proposing 10/49" between chunks | "Proposed 49 albums", "Propose failed: 3 of 49 albums" (counting the roots proposed or failed; skipped ones are left out), "Propose failed: all 49 albums skipped (not resolved now)", "Propose failed: <stop reason>" |
   | Assign to X, Assign to other collection… | "Assigning 3 albums…", then "Proposing 2 albums…" for the propose after it | "Assigned 3 albums", "Assigned and proposed 2 albums" |
   | Approve, Reject… | "Approving 3 albums…", "Rejecting 3 albums…" | "Approved 3 albums", "Rejected 3 albums" |
   | Execute placement… dry run | "Checking placement of 3 albums…" | "Checked placement of 3 albums" |

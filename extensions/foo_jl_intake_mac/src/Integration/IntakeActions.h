@@ -30,9 +30,9 @@
 //  qualifying root runs nothing.
 //   - Refresh intake status: serviceReload(true) (the slow-volume reset
 //     and a `version` recheck included).
-//   - Propose, Approve: run at once. B12: a Propose of more than 5 roots
-//     runs as the chunked propose (below) instead of one call: it starts
-//     the chain, or joins the one running.
+//   - Propose, Approve: run at once. B12: a Propose of more than
+//     kProposeChunkSize (4) roots runs as the chunked propose (below)
+//     instead of one call: it starts the chain, or joins the one running.
 //   - Assign to X (B7): runs at once, `assign <id> --collection X --by
 //     user`, X being the collection the menu showed (kept in the entry).
 //     Then `propose` (B13-lite) for the roots that were resolved at menu
@@ -42,9 +42,10 @@
 //     propose's end, and released on every other path (nothing to
 //     propose, the propose refused or failed, quit); one refresh after the
 //     last call. Propose errors show as usual (tooltip, console line); a
-//     root whose propose fails keeps its assignment. B12: more than 5 roots
-//     to propose go to the chunked propose (below): the assign's run ends
-//     as when nothing is proposed, and the chain's first refresh shows it.
+//     root whose propose fails keeps its assignment. B12: more than
+//     kProposeChunkSize (4) roots to propose go to the chunked propose
+//     (below): the assign's run ends as when nothing is proposed, and the
+//     chain's first refresh shows it.
 //   - Assign to other collection… (B7): the picker. The sheet's window is
 //     chosen at the click, as for Reject. `collections --json` runs first,
 //     off the main thread (read-only: E_CLI_TIMEOUT at 10 s and killed,
@@ -266,16 +267,16 @@
 //  propose, the propose's finish or refusal) ends the status bar entry and
 //  hands the exit to the driver; one that ran a process refreshes first,
 //  once per run. After on_quit the result only releases the lane. More than
-//  5 roots to propose go to the chunked propose (below): the run ends with
-//  the scan's own result, as when nothing is proposed, and the chain's
-//  refresh is its one refresh.
+//  kProposeChunkSize (4) roots to propose go to the chunked propose
+//  (below): the run ends with the scan's own result, as when nothing is
+//  proposed, and the chain's refresh is its one refresh.
 //
-//  Chunked propose (B12, IntakeProposeChain): a propose of more than 5
-//  roots (kProposeChunkSize; the user's Propose, the propose after an
+//  Chunked propose (B12, IntakeProposeChain): a propose of more than
+//  kProposeChunkSize (4) roots (the user's Propose, the propose after an
 //  assign, the auto-propose after a scan) runs as a chain of `propose`
-//  calls of up to 5 roots, each its own lane run (LaneHolder::Mutating), so
+//  calls of up to 4 roots, each its own lane run (LaneHolder::Mutating), so
 //  no batch holds the lane for 15 minutes and a cap kill loses at most one
-//  chunk. 5 or fewer keep their single call. One chain at a time: roots
+//  chunk. 4 or fewer keep their single call. One chain at a time: roots
 //  asked for while it runs join it (deduplicated against its pending and
 //  handled roots; one Info line, also when none is new, naming the roots it
 //  already failed: they are proposed again only after it ends). Before
@@ -288,11 +289,11 @@
 //  (as actionsLaneFree), is waited for with a 2 s retry (one Info line per
 //  wait, one timer at most). After the last chunk the chain ends at once,
 //  without the lane. Lines, Info unless a whole chunk failed: "propose:
-//  starting for 49 roots, in chunks of 5: <ids>", "propose: chunk 2 of 10
-//  starting for 5 roots: <ids>", its 10 s report "propose: chunk 2 of 10
+//  starting for 49 roots, in chunks of 4: <ids>", "propose: chunk 2 of 13
+//  starting for 4 roots: <ids>", its 10 s report "propose: chunk 2 of 13
 //  still running (E_CLI_TIMEOUT: no reply after 10 s; the chunk
 //  continues)" (no tooltip, no refresh), its result line with "(chunk 2 of
-//  10)", and at the end "propose: done for 46 of 49 roots in 10 chunks;
+//  13)", and at the end "propose: done for 46 of 49 roots in 13 chunks;
 //  failed: <ids>". Per-root errors become tooltips as for any propose
 //  (baseline resolved). The chain stops (one Info line "propose: stopped
 //  after chunk k of n (<reason>); done for 34 of 40 roots; failed: <ids>;

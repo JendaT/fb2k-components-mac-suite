@@ -81,9 +81,11 @@ a time [`src/Core/IntakeMutationLane.h`]:
 - The automatic scan (B12) holds it from the scan's start until its exit
   and the propose after it. It takes the lane only when it is free; a due
   scan waits.
-- A propose of more than 5 roots (B12; the menu's Propose, the propose
+- A propose of more than 4 roots (B12; the menu's Propose, the propose
   after an assign, the one after an automatic scan) runs as a chain of
-  chunks of up to 5 roots [`src/Core/IntakeProposeChain.h`], each its own
+  chunks of up to 4 roots [`src/Core/IntakeProposeChain.h`
+  `kProposeChunkSize`: the CLI's per-root time limit, a shim timeout of
+  180 s by default, times 4 is 720 s, under the cap], each its own
   lane run (`LaneHolder::Mutating`, `LaneRun::ProposeChunk`), so no batch
   holds the lane for 15 minutes and a cap kill loses at most one chunk.
   The lane is released after each chunk. Then one reload; its end
@@ -331,7 +333,7 @@ share, a symlink loop): no scan, one Debug line.
   (`LaneRun::ProposeAfterScan`). `data` is not pinned by doc 03 and is
   read leniently. The lane stays `LaneHolder::Scan`, so the menu keeps
   "(scan running)". The propose's root errors become tooltips (baseline
-  resolved); its console line and its 10 s report are Info. More than 5
+  resolved); its console line and its 10 s report are Info. More than 4
   roots go to the chunked propose instead (see The mutation lane): the run
   ends with the scan's own result, without a reload of its own (the
   chain's first reload, which starts its first chunk, is the run's one
