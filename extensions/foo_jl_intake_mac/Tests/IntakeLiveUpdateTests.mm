@@ -27,6 +27,7 @@
 // TEST_DEPS: src/Core/IntakeDecorationMap.mm src/Core/IntakeReviewRule.mm src/Core/IntakePath.mm
 // TEST_DEPS: src/Core/IntakeMountAliases.mm src/Core/IntakeLoadPolicy.mm src/Core/IntakeView.mm
 // TEST_DEPS: src/Core/IntakeIncome.mm src/Core/IntakeWatchSet.mm src/Core/IntakeSettingsParse.mm
+// TEST_DEPS: src/Core/IntakeAutoScan.mm
 // TEST_DEPS: src/Core/IntakeGroupBadge.mm
 // TEST_DEPS: src/Core/IntakeLibraryIndex.mm src/Core/IntakeSwapPlanner.mm
 // TEST_DEPS: src/Core/IntakeTargetPath.mm

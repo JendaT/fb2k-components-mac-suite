@@ -42,6 +42,10 @@
 //  through a link moving its key and so listing in full once), and with
 //  no links configured the mount table read for the aliases only by the
 //  first load and remount(), as before.
+//  B12: the status carries the income folders paired with the watch set's
+//  spelling (physical when local, as the CLI spelled them on a share),
+//  following the income call (a removed folder, a renamed income with the
+//  same folders), and none without an income call.
 //  Hermetic: every state directory is a fresh temp directory; the mount
 //  tables are synthetic.
 //
@@ -52,7 +56,7 @@
 // TEST_DEPS: src/Core/IntakeDecorationMap.mm src/Core/IntakeReviewRule.mm src/Core/IntakePath.mm
 // TEST_DEPS: src/Core/IntakeMountAliases.mm src/Core/IntakeLoadPolicy.mm src/Core/IntakeView.mm
 // TEST_DEPS: src/Core/IntakeIncome.mm src/Core/IntakeWatchSet.mm src/Core/IntakeWatchFilter.mm
-// TEST_DEPS: src/Core/IntakeSettingsParse.mm
+// TEST_DEPS: src/Core/IntakeSettingsParse.mm src/Core/IntakeAutoScan.mm
 // TEST_DEPS: src/Core/IntakeGroupBadge.mm src/Core/IntakeRootErrors.mm
 // TEST_DEPS: src/Core/IntakeLibraryIndex.mm src/Core/IntakeSwapPlanner.mm
 // TEST_DEPS: src/Core/IntakeTargetPath.mm
@@ -779,6 +783,20 @@ static void testIncomeAndWatchSet() {
               set[2] == real + "/income/shop",
           "the income folders (offline missing, still watched), realpath'd, roots' parents folded in");
     CHECK(logCount("income: 3 folder(s)") == 1, "a Debug line for the income call");
+    {
+        // B12: the income folders paired with the stream's spelling, in the
+        // status the load-finished handler gets.
+        const LoaderStatus st = h->lastFinished();
+        const std::vector<AutoScanIncome> &in = st.autoScanIncomes;
+        CHECK(in.size() == 3 && in[0].name == "dump" && in[1].name == "shop" && in[2].name == "offline",
+              "auto-scan incomes: every income folder, in the CLI's order");
+        CHECK(in.size() == 3 && in[0].path == root + "/income/dump" && in[0].fsPath == real + "/income/dump" &&
+                  !in[0].fsKey.empty(),
+              "the CLI's path, and the watch set's (physical) spelling for FSEvents");
+        CHECK(in.size() == 3 && in[2].fsPath == real + "/income/offline",
+              "a missing income folder keeps its watch set spelling too");
+        CHECK(loader.status().autoScanIncomes.size() == 3, "status() carries them as well");
+    }
 
     loader.reload(false);
     CHECK(waitFinished(*h, 2), "a reload finishes");
@@ -809,6 +827,19 @@ static void testIncomeAndWatchSet() {
     CHECK(waitFinished(*h, 4), "a recheck finishes");
     CHECK(w->count() == 2 && w->last().size() == 2, "the changed set is handed over: dump and shop");
     CHECK(loader.status().incomeError.empty(), "a good income call clears the failure");
+    CHECK(h->lastFinished().autoScanIncomes.size() == 2 && h->lastFinished().autoScanIncomes[1].name == "shop",
+          "auto-scan incomes follow the income call");
+
+    g_context = "income-renamed";
+    // Renamed in income.yaml, same folder: the watch set is unchanged, the
+    // auto-scan entry takes the new name.
+    CHECK(replaceInFile(state + "/responses/income", "shop\tincome/shop", "store\tincome/shop"), "shop renamed");
+    loader.reload(true);
+    CHECK(waitFinished(*h, 5), "a recheck finishes");
+    CHECK_EQ(w->count(), 2, "the same folders: no new watch set");
+    CHECK(h->lastFinished().autoScanIncomes.size() == 2 && h->lastFinished().autoScanIncomes[1].name == "store" &&
+              h->lastFinished().autoScanIncomes[1].fsPath == real + "/income/shop",
+          "the auto-scan entry has the new name");
 
     g_context = "income-first-call-fails";
     // The very first income call fails: no good list exists, and the status
@@ -880,6 +911,7 @@ static void testIncomeNotOffered() {
     std::vector<std::string> set = w->last();
     CHECK(set.size() == 2 && set[0] == realOf(state + "/root") + "/income/dump",
           "the watch set is the roots' parent folders");
+    CHECK(h->lastFinished().autoScanIncomes.empty(), "no income call: no auto-scan incomes (roots' parents are none)");
 }
 
 static void testNetworkWatchSet() {
@@ -897,6 +929,9 @@ static void testNetworkWatchSet() {
           "nothing under the network mount is examined (either spelling)");
     std::vector<std::string> set = w->last();
     CHECK(set.size() == 3 && set[0] == root + "/income/dump", "the stream gets the folders as the CLI spelled them");
+    CHECK(h->lastFinished().autoScanIncomes.size() == 3 &&
+              h->lastFinished().autoScanIncomes[0].fsPath == root + "/income/dump",
+          "auto-scan incomes on the share: as the CLI spelled them, never resolved");
 
     g_context = "network-watch-set-remount";
     const size_t before = w->count();

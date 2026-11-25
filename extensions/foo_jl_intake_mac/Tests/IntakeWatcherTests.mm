@@ -24,17 +24,24 @@
 //   - the stream restarts only when the set changes, or on restart();
 //   - stop() releases the stream and no batch arrives after it; the
 //     destructor does the same.
+//   - B12, the event sink: every event reaches it with its flags and event
+//     id, spelled physically as FSEvents reports it (/private/var/...), and
+//     an income folder given as /var/... (the CLI's spelling) matches it
+//     through its WatchSet entry (autoScanIncomes, autoScanHits); the
+//     handler still gets its sidecar batches, never one for a file that is
+//     no sidecar; nothing reaches the sink after stop().
 //  Every stream is released before the binary exits (liveStreams() == 0).
 //
 // TEST_FRAMEWORKS: CoreServices
 // TEST_DEPS: src/Core/IntakeWatchFilter.mm src/Core/IntakeDebounce.mm src/Core/IntakeLog.mm
 // TEST_DEPS: src/Core/IntakeWatchSet.mm src/Core/IntakePath.mm src/Core/IntakeMountAliases.mm
-// TEST_DEPS: src/Core/IntakeSettingsParse.mm
+// TEST_DEPS: src/Core/IntakeSettingsParse.mm src/Core/IntakeAutoScan.mm
 //
 
 #import <Foundation/Foundation.h>
 #include <CoreServices/CoreServices.h>
 
+#include "../src/Core/IntakeAutoScan.h"
 #include "../src/Core/IntakeLog.h"
 #include "../src/Core/IntakePath.h"
 #include "../src/Core/IntakeWatchSet.h"
@@ -430,6 +437,111 @@ static void testStop() {
     }
 }
 
+// B12: one sink call, copied out (its paths are valid for the call only),
+// with the income indices autoScanHits found in it during the call.
+struct SinkCall {
+    struct Event {
+        std::string path;
+        uint32_t flags = 0;
+        WatchEventId id = 0;
+    };
+    std::vector<Event> events;
+    std::vector<size_t> hitIncomes;
+};
+
+struct SinkCollector {
+    std::mutex m;
+    std::vector<SinkCall> calls;
+    std::vector<AutoScanIncome> incomes;  // set before the watcher starts
+
+    IntakeWatcher::EventSink sink() {
+        return [this](const std::vector<AutoScanEvent> &events) {
+            SinkCall call;
+            for (const AutoScanEvent &e : events) call.events.push_back({std::string(e.path), e.flags, e.id});
+            call.hitIncomes = autoScanHits(events, incomes, {}).incomes;
+            std::lock_guard<std::mutex> lock(m);
+            calls.push_back(std::move(call));
+        };
+    }
+    size_t count() {
+        std::lock_guard<std::mutex> lock(m);
+        return calls.size();
+    }
+    // The first event for `path`, and the call it came in.
+    bool find(const std::string &path, SinkCall::Event &event, SinkCall &call) {
+        std::lock_guard<std::mutex> lock(m);
+        for (const SinkCall &c : calls) {
+            for (const SinkCall::Event &e : c.events) {
+                if (e.path == path) {
+                    event = e;
+                    call = c;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+};
+
+static void testAutoScanSink() {
+    g_context = "auto-scan-sink";
+    const std::string root = mock::newDir("sink");
+    const std::string real = realPath(root);
+    // The CLI's spelling of a temp folder: /var/..., while FSEvents reports
+    // /private/var/... (the /var symlink resolved).
+    const std::string configured = real.rfind("/private/var/", 0) == 0 ? real.substr(8) : root;
+    CHECK(configured.rfind("/var/", 0) == 0 && real.rfind("/private/var/", 0) == 0,
+          "the temp folder is /var/..., physically /private/var/...");
+    const std::string income = configured + "/income";
+    mkdir((real + "/income").c_str(), 0755);
+
+    // The loader's pipeline: the income folder as a watch candidate, then
+    // its auto-scan entry from that set.
+    const std::vector<MountEntry> mounts = {MountEntry{"/", "/dev/disk-fixture", "apfs", true}};
+    WatchSet ws = WatchSet::build(watchCandidates({}, {income}, {}), mounts, &posixLinkReader);
+    SinkCollector sc;
+    sc.incomes = autoScanIncomes({IncomeFolder{"local", income, true}}, ws);
+    CHECK(sc.incomes.size() == 1 && sc.incomes[0].path == income && sc.incomes[0].fsPath == real + "/income",
+          "the income entry: the CLI's /var path, the stream's /private/var spelling");
+    CHECK(ws.streamPaths().size() == 1 && ws.streamPaths()[0] == real + "/income", "the stream watches it");
+
+    Collector c;
+    IntakeWatcher w(c.handler(), fastOptions(), sc.sink());
+    w.setPaths(ws.streamPaths());
+    CHECK(waitRunning(w, 1), "the stream starts");
+
+    const std::string track = "/income/01 - Test Track One.wav";
+    const WatchEventId before = currentEventId();
+    mock::writeFile(root + track, "RIFF");
+    SinkCall::Event event;
+    SinkCall call;
+    CHECK(mock::waitUntil([&] { return sc.find(real + track, event, call); }, 5),
+          "the sink gets the audio file's event within 5 s, spelled /private/var/...");
+    SinkCall::Event unused;
+    SinkCall unusedCall;
+    CHECK(!sc.find(configured + track, unused, unusedCall), "never in the /var spelling");
+    CHECK((event.flags & fsevent::kItemCreated) && (event.flags & fsevent::kItemIsFile),
+          "with its flags (created, a file)");
+    CHECK(event.id > before && event.id != kWatchSinceNow, "and its event id, after the id taken before the write");
+    CHECK(call.hitIncomes.size() == 1 && call.hitIncomes[0] == 0,
+          "autoScanHits in the sink matches the income given as /var/...");
+    CHECK(quietFor(c, 0, 1.0), "the handler gets no batch for a file that is no sidecar");
+
+    g_context = "auto-scan-sink-sidecar";
+    mock::writeFile(root + "/income/.intake.json", "{\"schema\":1}");
+    CHECK(mock::waitUntil([&] { return c.count() >= 1; }, 5), "the handler still gets the sidecar's batch");
+    CHECK(c.count() >= 1 && c.at(0).directories.size() == 1 && c.at(0).directories[0] == real + "/income",
+          "for the income folder");
+    CHECK(sc.find(real + "/income/.intake.json", event, call), "the sink saw the sidecar event too");
+
+    g_context = "auto-scan-sink-stop";
+    w.stop();
+    const size_t atStop = sc.count();
+    mock::writeFile(root + "/income/02 - Test Track Two.wav", "RIFF");
+    std::this_thread::sleep_for(std::chrono::milliseconds(800));
+    CHECK_EQ(sc.count(), atStop, "nothing reaches the sink after stop()");
+}
+
 int main(void) {
     @autoreleasepool {
         atexit(mock::removeTempRoot);
@@ -441,6 +553,7 @@ int main(void) {
         testHistoryDoneIgnored();
         testMissingAndRecreated();
         testStop();
+        testAutoScanSink();
         CHECK_EQ(IntakeWatcher::liveStreams(), 0, "no stream left");
         mock::removeTempRoot();
     }

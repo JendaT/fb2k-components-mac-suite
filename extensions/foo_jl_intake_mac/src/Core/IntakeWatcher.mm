@@ -48,8 +48,9 @@ void releaseContext(const void *info);
 struct IntakeWatcher::Impl : std::enable_shared_from_this<IntakeWatcher::Impl> {
     using Clock = DebounceWindow::Clock;
 
-    Impl(Handler h, WatcherOptions o)
-        : options(o), window(o.quietSeconds, o.maxWaitSeconds), handler(std::move(h)) {
+    Impl(Handler h, WatcherOptions o, EventSink s)
+        : options(o), hasSink(static_cast<bool>(s)), window(o.quietSeconds, o.maxWaitSeconds),
+          handler(std::move(h)), sink(std::move(s)) {
         dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_autorelease_frequency(
             DISPATCH_QUEUE_SERIAL, DISPATCH_AUTORELEASE_FREQUENCY_WORK_ITEM);
         attr = dispatch_queue_attr_make_with_qos_class(attr, QOS_CLASS_UTILITY, 0);
@@ -64,6 +65,7 @@ struct IntakeWatcher::Impl : std::enable_shared_from_this<IntakeWatcher::Impl> {
     }
 
     WatcherOptions options;
+    const bool hasSink;  // a sink was given: only then are events collected for it
     dispatch_queue_t queue = nil;
     std::atomic<bool> stopped{false};
 
@@ -76,11 +78,12 @@ struct IntakeWatcher::Impl : std::enable_shared_from_this<IntakeWatcher::Impl> {
     WatchBatchBuilder builder;
     uint64_t timerGeneration = 0;
 
-    // Held while the handler runs, so stop() returns only after a running
-    // call finished. Recursive: stop() from inside the handler must not
-    // deadlock.
+    // Held while the handler or the sink runs, so stop() returns only after
+    // a running call finished. Recursive: stop() from inside the handler
+    // must not deadlock.
     std::recursive_mutex handlerMutex;
     Handler handler;
+    EventSink sink;
 
     mutable std::mutex statsMutex;
     WatcherStats stats;
@@ -214,8 +217,10 @@ struct IntakeWatcher::Impl : std::enable_shared_from_this<IntakeWatcher::Impl> {
 
     // --- events ---
 
-    void onEvents(size_t count, char **eventPaths, const FSEventStreamEventFlags *flags) {
+    void onEvents(size_t count, char **eventPaths, const FSEventStreamEventFlags *flags,
+                  const FSEventStreamEventId *ids) {
         if (stopped) return;
+        if (hasSink) passToSink(count, eventPaths, flags, ids);
         bool relevant = false;
         for (size_t i = 0; i < count; i++) {
             // The end of a replay (the stream was created with an event id):
@@ -242,6 +247,23 @@ struct IntakeWatcher::Impl : std::enable_shared_from_this<IntakeWatcher::Impl> {
         }
         if (!relevant) return;
         if (window.add(Clock::now())) arm();
+    }
+
+    // B12: the whole callback, unfiltered (see the header).
+    void passToSink(size_t count, char **eventPaths, const FSEventStreamEventFlags *flags,
+                    const FSEventStreamEventId *ids) {
+        std::lock_guard<std::recursive_mutex> lock(handlerMutex);
+        if (stopped || !sink) return;
+        std::vector<AutoScanEvent> events;
+        events.reserve(count);
+        for (size_t i = 0; i < count; i++) {
+            AutoScanEvent e;
+            if (eventPaths[i] != nullptr) e.path = eventPaths[i];
+            e.flags = static_cast<uint32_t>(flags[i]);
+            e.id = ids != nullptr ? static_cast<WatchEventId>(ids[i]) : 0;
+            events.push_back(e);
+        }
+        sink(events);
     }
 
     void arm() {
@@ -280,10 +302,10 @@ struct IntakeWatcher::Impl : std::enable_shared_from_this<IntakeWatcher::Impl> {
 namespace {
 
 void streamCallback(ConstFSEventStreamRef, void *info, size_t count, void *paths,
-                    const FSEventStreamEventFlags flags[], const FSEventStreamEventId[]) {
+                    const FSEventStreamEventFlags flags[], const FSEventStreamEventId ids[]) {
     auto *weak = static_cast<std::weak_ptr<IntakeWatcher::Impl> *>(info);
     if (std::shared_ptr<IntakeWatcher::Impl> self = weak->lock()) {
-        self->onEvents(count, static_cast<char **>(paths), flags);
+        self->onEvents(count, static_cast<char **>(paths), flags, ids);
     }
 }
 
@@ -293,8 +315,8 @@ void releaseContext(const void *info) {
 
 } // anonymous namespace
 
-IntakeWatcher::IntakeWatcher(Handler handler, WatcherOptions options)
-    : impl_(std::make_shared<Impl>(std::move(handler), options)) {}
+IntakeWatcher::IntakeWatcher(Handler handler, WatcherOptions options, EventSink sink)
+    : impl_(std::make_shared<Impl>(std::move(handler), options, std::move(sink))) {}
 
 IntakeWatcher::~IntakeWatcher() {
     stop();
@@ -323,6 +345,7 @@ void IntakeWatcher::stop() {
     {
         std::lock_guard<std::recursive_mutex> lock(impl->handlerMutex);
         impl->handler = nullptr;
+        impl->sink = nullptr;
     }
     dispatch_semaphore_t released = dispatch_semaphore_create(0);
     dispatch_async(impl->queue, ^{

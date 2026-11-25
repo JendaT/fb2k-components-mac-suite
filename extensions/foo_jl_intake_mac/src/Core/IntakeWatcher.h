@@ -64,8 +64,18 @@
 //  the watcher's queue) it does not deadlock, but cannot wait for the
 //  release, which then runs right after the handler returns.
 //
+//  Event sink (B12, optional, given at construction): called on the
+//  watcher's queue once per FSEvents callback with every event of it (path
+//  as FSEvents spelled it, empty when it had none; flags; event id), before
+//  the filter above looks at them, rescans and markers included. The paths
+//  are valid for the call only. It never changes what reaches the handler,
+//  and with no sink nothing is built. IntakeService feeds the auto-scan
+//  from it (IntakeAutoScan autoScanHits). stop() treats it like the handler:
+//  from its return on it is never called again and is released, and a call
+//  already running finishes first.
+//
 //  Thread-safety: every public member may be called from any thread. The
-//  handler runs on the watcher's queue.
+//  handler and the sink run on the watcher's queue.
 //
 
 #pragma once
@@ -77,6 +87,7 @@
 #include <string>
 #include <vector>
 
+#include "IntakeAutoScan.h"  // AutoScanEvent
 #include "IntakeDebounce.h"
 #include "IntakeWatchFilter.h"
 
@@ -101,8 +112,10 @@ struct WatcherStats {
 class IntakeWatcher {
 public:
     using Handler = std::function<void(WatchBatch batch)>;
+    // See the top of this file (B12).
+    using EventSink = std::function<void(const std::vector<AutoScanEvent> &events)>;
 
-    explicit IntakeWatcher(Handler handler, WatcherOptions options = WatcherOptions());
+    explicit IntakeWatcher(Handler handler, WatcherOptions options = WatcherOptions(), EventSink sink = nullptr);
     ~IntakeWatcher();
     IntakeWatcher(const IntakeWatcher &) = delete;
     IntakeWatcher &operator=(const IntakeWatcher &) = delete;

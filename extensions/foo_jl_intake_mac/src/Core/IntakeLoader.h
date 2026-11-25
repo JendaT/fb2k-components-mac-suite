@@ -77,6 +77,10 @@
 //  (remount(), and with share links configured relink() and the start of
 //  every load). With no CLI path
 //  (NotConfigured) the set is empty: nothing could reload.
+//  B12: every such update also pairs the income folders with that set's
+//  spelling (IntakeAutoScan autoScanIncomes: what FSEvents reports for each)
+//  into LoaderStatus::autoScanIncomes, before the load-finished handler
+//  runs, so IntakeService hands them to the auto-scan with each load.
 //
 //  Event ids (IntakeWatcher): just before each `status` call the loader
 //  takes LoaderSettings::currentEventId (FSEventsGetCurrentEventId in

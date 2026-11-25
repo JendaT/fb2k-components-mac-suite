@@ -36,6 +36,7 @@
 #include <string>
 #include <vector>
 
+#include "IntakeAutoScan.h"
 #include "IntakeCommandArgs.h"
 #include "IntakeEnvelope.h"
 #include "IntakeIncome.h"
@@ -159,6 +160,11 @@ struct LoaderStatus {
     // gate (feature detection for the context menu: cliSupportsCommand);
     // empty until one has, and after reconfigure().
     CliVersionInfo cliInfo;
+    // B12: incomeFolders with the spelling FSEvents reports for each
+    // (autoScanIncomes over the last watch set built), computed on the loader
+    // queue with every watch set update; empty without a CLI path or an
+    // onWatchSet handler.
+    std::vector<AutoScanIncome> autoScanIncomes;
 };
 
 // "Ready · CLI 0.3.0 · 16 roots", "Inactive: ...", ... (UTF-8, a middle dot

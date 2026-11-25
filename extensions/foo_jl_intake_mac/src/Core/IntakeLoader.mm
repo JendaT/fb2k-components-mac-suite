@@ -127,6 +127,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     bool watchDirty = true;                   // the mount table changed since
     std::vector<std::string> watchHandedOver; // the last onWatchSet paths
     bool watchHandedOverOnce = false;
+    std::vector<AutoScanIncome> autoScanIncomeList; // B12: incomeFolders in watchSet's spelling, for the status
     bool pendingFull = true;                  // the next load lists everything
     std::vector<std::string> pendingKeys;     // changed directories for the next load
     bool inFlightFull = true;                 // the running load's
@@ -169,6 +170,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         s.incomeError = incomeError;
         s.rootFolders = rootFoldersOf(lastGood);
         s.cliInfo = cliInfo;
+        s.autoScanIncomes = autoScanIncomeList;
         {
             std::lock_guard<std::mutex> lock(statusMutex);
             if (status.state == LoaderState::Stopped) return;
@@ -849,12 +851,16 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         std::vector<std::string> inputs = settings.cli.cliPath.empty()
                                               ? std::vector<std::string>()
                                               : watchCandidates(settings.watchFolders, incomePaths, rootPaths);
-        if (watchBuilt && !watchDirty && inputs == watchInputs) return;
+        if (watchBuilt && !watchDirty && inputs == watchInputs) {
+            noteAutoScanIncomes();  // an income may be renamed with the same folders
+            return;
+        }
         const LinkReader &readLink = settings.readLink ? settings.readLink : posixLinkReaderFunction();
         watchSet = WatchSet::build(inputs, mountEntries, readLink);
         watchInputs = std::move(inputs);
         watchBuilt = true;
         watchDirty = false;
+        noteAutoScanIncomes();
         if (watchHandedOverOnce && watchSet.streamPaths() == watchHandedOver) return;
         watchHandedOver = watchSet.streamPaths();
         watchHandedOverOnce = true;
@@ -866,6 +872,18 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         handover.paths = watchHandedOver;
         handover.sinceEventId = statusEventId;
         settings.onWatchSet(handover);
+    }
+
+    // B12: the income folders as FSEvents spells them, from the set just
+    // built (pure string work: the set's resolution already read the disk).
+    // The status set earlier in this load attempt gets them too, so the
+    // load-finished handler that follows sees them.
+    void noteAutoScanIncomes() {
+        autoScanIncomeList = settings.cli.cliPath.empty() ? std::vector<AutoScanIncome>()
+                                                          : autoScanIncomes(incomeFolders, watchSet);
+        std::lock_guard<std::mutex> lock(statusMutex);
+        if (status.state == LoaderState::Stopped) return;
+        status.autoScanIncomes = autoScanIncomeList;
     }
 
     // After a mount or unmount (see the header): the reload(false) queued
