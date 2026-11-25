@@ -205,7 +205,12 @@ original is never changed. Provenance tags are part of the placement: a failed t
 root before the rename, so nothing is placed or journaled, the temp dir is
 removed and the root goes back to `approved` with a per-root `E_VERIFY`. A
 skipped write (`provenance_tags_skipped:*`: an `fsha1:`-keyed FLAC, a format
-with no writer) stays an issue on the placed root.
+with no writer) stays an issue on the placed root. An MP3's TXXX provenance
+frames are merged into its ID3v2.3 or ID3v2.4 tag (old `INTAKE_*` frames
+replaced, every other frame and the audio bytes kept), or go into a new
+ID3v2.3 tag when it has none. A tag that cannot be rebuilt safely is a
+`provenance_write_failed`: ID3v2.2, unsynchronisation, an extended header,
+two tags at the head, or frames that do not parse.
 
 `propose --all-resolved` never picks up `needs_review` roots — offline (no
 Discogs confirmation) that is every root, so unattended auto-proposing
