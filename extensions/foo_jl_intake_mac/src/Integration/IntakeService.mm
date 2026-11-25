@@ -12,6 +12,7 @@
 
 #include "IntakeActions.h"
 #include "IntakeActivityHub.h"
+#include "IntakeAutoScanDriver.h"
 #include "IntakeConfig.h"
 #include "IntakeDecoratorProvider.h"
 #include "IntakeFieldProvider.h"
@@ -134,9 +135,16 @@ public:
         // it (waiting out a running call) before the loader goes, so the raw
         // pointer never outlives the loader.
         IntakeLoader **loaderSlot = &loaderForWatcher_;
-        watcher_ = std::make_shared<IntakeWatcher>([loaderSlot](WatchBatch batch) {
-            if (IntakeLoader *loader = *loaderSlot) loader->reloadForChanges(std::move(batch.directories), batch.rescan);
-        });
+        // B12: every FSEvents callback also goes to the auto-scan, on the
+        // watcher's queue. It reads only the driver's own snapshot, and
+        // stop() clears it together with the handler.
+        watcher_ = std::make_shared<IntakeWatcher>(
+            [loaderSlot](WatchBatch batch) {
+                if (IntakeLoader *loader = *loaderSlot) {
+                    loader->reloadForChanges(std::move(batch.directories), batch.rescan);
+                }
+            },
+            WatcherOptions(), [](const std::vector<AutoScanEvent> &events) { autoScanSink(events); });
 
         LoaderSettings ls;
         ls.cli = cliConfig();
@@ -163,10 +171,21 @@ public:
         ls.annotateRecords = [](std::vector<IntakeRecord> &records, std::chrono::steady_clock::time_point started) {
             actionsErrorStore().apply(records, started);
         };
+        // B12, after every load attempt (loader queue): the auto-scan gets
+        // the income entries, and its startup scans after the first Ready
+        // load.
+        ls.onLoadFinished = [](const LoaderStatus &st) {
+            LoaderStatus copy = st;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                autoScanAfterLoad(copy);
+            });
+        };
         // The temporary test_actions aid runs after the first successful
         // load. With its key empty nothing is installed.
         if (testActionsPending()) {
-            ls.onLoadFinished = [](const LoaderStatus &st) {
+            LoadFinishedHandler autoScan = ls.onLoadFinished;
+            ls.onLoadFinished = [autoScan](const LoaderStatus &st) {
+                autoScan(st);
                 if (st.state != LoaderState::Ready) return;
                 dispatch_async(dispatch_get_main_queue(), ^{
                     testActionsAfterLoad();
@@ -304,6 +323,7 @@ public:
             next.swapPrefixFrom != settings_.swapPrefixFrom || next.swapPrefixTo != settings_.swapPrefixTo;
         const bool paletteChanged = !(next.palette == settings_.palette);
         const bool tintProblemsChanged = next.tintProblems != settings_.tintProblems;
+        const bool autoScanChanged = next.autoScan != settings_.autoScan;
         // Hidden options (decor_stats, log_file) keep their startup values.
         next.decorStats = settings_.decorStats;
         next.logFile = settings_.logFile;
@@ -324,6 +344,13 @@ public:
         // One rebuild and at most one invalidate-all per colour change.
         if (paletteChanged || tintProblemsChanged) logPalette(settings_);
         if (paletteChanged) loader_->setPalette(settings_.palette);
+        if (autoScanChanged) {
+            // B12: off drops the pending scans (a running one finishes); on
+            // starts nothing until the next new file.
+            logInfo(settings_.autoScan ? "auto-scan on: new files in an income folder are scanned"
+                                       : "auto-scan off: income folders are no longer scanned automatically");
+            autoScanSetEnabled(settings_.autoScan);
+        }
         if (cliChanged) loader_->reconfigure(cliConfig());
     }
 
@@ -473,6 +500,9 @@ public:
         // B13: the fields' volume table is seeded off the main thread, so
         // it is usually ready before the first load is.
         fieldsStart();
+        // B12: before the first load, which may start the startup scans.
+        autoScanSetEnabled(settings.autoScan);
+        if (!settings.autoScan) logDebug("auto-scan: off (foo_jl_intake.auto_scan is 0)");
         g_service = new Service(settings);
         g_service->start();
         // B8: adopt or finish execute runs an earlier session left behind
@@ -482,6 +512,7 @@ public:
 
     void on_quit() override {
         actionsShutdown();  // results of running mutating calls are dropped from here on
+        autoScanShutdown(); // no auto-scan is scheduled or started from here on
         fieldsShutdown();   // no field refresh or seed from here on; the fields keep answering
         if (g_service != nullptr) {
             g_service->stop();

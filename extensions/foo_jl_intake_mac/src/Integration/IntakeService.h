@@ -41,7 +41,8 @@
 //  the next Swap (serviceActionInfo); new row colours (B10, the tint_*
 //  keys) go to IntakeLoader::setPalette (the last load rebuilt in them, at
 //  most one invalidate-all); confirm_reject and confirm_gc reach the next
-//  menu (serviceActionInfo: the ellipsis and the confirmation).
+//  menu (serviceActionInfo: the ellipsis and the confirmation); auto_scan
+//  (B12) goes to autoScanSetEnabled, with one Info line.
 //  After every loader status change it posts
 //  IntakeStatusDidChangeNotification on the main thread, so the page
 //  refreshes its status block while visible (no polling).
@@ -64,6 +65,14 @@
 //  When foo_jl_intake.test_actions holds steps at start, the temporary
 //  test_actions aid gets a look after every successful load (it runs once,
 //  after the leftover-run scan); otherwise nothing is installed.
+//
+//  Automatic income scan (B12, IntakeAutoScanDriver): on_init applies the
+//  auto_scan setting before the service starts; the watcher gets
+//  autoScanSink as its event sink (every FSEvents callback, on the
+//  watcher's queue); the loader's load-finished handler, always installed,
+//  hands every load attempt's status to autoScanAfterLoad on the main
+//  thread (the test_actions aid, when present, wraps it); on_quit calls
+//  autoScanShutdown right after actionsShutdown.
 //
 //  Execute runs (B8): right after the service starts, on_init has
 //  IntakeActions scan the cache folder for runs an earlier session left

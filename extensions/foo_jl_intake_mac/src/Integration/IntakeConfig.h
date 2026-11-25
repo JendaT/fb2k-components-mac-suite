@@ -31,6 +31,9 @@
 //   - confirm_gc (int, 0 or 1, B9; on the page since B10): Delete local
 //     copy… asks first (the local paths, "Swap, then delete"); 0 runs gc at
 //     once. Default 1.
+//   - auto_scan (int, 0 or 1, B12): "Scan income folders automatically":
+//     `intake scan <income>` runs by itself when new files land in an
+//     income folder (IntakeAutoScanDriver); 0 never runs it. Default 1.
 //   - tint_new, tint_review, tint_proposed, tint_approved, tint_placed,
 //     tint_rejected (ints, B10): the row colours, sRGB 0xRRGGBBAA; absent:
 //     the IntakePalette default, 0: no tint, out of range: the default
@@ -85,6 +88,7 @@ struct IntakeSettings {
     std::string swapPrefixTo;
     bool confirmReject = true;   // B6: Reject… shows its confirmation
     bool confirmGc = true;       // B9: Delete local copy… shows its confirmation
+    bool autoScan = true;        // B12: income folders are scanned automatically
     IntakePalette palette;       // B10: the tint_* keys (IntakeTint.h)
     std::vector<std::string> tintProblems;  // one line per malformed tint_* key
 };
@@ -104,6 +108,7 @@ inline constexpr const char *kSwapPrefixFrom = "swap_prefix_from";
 inline constexpr const char *kSwapPrefixTo = "swap_prefix_to";
 inline constexpr const char *kConfirmReject = "confirm_reject";
 inline constexpr const char *kConfirmGc = "confirm_gc";
+inline constexpr const char *kAutoScan = "auto_scan";
 // Hidden, not a setting: the picker's Recent list (IntakeCollectionSearch).
 inline constexpr const char *kRecentCollections = "recent_collections";
 // Hidden: the Execute sheet's last swap choice (IntakeExecuteFollowUp).

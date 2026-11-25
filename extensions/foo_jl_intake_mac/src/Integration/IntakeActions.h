@@ -211,8 +211,8 @@
 //  finished as above when it ends; a dead one is finished at once (one Info
 //  line, then its console line); orphan files are deleted (one Info line
 //  with the count). Until the scan is done no mutating call starts (the
-//  menu shows mutating items disabled), and the test_actions aid waits for
-//  it (actionsAfterRunScan).
+//  menu shows mutating items disabled), and the test_actions aid and the
+//  auto-scan's startup check (B12) wait for it (actionsAfterRunScan).
 //
 //  Mutation lane (IntakeMutationLane, main thread): one mutating call at a
 //  time. A call that finds the lane busy is not started (one Error line).
@@ -327,6 +327,11 @@ RootErrorStore &actionsErrorStore();
 
 // Main thread: the mutation lane holds a call.
 bool actionsLaneBusy();
+
+// Main thread (B12, the auto-scan's laneFree): a mutating call could take
+// the lane now: on_quit has not run, the leftover-run scan is done and no
+// call holds the lane.
+bool actionsLaneFree();
 
 // Main thread (on_quit): later results are dropped; nothing is killed
 // (detached runs and their files stay for the next session).

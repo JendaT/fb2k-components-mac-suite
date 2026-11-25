@@ -452,7 +452,7 @@ struct ActionsState {
     // starts before it is done.
     bool runScanStarted = false;
     bool runScanDone = false;
-    std::vector<std::function<void()>> afterRunScan;  // the test aid (actionsAfterRunScan)
+    std::vector<std::function<void()>> afterRunScan;  // the test aid, B12's startup check (actionsAfterRunScan)
     // The Execute follow-ups of ended runs, queued once their reload is
     // back: one chain at a time (swap, then the delete census and gc), the
     // running one in followUpActive (null: none). The chain's gc holds the
@@ -2501,6 +2501,11 @@ RootErrorStore &actionsErrorStore() {
 
 bool actionsLaneBusy() {
     return actionsState().lane.busy();
+}
+
+bool actionsLaneFree() {
+    const ActionsState &st = actionsState();
+    return !st.stopped && st.runScanDone && !st.lane.busy();
 }
 
 // The menu's table for `sel` (main thread): each row by its income path,

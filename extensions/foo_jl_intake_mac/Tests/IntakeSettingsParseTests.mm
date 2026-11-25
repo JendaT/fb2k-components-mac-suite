@@ -6,7 +6,8 @@
 //  numbers and problems (and parseWatchFolders and parseShareLinks, B11,
 //  built on it), the path
 //  checks on real files in a temp directory, the bun search directories and
-//  candidates, the environment lookup, and the library prefix pair.
+//  candidates, the environment lookup, and the library prefix pair. The
+//  stored switches: confirm_reject, confirm_gc and auto_scan (B12).
 //  Hermetic: every file lives in a fresh temp directory, removed at the end.
 //
 
@@ -280,6 +281,15 @@ static void testConfirmSettings() {
     CHECK(confirmSetting(2) && confirmSetting(-1), "any other value is on, like confirm_reject");
 }
 
+// B12: auto_scan as a stored int.
+static void testAutoScanSetting() {
+    g_context = "auto-scan";
+    CHECK(kAutoScanSettingDefault == 1 && autoScanSetting(kAutoScanSettingDefault), "the default (missing key) is on");
+    CHECK(!autoScanSetting(0), "0 is off");
+    CHECK(autoScanSetting(1), "1 is on");
+    CHECK(autoScanSetting(2) && autoScanSetting(-1), "any other value is on, like the confirmations");
+}
+
 int main(void) {
     @autoreleasepool {
         g_tempRoot = makeTempRoot();
@@ -296,6 +306,7 @@ int main(void) {
         testNormalizedPrefix();
         testLexicalFolderLines();
         testConfirmSettings();
+        testAutoScanSetting();
         testShareLinks();
         removeTree(g_tempRoot);
     }

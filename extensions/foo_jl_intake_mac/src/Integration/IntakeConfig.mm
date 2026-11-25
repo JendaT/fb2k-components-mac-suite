@@ -103,6 +103,7 @@ IntakeSettings load() {
     s.swapPrefixTo = normalizedPrefix(getString(kSwapPrefixTo, ""));
     s.confirmReject = confirmSetting(getInt(kConfirmReject, kConfirmSettingDefault));
     s.confirmGc = confirmSetting(getInt(kConfirmGc, kConfirmSettingDefault));
+    s.autoScan = autoScanSetting(getInt(kAutoScan, kAutoScanSettingDefault));
     PaletteSettings tints = readPalette();
     s.palette = tints.palette;
     s.tintProblems = std::move(tints.problems);

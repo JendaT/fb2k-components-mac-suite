@@ -22,6 +22,8 @@
 //     use it (IntakeSwapPlanner makeLibraryPrefix).
 //   - Confirmations (confirm_reject B6, confirm_gc B9): ints, 0 off,
 //     anything else on, default on (confirmSetting).
+//   - auto_scan (B12): an int read the same way, 0 off, anything else on,
+//     default on (autoScanSetting).
 //
 //  Thread-safety: reentrant. The path checks and findBun read the
 //  filesystem (stat, access), so never call them on the decorate path or,
@@ -176,6 +178,17 @@ inline constexpr int64_t kConfirmSettingDefault = 1;
 // A stored confirmation switch: 0 is off, any other value on (a missing key
 // reads as kConfirmSettingDefault).
 inline bool confirmSetting(int64_t stored) {
+    return stored != 0;
+}
+
+// --- auto-scan (B12) ---
+
+// The default of auto_scan ("Scan income folders automatically"): on.
+inline constexpr int64_t kAutoScanSettingDefault = 1;
+
+// The stored auto_scan switch: 0 is off, any other value on (a missing key
+// reads as kAutoScanSettingDefault).
+inline bool autoScanSetting(int64_t stored) {
     return stored != 0;
 }
 

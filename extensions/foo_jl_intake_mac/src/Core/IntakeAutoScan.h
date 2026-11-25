@@ -6,9 +6,10 @@
 //  lands in an income folder. This file is the pure part: which FSEvents
 //  events count (autoScanHits), whether an income folder is local, on a
 //  mounted share or missing (classifyIncome), and when which income is
-//  scanned (AutoScanScheduler). Integration (IntakeService, IntakeActions)
-//  feeds them from the watcher's sink, the loader, a utility queue and the
-//  mutation lane, and runs the scans; nothing here touches a file.
+//  scanned (AutoScanScheduler). Integration (IntakeAutoScanDriver, wired by
+//  IntakeService; the lane in IntakeActions) feeds them from the watcher's
+//  sink, the loader, a utility queue and the mutation lane, and runs the
+//  scans; nothing here touches a file.
 //
 //  Income entries (AutoScanIncome, autoScanIncomes): the name and path from
 //  `intake income --json`, plus the spelling FSEvents reports for that

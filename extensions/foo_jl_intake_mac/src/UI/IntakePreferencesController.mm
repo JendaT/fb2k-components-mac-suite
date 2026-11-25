@@ -50,9 +50,11 @@
 //     timer); Test CLI (`version --json`, built and run on a background
 //     queue) and Reload now (serviceReload; "Reload finished." when the load
 //     serving the click has ended, not on the first status change).
-//   - Income folders: read-only (incomeDisplay): `intake income` when the
-//     CLI offers it (a failed call is named, never shown as an empty list),
-//     otherwise the folders holding the loaded roots.
+//   - Income folders: "Scan income folders automatically" (auto_scan, B12,
+//     default on; applied at once, IntakeAutoScanDriver), then the folders,
+//     read-only (incomeDisplay): `intake income` when the CLI offers it (a
+//     failed call is named, never shown as an empty list), otherwise the
+//     folders holding the loaded roots.
 //
 //  Applying changes: a text field is written to configStore when editing
 //  ends (Return, Tab, focus loss, and when the page goes away), the popup
@@ -338,6 +340,7 @@ static BOOL g_savedShowsAlpha = NO;
 @property (nonatomic, strong) NSProgressIndicator *testSpinner;
 @property (nonatomic, strong) NSTextField *actionResult;
 
+@property (nonatomic, strong) NSButton *autoScanCheckbox;  // B12
 @property (nonatomic, strong) NSTableView *incomeTable;
 @property (nonatomic, strong) NSTextField *incomeNote;
 @property (nonatomic, copy) NSArray<NSArray<NSString *> *> *incomeRows;  // name, path, state
@@ -721,6 +724,20 @@ static BOOL g_savedShowsAlpha = NO;
 
     // ===== Income folders =====
     [stack addArrangedSubview:JLCreateSectionHeader(@"Income folders")];
+    self.autoScanCheckbox = [NSButton checkboxWithTitle:@"Scan income folders automatically"
+                                                 target:self
+                                                 action:@selector(autoScanChanged:)];
+    self.autoScanCheckbox.font = [NSFont systemFontOfSize:11];
+    self.autoScanCheckbox.accessibilityLabel = @"Scan income folders automatically";
+    NSTextField *autoScanHint =
+        [self wrappingHelper:@"Runs intake scan on an income folder 60 s after new files stop arriving there. "
+                             @"Folders on this Mac are also scanned once at startup."];
+    NSGridView *autoScanGrid = [self gridWithRows:@[
+        @[ [self empty], self.autoScanCheckbox, [self empty] ],
+        @[ [self empty], autoScanHint, [self empty] ],
+    ]];
+    [autoScanGrid cellForView:self.autoScanCheckbox].xPlacement = NSGridCellPlacementLeading;
+    addFullWidth(autoScanGrid);
     NSView *incomeContainer = [self buildIncomeTable];
     addFullWidth(incomeContainer);
     self.incomeNote = JLCreateHelperText(@"");
@@ -834,7 +851,7 @@ static BOOL g_savedShowsAlpha = NO;
     }
     [order addObjectsFromArray:@[
         self.resetColoursButton, self.confirmGcCheckbox, self.confirmRejectCheckbox, self.logLevelPopup,
-        self.testButton, self.reloadButton, self.incomeTable,
+        self.testButton, self.reloadButton, self.autoScanCheckbox, self.incomeTable,
     ]];
     for (NSUInteger i = 0; i < order.count; i++) {
         order[i].nextKeyView = order[(i + 1) % order.count];
@@ -928,6 +945,9 @@ static BOOL g_savedShowsAlpha = NO;
     self.confirmGcCheckbox.state =
         confirmSetting(config::getInt(config::kConfirmGc, kConfirmSettingDefault)) ? NSControlStateValueOn
                                                                                    : NSControlStateValueOff;
+    self.autoScanCheckbox.state =
+        autoScanSetting(config::getInt(config::kAutoScan, kAutoScanSettingDefault)) ? NSControlStateValueOn
+                                                                                    : NSControlStateValueOff;
     [self loadTints];
 }
 
@@ -1392,6 +1412,11 @@ static BOOL g_savedShowsAlpha = NO;
 
 - (void)confirmGcChanged:(id)sender {
     config::setInt(config::kConfirmGc, self.confirmGcCheckbox.state == NSControlStateValueOn ? 1 : 0);
+    [self notifySettingsChanged];
+}
+
+- (void)autoScanChanged:(id)sender {
+    config::setInt(config::kAutoScan, self.autoScanCheckbox.state == NSControlStateValueOn ? 1 : 0);
     [self notifySettingsChanged];
 }
 
