@@ -3,7 +3,7 @@
 A fake `intake` CLI for testing foo_jl_intake_mac without the real tool or
 real music. It prints the doc 03 envelope (`{ok, data, errors}`, contract
 v1.2) with the data shapes of CLI 0.3.0 (branch `feature/intake-cli`) for
-`version`, `status`, `collections`, `income`, `propose`, `assign`,
+`version`, `status`, `collections`, `income`, `scan`, `propose`, `assign`,
 `approve`, `reject`, `execute` (with `--dry-run` and `--resume`) and `gc`.
 The `cli-0.2.1` scenario switches to what CLI 0.2.1 does, for testing the
 consumer's fallbacks.
@@ -51,6 +51,7 @@ exports `INTAKE_MOCK_STATE` and runs `exec .../intake-mock "$@"`.
 | `perf-200` | 0.3.0 | 200 generated roots in `income/perf`, statuses cycling through the lifecycle. Status and income only: it has no reply files, so a mutating command on a root in a status the CLI accepts exits 64 (see below) |
 | `placed-unverified` | 0.3.0 | `default` with the placed root `itk_00000012` at `placed.verified: false` (summary and sidecar), for B9: Swap and Delete local copy must not qualify, and the library index leaves it out. Its gc replies are kept (the CLI would re-verify; the component never asks) |
 | `uat` | 0.3.0 | The user acceptance checklist (PLAN.md): 15 whole-folder roots in `income/uat`, one per row below, standalone (no `base`). Each income folder holds its sidecar and two tracks (the shadow album three; the gc_done root none); the placed, verified roots and the gc_done root have their library copies under `root/library/music.hq/`. Reply files for every command and status the CLI accepts, so a stray click never exits 64; no state changes without a `.next` file (see "States in `uat`") |
+| `autoscan` | 0.3.0 | B12, the automatic income scan: `uat` (its `base`) plus three folders in `income/uat` with two tracks each and no sidecar yet, `UAT Artist - 16 Arrival Resolved`, `17 Arrival Review` and `18 Arrival New`. The state `scan-arrivals` writes their sidecars (two `resolved`, one `new`), `arrivals-proposed` proposes the two resolved ones (see "Scan (B12)") |
 
 The `default` ids are `itk_0000000a` to `itk_00000019`; `status --json` lists
 them with their states.
@@ -145,7 +146,7 @@ it, a `.start` state can also change the reply of its own call
 ## State changes: `$INTAKE_MOCK_STATE/<command>.next`
 
 Each line names a state under `scenarios/<scenario>/states/`. After a
-successful `propose`, `assign`, `approve`, `reject`, `execute` or `gc`
+successful `scan`, `propose`, `assign`, `approve`, `reject`, `execute` or `gc`
 (exit 0 or 1, not `--dry-run`) the mock removes the first line and applies
 that state before it prints its reply, the same order the real CLI writes
 sidecars in. Applying a state rewrites the affected sidecars in `root/`, so
@@ -157,14 +158,14 @@ copies in their shapes; a state is taken whole from the last scenario in the
 
 | State | Change |
 |---|---|
-| `b-proposed`, `b-approved`, `b-placed`, `b-gc_done` | walk `itk_0000000b` through the lifecycle; `b-placed` adds the library copy (and, under the 0.3.0 rules, drops b's assign replies) and `b-gc_done` deletes the local audio |
+| `b-proposed`, `b-approved`, `b-placed`, `b-gc_done` | walk `itk_0000000b` through the lifecycle; `b-placed` adds the library copy (and, under the 0.3.0 rules, drops b's assign replies) and `b-gc_done` deletes the local audio the way gc does (a `gc` file, see "How replies are built") |
 | `e-rejected` | rejects `itk_0000000e` (0.3.0: drops its assign replies) |
 | `e-assigned` | user-assigns `itk_0000000e` to the `--collection` of the call that applied it: `assigned_by` `"user"`, confidence 1, the engine's `ranked` kept, `needs_review` still set, as with the real CLI |
 | `approved-placing` | `itk_00000010` (approved) goes `placing`, as execute writes it first (for `execute.start`); its execute reply stays (the running call answers from it), its dry-run, assign and reject replies go (0.3.0 refuses them), and a `resumed: "completed"` resume reply is added |
 | `approved-placed` | `itk_00000010` goes `placed` (`verified`, `journal_seq` 42) with its library copy under `root/library/music.hq/Test Collection A/`; its execute, dry-run, resume, assign and reject replies go, gc replies are added |
 | `placing-placed` | `itk_00000011` (placing) goes `placed` (`journal_seq` 45) with its library copy under `Test Collection B/`, as a completed resume leaves it; its resume reply goes, gc replies are added |
 | `placing-reverted` | `itk_00000011` goes back to `approved` (history `execute_reverted`) and its resume reply becomes `{"id", "root_path", "resumed": "reverted_to_approved"}`; execute and dry-run replies are added. Use it through `execute.start`: the resume call that applies it answers with the reverted row. The reverted reply stays until the next `--mock-setup` (assign and reject on the reverted root are not modelled) |
-| `placed-gc_done` | B9, for `gc.next`: the placed root `itk_00000012` goes `gc_done` as the real gc leaves it: its local audio (`income/dump/Fixture Artist - Placed Album/01 - Test Track One.wav`, `02 - Test Track Two.wav`) is deleted, the sidecar stays as a `gc_done` tombstone (history `gc_done`), the library copy under `library/music.hq/Test Collection A/` stays, and its gc and gc dry-run replies go (a second gc gets `E_BAD_STATUS`) |
+| `placed-gc_done` | B9, for `gc.next`: the placed root `itk_00000012` goes `gc_done` as the real gc leaves it: its local audio (`income/dump/Fixture Artist - Placed Album/01 - Test Track One.wav`, `02 - Test Track Two.wav`) is renamed into `.intake-gc-itk_00000012/` and deleted, the sidecar stays as a `gc_done` tombstone (history `gc_done`), the library copy under `library/music.hq/Test Collection A/` stays, and its gc and gc dry-run replies go (a second gc gets `E_BAD_STATUS`) |
 | `gc-e_verify` | B9, for `gc.start`: `gc itk_00000012` answers `E_VERIFY` "target re-verification failed: missing: 01 - Test Track One.wav" with `path` = its `placed.target_path` (exit 2 for that root alone, so `gc.next` is not applied); nothing is deleted. Stays until the next `--mock-setup` |
 | `gc-e_no_journal` | B9, for `gc.start`: the same with `E_NO_JOURNAL` "journal record missing or mismatched", `path` = the root folder, as the CLI reports a journal mismatch |
 
@@ -223,7 +224,7 @@ whichever root it names):
 | `uat-01-rejected` | `reject.next` | the same for `itk_000a0001` |
 | `uat-06-assigned` | `assign.next` | `itk_000a0006` user-assigned to the call's `--collection` (`assigned_by` `"user"`, confidence 1, the engine's `ranked` kept, `needs_review` still set) |
 | `uat-07-placed` | `execute.next` | `itk_000a0007` goes `placed` (verified, `journal_seq` 42) with its library copy under `Test Collection A/`; its execute, dry-run, assign and reject replies go, gc replies are added |
-| `uat-09-gc_done`, `uat-10-gc_done`, `uat-11-gc_done` | `gc.next` | that root goes `gc_done` as gc leaves it: its two local tracks are deleted, the sidecar stays as a tombstone, the library copy stays, its gc replies go |
+| `uat-09-gc_done`, `uat-10-gc_done`, `uat-11-gc_done` | `gc.next` | that root goes `gc_done` as gc leaves it: its two local tracks are renamed into `.intake-gc-<id>/` in its folder, then deleted (a `gc` file), the sidecar stays as a tombstone, the library copy stays, its gc replies go |
 | `uat-12-gc_done` | `gc.next` | the same for `itk_000a000c`, its shadow file included (gc deletes every local copy) |
 
 ```bash
@@ -233,6 +234,81 @@ echo uat-06-assigned > assign.next   # Assign to other collection… on itk_000a
 echo uat-07-placed > execute.next    # Execute placement… on itk_000a0007 (the dry run leaves it)
 echo uat-09-gc_done > gc.next        # Delete local copy… on itk_000a0009
 ```
+
+## Scan (B12)
+
+`scan <income>|--all --json` as CLI 0.3.0 `cmdScan` has it, in every
+scenario whose `commands` lists `scan` (all but `cli-0.1`; `version.json`
+lists it too). The income is matched by name, or by its path resolved
+lexically (an absolute path, or one relative to the current directory),
+the first income in `responses/income` order that matches either. Errors,
+as in the CLI: no income given (`E_BAD_ARGS`), no income configured
+(`E_NO_RULES`), an unknown income (`E_NOT_FOUND "unknown income folder:
+<x>"`), all exit 2; an income folder missing on disk is
+`E_NOT_FOUND "income path missing: <name>"` with its path (exit 2 for one
+income, exit 1 next to the blocks of `--all`).
+
+The reply's `data` is one ScanBlock per income: `{income, path, dry_run,
+archives: [], written, kept}`. The real scan writes a sidecar for every
+root it finds without one; the mock writes only what the next line of
+`scan.next` names, so with no `.next` file a scan writes nothing. After
+that state is applied:
+
+- `written`: one WrittenRoot row (`id`, `root_path`, `sidecar_path`,
+  `status`, `needs_review`, `confidence`, `tier_eligible`, `virtual`,
+  `singles`, `albumartist`, `album`) per root the state added under that
+  income, made from its summary row and its new sidecar;
+- `kept`: each folder under that income that already had a sidecar, once.
+
+A `--dry-run` applies no state, so it lists nothing as written. Archives
+are not modelled (`archives` is always `[]`).
+
+A scan state may write only sidecars (`.intake*.json`), into folders that
+already exist under `root/`, plus `responses/` files: a track or a new
+folder under an income folder would itself be an arrival and make the
+component scan again. The mock refuses (exit 64, nothing applied, the
+`.next` line used up) a scan state that would write anything else, holds a
+`gc` file, or names a folder that is no longer there.
+
+Delay and failure use the generic modes: `slow N` in `scan.mode` keeps
+every scan running N seconds before it answers (and applies `scan.next`
+at its end); `exit2 [CODE]`, `garbage`, `partial` etc. as for any command.
+
+To make the component scan, copy a track into the income folder with plain
+`cp`, which writes the data. A clone (`cp -c`, or a Finder copy within one
+APFS volume) may arrive without a content-change event, which the
+component would hold as a file still being written (not checked):
+
+```bash
+S="$INTAKE_MOCK_STATE/root"
+mkdir "$S/income/uat/UAT Artist - 19 Dropped"
+cp "$S/library/music.hq/Test Collection A/UAT Artist/UAT Artist - 2026 - 09 Placed/01 - Test Track One.wav" \
+   "$S/income/uat/UAT Artist - 19 Dropped/"
+```
+
+### States in `autoscan`
+
+| State | For | Change |
+|---|---|---|
+| `scan-arrivals` | `scan.next` | sidecars and summary rows for the three arrivals: `itk_000a0010` (`16 Arrival Resolved`, `resolved`, confidence 0.92), `itk_000a0011` (`17 Arrival Review`, `resolved` with `needs_review`, 0.7) and `itk_000a0012` (`18 Arrival New`, `new` with `needs_review`, 0.41); the scan's `written` lists all three. Reply files for `propose` (the two resolved ones, Test Collection A 0.88 and Test Collection B 0.6), `assign` (`E_NO_EVIDENCE` for the new one), `assign --collection` and `reject` |
+| `arrivals-proposed` | `propose.next` | `itk_000a0010` and `itk_000a0011` go `proposed` (sidecars and summaries, engine proposals); their propose replies go, approve replies are added |
+
+The in-app checks of PLAN-B12 with the `autoscan` scenario (the income is
+`uat`, local, under the state's `root/`):
+
+| Check | Before it, in `$INTAKE_MOCK_STATE` |
+|---|---|
+| 1. Startup scan | nothing: the first load scans `uat` (`0 new roots, 15 kept`) |
+| 2. Copy a track, one scan 60 s later | nothing; copy as above, further tracks into the same folder |
+| 3. No scan for `.part`, `.DS_Store`, a sidecar edit, a removal | nothing |
+| 4. `(scan running)` in the menu | `echo 'slow 20' > scan.mode`, then copy a track |
+| 5. Checkbox off and on | nothing |
+| 6. A failing scan | `echo 'exit2 E_INTERNAL' > scan.mode` (or `exit2 E_NO_RULES`), then copy a track |
+| 7. gc mutes its own renames | `echo uat-09-gc_done > gc.next`, then Delete local copy… on `09 Placed` (`uat-10`/`11`/`12` likewise) |
+| 8. Auto-propose after the scan | `echo scan-arrivals > scan.next; echo arrivals-proposed > propose.next`, before the start (check 1) or before a copy: the scan writes three roots, the component proposes `itk_000a0010` and `itk_000a0011` only, then reloads once |
+| 9. The status bar pill | as 8, with `slow 20` for a longer look |
+
+Remove `scan.mode` after checks 4, 6 and 9.
 
 ## calls.log
 
@@ -257,8 +333,10 @@ inside an argument is written as `\\`, `\t` or `\n`.
 
 - `commands`: the commands this CLI knows; anything else is
   `E_BAD_ARGS "unknown command: <name>"`, exit 2. A listed command the mock
-  does not model (`scan`, `resolve`, `identify`, `bootstrap`) needs a
+  does not model (`resolve`, `identify`, `bootstrap`) needs a
   `<name>.json` or `<name>.envelope` reply; without one the mock exits 64.
+  `scan` is modelled (see "Scan (B12)"); a `scan.envelope` still replaces
+  its reply.
 - `version.json`, `collections.json`: the `data` member. `default` lists the
   real CLI's command names in `version.json` `commands`; keep it in step
   with `commands`.
@@ -316,7 +394,12 @@ with `E_BAD_STATUS`, for example). Consumers should pass each id once.
 A fixture directory (a scenario or a state) may hold `responses/`, `tree/`
 (copied into `root/`), `delete` (paths under the state directory to remove,
 starting with `responses/` or `root/`), `base` (the scenario it extends) and
-`generate` (`roots <n>`). In text fixtures `@ROOT@` becomes
+`generate` (`roots <n>`). A state may also hold `gc`: root ids, one per
+line, whose local files go the way the real gc disposes of them, before
+anything else of the state is applied: every file the root's sidecar lists
+is renamed into `.intake-gc-<id>/` in the root's folder (keeping its
+relative path), then that folder is deleted. A file watcher sees renames at
+the old paths, as with the CLI. In text fixtures `@ROOT@` becomes
 `$INTAKE_MOCK_STATE/root`; in state files, and in `assign.user.d` replies,
 `@COLLECTION@` becomes the call's `--collection` and `@COLLECTION_DIR@`
 (used in `target_path`) the same name as the CLI's `sanitizeComponent` makes

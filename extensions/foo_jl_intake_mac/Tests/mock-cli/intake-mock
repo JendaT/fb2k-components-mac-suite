@@ -4,7 +4,7 @@
 #
 # Emits the doc 03 (contract v1.2) JSON envelope with the data shapes of the
 # real CLI 0.3.0 (branch feature/intake-cli) for version, status, collections,
-# income, propose, assign, approve, reject, execute (incl. --dry-run and
+# income, scan, propose, assign, approve, reject, execute (incl. --dry-run and
 # --resume) and gc, from synthetic fixtures. A scenario can switch to the
 # rules of CLI 0.2.1 (responses/cli-rules). Everything it reads or writes at
 # run time lives in the state directory named by INTAKE_MOCK_STATE, so tests
@@ -199,6 +199,7 @@ log_call "$@"
 #   responses/  copied over $STATE/responses
 #   tree/       copied over $STATE/root
 #   delete      paths relative to $STATE (responses/... or root/...) to remove
+#   gc          root ids whose local files gc disposes of (gc_stage)
 #   generate    "roots <n>": synthesize n roots (perf scenarios)
 # Text fixtures get @ROOT@ (and, for states, @COLLECTION@ and the sanitized
 # path component @COLLECTION_DIR@) replaced. Every *.wav is written as a
@@ -302,12 +303,52 @@ apply_deletes() {
     done < "$list"
 }
 
+# A state's `gc` file names root ids, one per line, whose local files gc
+# disposes of the way the real gc does (commands-p3.ts disposeLocal): every
+# file the root's sidecar lists is first renamed into the stage dir
+# .intake-gc-<id>/ inside the root's folder, keeping its relative path, and
+# only then is the stage dir deleted. A file watcher sees renames at the old
+# paths (what the component's gc mute has to cover, B12), then removals
+# inside the stage dir. It runs before the state's files are copied, so the
+# gc_done tombstone is written after the files are gone, as by the CLI.
+gc_stage() {
+    local list="$1/gc" id rp side s rel stage files
+    local idre='^itk_[0-9a-f]{8}$' re='"path": *"([^"]*)"'
+    while IFS= read -r id || [ -n "$id" ]; do
+        case "$id" in '' | '#'*) continue ;; esac
+        [[ $id =~ $idre ]] || die "gc entries are root ids: $id ($list)"
+        status_row "$id" || die "gc: no root $id ($list)"
+        json_field root_path "$REPLY"; rp="$REPLY"
+        case "$rp" in "$ROOT"/*) ;; *) die "gc: root $id is not under root/" ;; esac
+        case "$rp" in */.. | */../*) die "gc: unsafe root path for $id" ;; esac
+        side="$rp/.intake.$id.json"
+        [ -f "$side" ] || side="$rp/.intake.json"
+        [ -f "$side" ] || die "gc: no sidecar for $id under $rp"
+        read_joined "$side"; s="$REPLY"
+        # files[].path; no other sidecar key is spelled "path".
+        files=()
+        while [[ $s =~ $re ]]; do
+            files+=("${BASH_REMATCH[1]}")
+            s="${s#*"${BASH_REMATCH[0]}"}"
+        done
+        stage="$rp/.intake-gc-$id"
+        for rel in ${files[@]+"${files[@]}"}; do
+            case "$rel" in '' | /* | .. | ../* | */.. | */../*) die "gc: unsafe file path in $side: $rel" ;; esac
+            [ -f "$rp/$rel" ] || continue
+            case "$rel" in */*) mkdir -p "$stage/${rel%/*}" ;; *) mkdir -p "$stage" ;; esac
+            mv -f "$rp/$rel" "$stage/$rel"
+        done
+        rm -rf "$stage"
+    done < "$list"
+}
+
 overlay() {
     local dir="$1"
     # Writing through a symlink could leave the state dir; refuse instead.
     if [ -n "$(find "$ROOT" "$RESP" -type l 2>/dev/null | head -n 1)" ]; then
         die "symlink found under $STATE; refusing to write through it"
     fi
+    [ -f "$dir/gc" ] && gc_stage "$dir"
     copy_tree "$dir/responses" "$RESP"
     copy_tree "$dir/tree" "$ROOT"
     apply_deletes "$dir/delete"
@@ -714,6 +755,167 @@ cmd_income() {
     EXIT=0
 }
 
+# scan (B12): `scan <income>|--all`, as cmdScan (commands.ts). The income is
+# matched by name or by its path (path.resolve, done lexically), the first
+# income in file order that matches either. The real scan writes a sidecar
+# for every root it finds without one; the mock's stand-in is the next line
+# of scan.next, applied by apply_next as for any mutating call, so only a
+# queued state writes anything. Once it is applied, scan_reply prints one
+# ScanBlock per income: `written` = the roots the state added under that
+# income, `kept` = each folder under it that already had a sidecar. A dry
+# run applies nothing and so lists nothing as written. No archives.
+SCAN_NAMES=()     # the incomes this call scans, present on disk
+SCAN_PATHS=()
+SCAN_BEFORE=" "   # the root ids before the call, " id1 id2 "
+cmd_scan() {
+    if [ -f "$RESP/scan.envelope" ]; then emit_verbatim scan; fi
+    [ -f "$RESP/income" ] || die "scenario has no responses/income"
+    local line rel sel want f i=0 found=-1 names=() paths=() picked=()
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in '' | '#'*) continue ;; esac
+        case "$line" in
+            *$'\t'*) ;;
+            *) die "responses/income lines are <name><TAB><path under root/>: $line" ;;
+        esac
+        rel="${line#*$'\t'}"
+        case "$rel" in
+            '' | /* | .. | ../* | */.. | */../*) die "responses/income path must stay under root/: $rel" ;;
+        esac
+        names+=("${line%%$'\t'*}")
+        paths+=("$ROOT/$rel")
+    done < "$RESP/income"
+    if [ ${#names[@]} -eq 0 ]; then
+        fail E_NO_RULES "no income folders configured (rules dir: not found)"
+        return
+    fi
+    if [ $ALL -eq 1 ]; then
+        while [ $i -lt ${#names[@]} ]; do picked+=("$i"); i=$((i + 1)); done
+    else
+        sel="${REFS[0]-}"
+        if [ -z "$sel" ]; then
+            fail E_BAD_ARGS "usage: intake scan <income>|--all"
+            return
+        fi
+        case "$sel" in /*) want="$sel" ;; *) want="$PWD/$sel" ;; esac
+        resolve_lexically "$want"; want="$REPLY"
+        while [ $i -lt ${#names[@]} ]; do
+            resolve_lexically "${paths[$i]}"
+            if [ "${names[$i]}" = "$sel" ] || [ "$REPLY" = "$want" ]; then found=$i; break; fi
+            i=$((i + 1))
+        done
+        if [ $found -lt 0 ]; then
+            fail E_NOT_FOUND "unknown income folder: $sel"
+            return
+        fi
+        picked=("$found")
+    fi
+    SCAN_NAMES=()
+    SCAN_PATHS=()
+    for i in "${picked[@]}"; do
+        if [ -e "${paths[$i]}" ]; then
+            SCAN_NAMES+=("${names[$i]}")
+            SCAN_PATHS+=("${paths[$i]}")
+        else
+            add_error E_NOT_FOUND "income path missing: ${names[$i]}" "${paths[$i]}"
+        fi
+    done
+    # finish(): no block at all is exit 2 with data null.
+    if [ ${#SCAN_NAMES[@]} -eq 0 ]; then
+        DATA="null"
+        EXIT=2
+        return
+    fi
+    EXIT=0
+    [ -n "$ERRS" ] && EXIT=1
+    SCAN_BEFORE=" "
+    for f in "$RESP"/status.d/*.json; do
+        [ -e "$f" ] || continue
+        f="${f##*/}"
+        SCAN_BEFORE="$SCAN_BEFORE${f%.json} "
+    done
+    DATA="[]"   # scan_reply fills it once the scan's state is applied
+}
+
+# The WrittenRoot row (commands.ts) of root $1 with summary row $2 -> REPLY:
+# the summary's fields plus confidence, tier_eligible, virtual and singles
+# from its sidecar, which the scan state must have written.
+scan_written_row() {
+    local id="$1" row="$2" rp st nr aa al side s conf=0 tier="" virt=false singles=false re
+    json_field root_path "$row"; rp="$REPLY"
+    json_field status "$row"; st="$REPLY"
+    json_field needs_review "$row"; nr="${REPLY:-false}"
+    json_field albumartist "$row"; aa="$REPLY"
+    json_field album "$row"; al="$REPLY"
+    side="$rp/.intake.$id.json"
+    [ -f "$side" ] || side="$rp/.intake.json"
+    [ -f "$side" ] || die "scan: the state added $id without its sidecar under $rp"
+    read_joined "$side"; s="$REPLY"
+    # The first confidence is the cluster's (a fresh sidecar has no proposal).
+    re='"confidence": *([0-9.]+)'; [[ $s =~ $re ]] && conf="${BASH_REMATCH[1]}"
+    re='"tier_eligible": *"([^"]*)"'; [[ $s =~ $re ]] && tier="${BASH_REMATCH[1]}"
+    re='"virtual": *true'; [[ $s =~ $re ]] && virt=true
+    re='"singles": *true'; [[ $s =~ $re ]] && singles=true
+    if [ -n "$aa" ]; then aa="\"$aa\""; else aa=null; fi
+    if [ -n "$al" ]; then al="\"$al\""; else al=null; fi
+    REPLY="{\"id\":\"$id\",\"root_path\":\"$rp\",\"sidecar_path\":\"$side\",\"status\":\"$st\",\"needs_review\":$nr,\"confidence\":$conf,\"tier_eligible\":\"$tier\",\"virtual\":$virt,\"singles\":$singles,\"albumartist\":$aa,\"album\":$al}"
+}
+
+scan_reply() {
+    [ ${#SCAN_NAMES[@]} -gt 0 ] || return 0
+    local i=0 blocks="" name path dry=false written kept seen f row rp id
+    [ $DRY -eq 1 ] && dry=true
+    while [ $i -lt ${#SCAN_NAMES[@]} ]; do
+        json_escape "${SCAN_NAMES[$i]}"; name="$REPLY"
+        json_escape "${SCAN_PATHS[$i]}"; path="$REPLY"
+        written=""
+        kept=""
+        seen=$'\n'
+        for f in "$RESP"/status.d/*.json; do
+            [ -e "$f" ] || continue
+            read_line "$f"; row="$REPLY"
+            json_field root_path "$row"; rp="$REPLY"
+            case "$rp" in "$path" | "$path"/*) ;; *) continue ;; esac
+            id="${f##*/}"
+            id="${id%.json}"
+            case "$SCAN_BEFORE" in
+                *" $id "*)
+                    # Kept once per folder (virtual roots share one).
+                    case "$seen" in *$'\n'"$rp"$'\n'*) continue ;; esac
+                    seen="$seen$rp"$'\n'
+                    kept="$kept${kept:+,}\"$rp\"" ;;
+                *)
+                    scan_written_row "$id" "$row"
+                    written="$written${written:+,}$REPLY" ;;
+            esac
+        done
+        blocks="$blocks${blocks:+,}{\"income\":\"$name\",\"path\":\"$path\",\"dry_run\":$dry,\"archives\":[],\"written\":[$written],\"kept\":[$kept]}"
+        i=$((i + 1))
+    done
+    DATA="[$blocks]"
+}
+
+# A scan state may only write sidecars into folders that are already there
+# (and status.d rows, and reply files): an audio file or a new folder under
+# an income folder would itself be an arrival and schedule the component's
+# next automatic scan (B12). Refused (exit 64) before any of it is applied.
+check_scan_state() {
+    local dir="$1" f rel
+    [ -d "$dir/tree" ] || return 0
+    [ ! -f "$dir/gc" ] || die "scan state ${dir##*/} must not hold a gc file"
+    while IFS= read -r -d '' f; do
+        rel="${f#"$dir/tree"/}"
+        if [ -d "$f" ]; then
+            [ -d "$ROOT/$rel" ] ||
+                die "scan state ${dir##*/} would create root/$rel; a scan writes sidecars into existing folders only"
+            continue
+        fi
+        case "${f##*/}" in
+            .intake*.json) ;;
+            *) die "scan state ${dir##*/} may only write sidecars (.intake*.json): tree/$rel" ;;
+        esac
+    done < <(find "$dir/tree" -mindepth 1 -print0)
+}
+
 # Refs from argv plus --batch (one per line, blank lines and # comments
 # skipped), as cli.ts refsWithBatch. Only approve and reject read --batch
 # (commands-p3.ts); the other commands ignore it. Returns 1 after fail()
@@ -986,6 +1188,7 @@ consume_state() {
         printf 'intake-mock: unknown state %s (from %s)\n' "$first" "$f" >&2
         return 0
     fi
+    [ "$CMD" = "scan" ] && check_scan_state "$dir"
     SUBST_COLLECTION=1
     overlay "$dir"
     SUBST_COLLECTION=0
@@ -996,7 +1199,7 @@ consume_state() {
 apply_next() {
     [ $SIDE_EFFECTS -eq 1 ] && [ $DRY -eq 0 ] || return 0
     [ "$EXIT" -eq 0 ] || [ "$EXIT" -eq 1 ] || return 0
-    case "$CMD" in propose | assign | approve | reject | execute | gc) ;; *) return 0 ;; esac
+    case "$CMD" in scan | propose | assign | approve | reject | execute | gc) ;; *) return 0 ;; esac
     consume_state "$STATE/$CMD.next"
 }
 
@@ -1032,16 +1235,19 @@ run_command() {
         version | collections) cmd_data_file ;;
         status) cmd_status ;;
         income) cmd_income ;;
+        scan) cmd_scan ;;
         propose | assign | approve | reject | execute | gc) cmd_rows ;;
         *)
-            # A command the scenario lists (scan, resolve, identify,
-            # bootstrap) that the mock does not model: canned replies only.
+            # A command the scenario lists (resolve, identify, bootstrap)
+            # that the mock does not model: canned replies only.
             if [ -f "$RESP/$CMD.envelope" ]; then emit_verbatim "$CMD"; fi
             if [ -f "$RESP/$CMD.json" ]; then cmd_data_file
             else die "the mock does not model $CMD; give the scenario responses/$CMD.json or $CMD.envelope"
             fi ;;
     esac
     apply_next
+    # The scan's reply lists what its state wrote, so it is built after it.
+    if [ "$CMD" = "scan" ]; then scan_reply; fi
 }
 
 # ---------------------------------------------------------------------------

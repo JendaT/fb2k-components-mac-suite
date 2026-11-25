@@ -1,5 +1,3 @@
-# gc deleted the local audio; the sidecar stays as a gc_done tombstone, the library copy stays.
-root/income/uat/UAT Artist - 09 Placed/01 - Test Track One.wav
-root/income/uat/UAT Artist - 09 Placed/02 - Test Track Two.wav
+# gc deleted the local audio (the gc file); the sidecar stays as a gc_done tombstone, the library copy stays.
 responses/gc.d/itk_000a0009.json
 responses/gc.dry-run.d/itk_000a0009.json

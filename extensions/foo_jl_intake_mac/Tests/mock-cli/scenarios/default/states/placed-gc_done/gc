@@ -1,0 +1,2 @@
+# gc renames the files the sidecar lists into .intake-gc-itk_00000012/ in the root folder, then deletes them.
+itk_00000012

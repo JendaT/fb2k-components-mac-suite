@@ -1,6 +1,4 @@
-# gc deleted the local audio; the sidecar stays as a gc_done tombstone (CR-004.13).
-root/income/dump/Fixture Artist - Placed Album/01 - Test Track One.wav
-root/income/dump/Fixture Artist - Placed Album/02 - Test Track Two.wav
+# gc deleted the local audio (the gc file); the sidecar stays as a gc_done tombstone (CR-004.13).
 # gc_done: no more gc.
 responses/gc.d/itk_00000012.json
 responses/gc.dry-run.d/itk_00000012.json
