@@ -81,6 +81,31 @@ a time [`src/Core/IntakeMutationLane.h`]:
 - The automatic scan (B12) holds it from the scan's start until its exit
   and the propose after it. It takes the lane only when it is free; a due
   scan waits.
+- A propose of more than 5 roots (B12; the menu's Propose, the propose
+  after an assign, the one after an automatic scan) runs as a chain of
+  chunks of up to 5 roots [`src/Core/IntakeProposeChain.h`], each its own
+  lane run (`LaneHolder::Mutating`, `LaneRun::ProposeChunk`), so no batch
+  holds the lane for 15 minutes and a cap kill loses at most one chunk.
+  The lane is released after each chunk. Then one reload; its end
+  re-checks the pending roots' statuses (a root no longer `resolved`, or
+  missing from the view, is skipped) and starts the next chunk. Roots that
+  join while no chunk runs (a new chain included) get one more reload
+  first, so the roots a scan or an assign just wrote are in the view. A
+  busy lane (a click or an automatic scan took it between chunks) is
+  retried with one `dispatch_after` of 2 s on the main queue, never two at
+  once, never after quit, with one Info line per wait; no CLI call is
+  queued. One chain at a time: roots asked for meanwhile join it,
+  deduplicated by id against its pending, running and handled roots.
+- A chunk's 10 s report is one Info line (no tooltip, no reload). The
+  chain stops after a chunk that was killed at the hard cap (envelope
+  outcome `Timeout`: a mutating call is killed only there) or ended with
+  `E_NO_CLI` (or, never for a mutating call, cancelled), after a refused
+  chunk, and before a chunk when the view is inert or the CLI path is
+  gone; it goes on after per-root errors and other envelope errors. A stop
+  logs one Info line naming the roots not proposed and ends the status bar
+  entry failed. A quit drops the chain: a chunk running finishes on its
+  own (its result only releases the lane), and the roots not started get
+  one Info line.
 - Mutating menu items are disabled while the lane is busy, with
   "(execute running)" in their titles during an execute and
   "(scan running)" during the automatic scan. A click that finds the lane
@@ -298,7 +323,11 @@ share, a symlink loop): no scan, one Debug line.
   (`LaneRun::ProposeAfterScan`). `data` is not pinned by doc 03 and is
   read leniently. The lane stays `LaneHolder::Scan`, so the menu keeps
   "(scan running)". The propose's root errors become tooltips (baseline
-  resolved); its console line and its 10 s report are Info.
+  resolved); its console line and its 10 s report are Info. More than 5
+  roots go to the chunked propose instead (see The mutation lane): the run
+  ends with the scan's own result, without a reload of its own (the
+  chain's first reload, which starts its first chunk, is the run's one
+  reload).
 - **The end** (`endAutoScanRun`, the only path that lets go of the token):
   the lane is released, the entry ends, one reload is asked for when a
   process ran, and the driver gets the exit and arms the next wakeup. After
