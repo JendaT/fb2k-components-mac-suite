@@ -246,10 +246,21 @@
 //  and no refresh (a scan has no roots); at the end "done in 12.3 s: N new
 //  root(s), K kept" (counts read leniently from data[].written and kept),
 //  "done ... with errors", "failed: <errors>" or "not started (...)". No
-//  per-root error is set. Every path that releases the lane (finish,
-//  refusal, E_NO_CLI, cap kill) ends the status bar entry and hands the
-//  exit to the driver; one that ran a process refreshes first. After
-//  on_quit the result only releases the lane.
+//  per-root error is set for the scan. After a scan that exited 0 or 1, the
+//  same lane run proposes the roots it newly wrote that are resolved
+//  (PLAN-B12 scope addition 1; IntakeAutoScanResult proposeAfterScan: never
+//  a new root, never one it kept, never the income folder itself): one Info
+//  line "propose: starting after auto-scan of <name> for N roots: <ids>",
+//  then `propose <ids>` on the scan's lane token. The lane stays
+//  LaneHolder::Scan until that propose ends, so the menu keeps reading
+//  " (scan running)". The propose's errors become tooltips like any
+//  propose's, but its console line and its 10 s report are Info (the 10 s
+//  report without tooltip or refresh, like the scan's); a cap kill of the
+//  propose does not disable the income (only the scan's does). Every path
+//  that releases the lane (finish, refusal, E_NO_CLI, cap kill, nothing to
+//  propose, the propose's finish or refusal) ends the status bar entry and
+//  hands the exit to the driver; one that ran a process refreshes first,
+//  once per run. After on_quit the result only releases the lane.
 //
 //  gc mute (B12): every gc (Delete local copy…, confirmed or not, and the
 //  Execute follow-up's delete on its held token) goes through runMutation,
@@ -263,7 +274,9 @@
 //  entry from the moment it holds its lane token, run stem or serial until
 //  every path that lets go of it (result, refusal, timeout) calls
 //  activityEnd; the propose after an assign renames the assign's entry and
-//  its end folds in the assign's result; the dry run's entry outlives its
+//  its end folds in the assign's result, and the propose after an
+//  auto-scan does the same with the scan's ("Proposing N albums…", then
+//  "Scanned <name>, proposed N albums"); the dry run's entry outlives its
 //  10 s report until its answer, at most 15 minutes, and the scan's its 10 s
 //  report until its exit. actionsShutdown clears them. The list of pairs is
 //  in IntakeActivityHub.h.
@@ -370,7 +383,8 @@ enum class AutoScanStart {
 // Main thread (B12, IntakeAutoScanDriver): `scan <income> --json` for
 // `job` on the mutation lane (see "Auto-scan" at the top of this file).
 // `done` runs once on the main thread with the exit, after the lane is
-// released (and the refresh asked for when the scan ran), never after
+// released at the end of the run (the propose after the scan included) and
+// the refresh asked for when the scan ran, never after
 // on_quit; it never runs when this returns anything but Started.
 AutoScanStart actionsStartAutoScan(const AutoScanJob &job, std::function<void(AutoScanExit how)> done);
 

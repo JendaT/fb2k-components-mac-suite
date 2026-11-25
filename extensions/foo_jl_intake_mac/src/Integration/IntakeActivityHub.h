@@ -27,8 +27,12 @@
 //   - lane token, B12's auto-scan: actionsStartAutoScan begins it ("Scanning
 //     income <name>…") once it holds the lane; endAutoScanRun ends it on
 //     every path that releases the lane (its finish, with the roots it
-//     wrote as the count; a refused request; E_NO_CLI; the cap kill). Its
-//     10 s report does not end it.
+//     wrote as the count; a refused request; E_NO_CLI; the cap kill). The
+//     propose after it (proposeAfterScanOrEnd) renames it (ScanThenPropose,
+//     "Proposing N albums…"), and that propose's finish or refusal ends it
+//     through endAutoScanRun with the scan's result folded in
+//     (activityAfterScan: a scan with errors ends the entry failed). The
+//     10 s reports do not end it.
 //   - run stem: startDetachedRun and onRunScan's adopted runs begin
 //     (activityBeginRun); finishRun (at tracker.remove) and onRunRefused end.
 //   - swap serial: swapStart begins, its finish ends.

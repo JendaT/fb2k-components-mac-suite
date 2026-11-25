@@ -435,11 +435,16 @@ struct ActionsState {
     uint64_t assignToken = 0;
     ActivityResult assignResult;
     // B12: the auto-scan holding the lane on autoScanToken (0: none), its
-    // income's name for the lines, and the driver's `done`, called once
-    // when its run ends (endAutoScanRun).
+    // income's name for the lines and path for the auto-propose, and the
+    // driver's `done`, called once when its run ends (endAutoScanRun).
     uint64_t autoScanToken = 0;
     std::string autoScanIncome;
+    std::string autoScanIncomePath;
     std::function<void(AutoScanExit)> autoScanDone;
+    // B12: the scan's status-bar result while the propose after it runs on
+    // autoScanToken; that propose's end folds it in (activityAfterScan), so
+    // a scan with errors never ends with the check icon.
+    ActivityResult autoScanResult;
     // B12: the auto-scan mute (IntakeAutoScanDriver autoScanMuteGc) of the
     // gc holding the lane on gcMuteToken (0: none); gc's exit or refusal
     // ends it (endGcMute).
@@ -552,10 +557,15 @@ std::string whyNotStartable() {
 // picker is followed by `propose` for the roots that were resolved
 // (IntakeAssignPropose), on the same lane token: the lane is held from the
 // assign's start to the propose's end, and released on every other path.
+// B12: an auto-scan is followed the same way by `propose` for the resolved
+// roots it wrote (IntakeAutoScanResult proposeAfterScan); the scan itself
+// runs outside startOnQueue (startAutoScanOnQueue), so only its propose is
+// a LaneRun here.
 enum class LaneRun {
     Single,             // one call: its finish releases the lane and refreshes
     AssignThenPropose,  // an assign; its finish may start the propose
     ProposeAfterAssign, // that propose; its finish (or refusal) ends the run
+    ProposeAfterScan,   // B12: the propose after an auto-scan; its finish (or refusal) ends the run (endAutoScanRun)
 };
 
 void startOnQueue(uint64_t token, std::shared_ptr<const CliConfig> config, std::shared_ptr<const CliRequest> request,
@@ -576,6 +586,20 @@ ActivityResult afterAssignResult(uint64_t token, const ActivityResult &propose) 
     st.assignResult = ActivityResult();
     return activityAfterAssign(assign, propose);
 }
+
+// B12: the status-bar result of the propose after the auto-scan on `token`,
+// with the scan's result folded in (activityAfterScan); `propose` alone
+// when `token` is not the auto-scan's.
+ActivityResult afterScanResult(uint64_t token, const ActivityResult &propose) {
+    ActionsState &st = actionsState();
+    if (token == 0 || st.autoScanToken != token) return propose;
+    return activityAfterScan(st.autoScanResult, propose);
+}
+
+// B12: every path that lets go of the auto-scan's lane token (see the
+// auto-scan section below).
+void endAutoScanRun(uint64_t token, const ActivityResult &activity, std::optional<size_t> count, AutoScanExit how,
+                    bool refresh);
 
 // The assign of an AssignThenPropose run finished (its errors and console
 // line are already out): starts the propose on `token`, or releases the
@@ -637,9 +661,17 @@ void endGcMute(uint64_t token) {
     autoScanUnmuteGc(mute);
 }
 
-void onBudget(uint64_t token, CliCommand command, const std::vector<MutationRoot> &roots, CliBudgetEvent event) {
+void onBudget(uint64_t token, CliCommand command, const std::vector<MutationRoot> &roots, CliBudgetEvent event,
+              LaneRun run = LaneRun::Single) {
     ActionsState &st = actionsState();
     if (st.stopped) return;
+    if (run == LaneRun::ProposeAfterScan) {
+        // B12: like the scan's own 10 s report: one Info line, no tooltip
+        // and no refresh (the auto-scan's run reloads once, at its end);
+        // its status-bar entry stays until it exits.
+        if (token == st.autoScanToken) logInfo(autoScanProposeBudgetLine(st.autoScanIncome));
+        return;
+    }
     const std::string name = cliCommandName(command);
     // B14: the lane is released here for a dry run, but its status-bar entry
     // stays until the answer arrives (onExecuteDryRun, Q2); a real call
@@ -668,6 +700,11 @@ void onFinished(uint64_t token, CliCommand command, const std::vector<MutationRo
     ActionsState &st = actionsState();
     endGcMute(token);
     if (st.stopped) {
+        // B12: only releases the lane after quit.
+        if (run == LaneRun::ProposeAfterScan) {
+            endAutoScanRun(token, ActivityResult(), std::nullopt, AutoScanExit::Finished, false);
+            return;
+        }
         // A run of two calls lets go of the lane here: no propose after quit.
         if (run != LaneRun::Single) st.lane.finish(token);
         return;
@@ -679,9 +716,12 @@ void onFinished(uint64_t token, CliCommand command, const std::vector<MutationRo
     const bool proposeNext = run == LaneRun::AssignThenPropose && command == CliCommand::Assign;
     const MutationOutcome outcome = summarizeMutation(command, roots, result.envelope);
     // B14: the status-bar result of this call (the entry of its lane token);
-    // the propose after an assign folds in the assign's.
+    // the propose after an assign folds in the assign's, the one after an
+    // auto-scan the scan's.
     const ActivityResult own = activityResultFor(outcome, roots.size(), name);
-    const ActivityResult activity = run == LaneRun::ProposeAfterAssign ? afterAssignResult(token, own) : own;
+    const ActivityResult activity = run == LaneRun::ProposeAfterAssign ? afterAssignResult(token, own)
+                                    : run == LaneRun::ProposeAfterScan ? afterScanResult(token, own)
+                                                                       : own;
     if (!proposeNext && !st.lane.finish(token)) {
         activityEnd(activityLaneKey(token), activity);
         logInfo(name + ": a late dry-run result was ignored");
@@ -705,13 +745,21 @@ void onFinished(uint64_t token, CliCommand command, const std::vector<MutationRo
         errors.set(entry.first, entry.second, status == menuStatus.end() ? IntakeStatus::Unknown : status->second);
         logDebug("tooltip " + entry.first + " until its status changes: " + entry.second);
     }
-    if (outcome.isError) {
+    // B12: everything the auto-scan's run logs is Info (its errors also
+    // show as tooltips and in the status bar).
+    if (outcome.isError && run != LaneRun::ProposeAfterScan) {
         logError(outcome.consoleLine);
     } else {
         logInfo(outcome.consoleLine);
     }
     if (proposeNext) {
         proposeAfterAssignOrEnd(token, roots, result, outcome, activity);  // one refresh, after the propose
+        return;
+    }
+    if (run == LaneRun::ProposeAfterScan) {
+        // The end of the auto-scan's run: its entry (the count stays the
+        // propose's), one refresh, then the driver's exit.
+        endAutoScanRun(token, activity, std::nullopt, AutoScanExit::Finished, true);
         return;
     }
     activityEnd(activityLaneKey(token), activity);
@@ -721,6 +769,17 @@ void onFinished(uint64_t token, CliCommand command, const std::vector<MutationRo
 
 void onRefused(uint64_t token, CliCommand command, const std::string &refusal, LaneRun run = LaneRun::Single) {
     ActionsState &st = actionsState();
+    if (run == LaneRun::ProposeAfterScan) {
+        // B12: Info, like the rest of the auto-scan's run (a caller bug, so
+        // no tooltip); the scan before it did run, so the run still
+        // refreshes once (after on_quit endAutoScanRun only frees the lane).
+        if (!st.stopped && token != 0 && token == st.autoScanToken) {
+            logInfo("propose: not started after auto-scan of " + st.autoScanIncome + " (" + refusal + ")");
+        }
+        endAutoScanRun(token, afterScanResult(token, activityNotStarted(refusal)), std::nullopt,
+                       AutoScanExit::Finished, true);
+        return;
+    }
     endGcMute(token);
     st.lane.finish(token);
     const ActivityResult notStarted = activityNotStarted(refusal);
@@ -746,9 +805,9 @@ void startOnQueue(uint64_t token, std::shared_ptr<const CliConfig> config, std::
     std::string refusal;
     const bool started = startCliCommand(
         st.runner, *config, *request, options, st.queue,
-        [token, command, roots](CliBudgetEvent event) {
+        [token, command, roots, run](CliBudgetEvent event) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                onBudget(token, command, *roots, event);
+                onBudget(token, command, *roots, event, run);
             });
         },
         [token, command, roots, run](CliResult &&result) {
@@ -780,21 +839,54 @@ void endAutoScanRun(uint64_t token, const ActivityResult &activity, std::optiona
     std::function<void(AutoScanExit)> done = std::move(st.autoScanDone);
     st.autoScanToken = 0;
     st.autoScanIncome.clear();
+    st.autoScanIncomePath.clear();
     st.autoScanDone = nullptr;
+    st.autoScanResult = ActivityResult();
     activityEnd(activityLaneKey(token), activity, count);
     if (st.stopped) return;
     if (refresh) serviceRefreshAfterCommand();
     if (done) done(how);
 }
 
-// The scan on `token` finished and its line is out: the end of its lane
-// run. This is where PLAN-B12 scope addition 1 (the auto-propose, the next
-// step) hands the resolved roots the scan wrote (outcome.reply.written) to
-// `propose` on the same token, keeping the lane and the status-bar entry
-// until that propose ends; as it stands no propose follows and the run
-// ends with the scan.
-void proposeAfterScanOrEnd(uint64_t token, const AutoScanOutcome &outcome) {
-    endAutoScanRun(token, outcome.activity, outcome.newRoots, outcome.exit, true);
+// The scan on `token` finished (exit Finished: any envelope outcome but
+// E_NO_CLI and the cap kill) and its line is out. PLAN-B12 scope addition
+// 1: `propose` for the resolved roots it wrote (proposeAfterScan) on the
+// same token, like the propose after an assign (proposeAfterAssignOrEnd):
+// the lane (still LaneHolder::Scan, so the menu keeps " (scan running)")
+// and the status-bar entry (renamed ScanThenPropose) are kept until that
+// propose's finish or refusal ends the run with the scan's result folded
+// in (afterScanResult). When there is nothing to propose, or it cannot
+// start, the run ends here. Either way one refresh, at the end.
+void proposeAfterScanOrEnd(uint64_t token, const AutoScanOutcome &outcome, CliOutcome scanOutcome) {
+    ActionsState &st = actionsState();
+    const ScanFollowUp next = proposeAfterScan(st.autoScanIncome, st.autoScanIncomePath, scanOutcome, outcome.reply);
+    if (!next.skippedLine.empty()) logDebug(next.skippedLine);
+    if (next.propose.empty()) {
+        endAutoScanRun(token, outcome.activity, outcome.newRoots, outcome.exit, true);
+        return;
+    }
+    CliConfig config;
+    if (!serviceMutationConfig(config)) {
+        const std::string line =
+            "propose: not run after auto-scan of " + st.autoScanIncome + ": intake is not running or has no CLI path";
+        logInfo(line);
+        ActivityResult notStarted = activityNotStarted(line);
+        notStarted.kind = ActivityKind::Propose;  // the entry is still the scan's
+        endAutoScanRun(token, activityAfterScan(outcome.activity, notStarted), outcome.newRoots, outcome.exit, true);
+        return;
+    }
+    st.autoScanResult = outcome.activity;
+    CliRequest request;
+    request.command = CliCommand::Propose;
+    request.ids = next.propose;
+    logInfo(autoScanProposeStartLine(st.autoScanIncome, request.ids));
+    activityRename(activityLaneKey(token), ActivityKind::ScanThenPropose, request.ids.size(), st.autoScanIncome);
+    auto sharedConfig = std::make_shared<const CliConfig>(std::move(config));
+    auto sharedRequest = std::make_shared<const CliRequest>(std::move(request));
+    auto sharedRoots = std::make_shared<const std::vector<MutationRoot>>(next.roots);
+    dispatch_async(st.queue, ^{
+        startOnQueue(token, sharedConfig, sharedRequest, sharedRoots, LaneRun::ProposeAfterScan);
+    });
 }
 
 void onAutoScanBudget(uint64_t token) {
@@ -821,7 +913,7 @@ void onAutoScanFinished(uint64_t token, const CliResult &result) {
         endAutoScanRun(token, outcome.activity, outcome.newRoots, outcome.exit, true);
         return;
     }
-    proposeAfterScanOrEnd(token, outcome);
+    proposeAfterScanOrEnd(token, outcome, result.envelope.outcome);
 }
 
 // startCliCommand refused the request (nothing ran: no refresh).
@@ -2662,6 +2754,7 @@ AutoScanStart actionsStartAutoScan(const AutoScanJob &job, std::function<void(Au
     if (token == 0) return AutoScanStart::LaneTaken;
     st.autoScanToken = token;
     st.autoScanIncome = name;
+    st.autoScanIncomePath = job.income.path;
     st.autoScanDone = std::move(done);
     logInfo(autoScanStartLine(name, job.startup));
     // B14: from here to every path that releases the lane (endAutoScanRun).
