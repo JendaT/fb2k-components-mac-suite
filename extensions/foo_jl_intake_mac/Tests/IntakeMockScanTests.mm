@@ -8,16 +8,17 @@
 //     archives, written, kept}); with nothing queued it writes nothing and
 //     keeps every folder that has a sidecar;
 //   - scan.next applies a scan state: `written` lists the roots it added
-//     (autoscan's scan-arrivals: two resolved, one new), only sidecars are
-//     written, and the mock's propose answers for the resolved roots;
+//     (autoscan's scan-arrivals: two resolved, one of them needing review,
+//     and one new), only sidecars are written, and the mock's propose
+//     answers for the root the component proposes (resolved, no review);
 //   - the CLI's errors: no income, an unknown or a missing income, --all
 //     next to a missing one, an income named by its path, a dry run, a CLI
 //     without scan;
 //   - a scan state that would create a folder is refused (exit 64) with
 //     nothing of it applied;
 //   - slow keeps a scan running, then it answers with its state applied;
-//   - a gc state takes the tracks through .intake-gc-<id>/ and leaves no
-//     stage folder, only the tombstone sidecar.
+//   - a gc state takes the tracks through .intake-gc-<id>/ (each rename in
+//     gc.trace) and leaves no stage folder, only the tombstone sidecar.
 //  Every directory is a fresh temp state (MockCliSupport), nothing real is
 //  touched.
 //
@@ -151,16 +152,17 @@ static void testScanArrivals() {
     CHECK(statusOf(state, "itk_000a0010") == "resolved" && statusOf(state, "itk_000a0012") == "new",
           "status lists them");
 
-    // What the component does next: propose the resolved ones only.
+    // What the component does next: propose the resolved root that needs
+    // no review (never the one that does, never the new one).
     CHECK(mock::writeFile(state + "/propose.next", "arrivals-proposed\n"), "propose.next written");
-    CHECK_EQ(runMock(state, {"propose", "itk_000a0010", "itk_000a0011", "--json"}, out), 0, "propose: exit 0");
+    CHECK_EQ(runMock(state, {"propose", "itk_000a0010", "--json"}, out), 0, "propose: exit 0");
     NSArray *rows = arrayOf(parse(out)[@"data"]);
-    CHECK(rows.count == 2 && str(dictAt(rows, 0)[@"status"]) == "proposed" &&
-              str(dictAt(rows, 1)[@"status"]) == "proposed",
-          "a proposed row for each");
-    CHECK(statusOf(state, "itk_000a0010") == "proposed" && statusOf(state, "itk_000a0011") == "proposed" &&
+    CHECK(rows.count == 1 && str(dictAt(rows, 0)[@"id"]) == "itk_000a0010" &&
+              str(dictAt(rows, 0)[@"status"]) == "proposed",
+          "a proposed row for it");
+    CHECK(statusOf(state, "itk_000a0010") == "proposed" && statusOf(state, "itk_000a0011") == "resolved" &&
               statusOf(state, "itk_000a0012") == "new",
-          "arrivals-proposed applied; the new root untouched");
+          "arrivals-proposed applied; the root that needs review and the new root untouched");
     CHECK_EQ(runMock(state, {"propose", "itk_000a0012", "--json"}, out), 2, "propose on the new root: exit 2");
     CHECK(firstErrorCode(parse(out)) == "E_BAD_STATUS", "E_BAD_STATUS");
 
@@ -255,6 +257,12 @@ static void testGcStages() {
     CHECK_EQ(runMock(state, {"gc", "itk_000a0009", "--json"}, out), 0, "gc: exit 0");
     const std::vector<std::string> left = mock::listDir(dir);
     CHECK(left.size() == 1 && left[0] == ".intake.json", "only the tombstone sidecar is left, no stage folder");
+    // The renames at the old paths are what the component's gc mute covers.
+    const std::string stage = dir + "/.intake-gc-itk_000a0009";
+    CHECK(mock::readFile(state + "/gc.trace") ==
+              "mv\t" + dir + "/01 - Test Track One.wav\t" + stage + "/01 - Test Track One.wav\n" + "mv\t" + dir +
+                  "/02 - Test Track Two.wav\t" + stage + "/02 - Test Track Two.wav\n",
+          "each track was renamed into .intake-gc-itk_000a0009/ before the stage folder went");
     CHECK(statusOf(state, "itk_000a0009") == "gc_done", "gc_done");
     CHECK(mock::fileExists(state + "/root/library/music.hq/Test Collection A/UAT Artist/UAT Artist - 2026 - 09 "
                                    "Placed/01 - Test Track One.wav"),
@@ -266,6 +274,11 @@ static void testGcStages() {
     CHECK_EQ(runMock(state, {"gc", "itk_000a000c", "--json"}, out), 0, "gc of the shadow album: exit 0");
     const std::vector<std::string> shadowLeft = mock::listDir(shadow);
     CHECK(shadowLeft.size() == 1 && shadowLeft[0] == ".intake.json", "its three tracks gone, no stage folder");
+    const std::string trace = mock::readFile(state + "/gc.trace");
+    const std::string shadowStage = shadow + "/.intake-gc-itk_000a000c";
+    CHECK(trace.find("mv\t" + shadow + "/02 - Test Track Two (shadow).wav\t" + shadowStage +
+                     "/02 - Test Track Two (shadow).wav\n") != std::string::npos,
+          "the shadow file was staged too");
 }
 
 int main(void) {

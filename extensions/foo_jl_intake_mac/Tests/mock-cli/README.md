@@ -36,7 +36,7 @@ exports `INTAKE_MOCK_STATE` and runs `exec .../intake-mock "$@"`.
 
 `--mock-setup <scenario>` throws away `root/`, `responses/`, every `*.mode`,
 `*.next` and `*.start` file and `hang.pid`, then copies the scenario in.
-`calls.log` and the marker are kept.
+`calls.log`, `gc.trace` and the marker are kept.
 
 ## Scenarios (`scenarios/<name>/`)
 
@@ -51,7 +51,7 @@ exports `INTAKE_MOCK_STATE` and runs `exec .../intake-mock "$@"`.
 | `perf-200` | 0.3.0 | 200 generated roots in `income/perf`, statuses cycling through the lifecycle. Status and income only: it has no reply files, so a mutating command on a root in a status the CLI accepts exits 64 (see below) |
 | `placed-unverified` | 0.3.0 | `default` with the placed root `itk_00000012` at `placed.verified: false` (summary and sidecar), for B9: Swap and Delete local copy must not qualify, and the library index leaves it out. Its gc replies are kept (the CLI would re-verify; the component never asks) |
 | `uat` | 0.3.0 | The user acceptance checklist (PLAN.md): 15 whole-folder roots in `income/uat`, one per row below, standalone (no `base`). Each income folder holds its sidecar and two tracks (the shadow album three; the gc_done root none); the placed, verified roots and the gc_done root have their library copies under `root/library/music.hq/`. Reply files for every command and status the CLI accepts, so a stray click never exits 64; no state changes without a `.next` file (see "States in `uat`") |
-| `autoscan` | 0.3.0 | B12, the automatic income scan: `uat` (its `base`) plus three folders in `income/uat` with two tracks each and no sidecar yet, `UAT Artist - 16 Arrival Resolved`, `17 Arrival Review` and `18 Arrival New`. The state `scan-arrivals` writes their sidecars (two `resolved`, one `new`), `arrivals-proposed` proposes the two resolved ones (see "Scan (B12)") |
+| `autoscan` | 0.3.0 | B12, the automatic income scan: `uat` (its `base`) plus three folders in `income/uat` with two tracks each and no sidecar yet, `UAT Artist - 16 Arrival Resolved`, `17 Arrival Review` and `18 Arrival New`. The state `scan-arrivals` writes their sidecars (two `resolved`, one `new`), `arrivals-proposed` proposes the resolved one that needs no review (see "Scan (B12)") |
 
 The `default` ids are `itk_0000000a` to `itk_00000019`; `status --json` lists
 them with their states.
@@ -238,8 +238,12 @@ echo uat-09-gc_done > gc.next        # Delete local copy… on itk_000a0009
 ## Scan (B12)
 
 `scan <income>|--all --json` as CLI 0.3.0 `cmdScan` has it, in every
-scenario whose `commands` lists `scan` (all but `cli-0.1`; `version.json`
-lists it too). The income is matched by name, or by its path resolved
+scenario whose `commands` lists `scan` (all but `cli-0.1`). The component
+also needs `scan` in the `commands` array of `version.json`, which
+`default`, `uat`, `perf-200` and the scenarios built on them list, so it
+scans automatically only there; `cli-0.2.1` and `no-ranked` (built on it)
+have no `commands` array in `version.json`, so the component never scans
+them automatically. The income is matched by name, or by its path resolved
 lexically (an absolute path, or one relative to the current directory),
 the first income in `responses/income` order that matches either. Errors,
 as in the CLI: no income given (`E_BAD_ARGS`), no income configured
@@ -274,10 +278,11 @@ Delay and failure use the generic modes: `slow N` in `scan.mode` keeps
 every scan running N seconds before it answers (and applies `scan.next`
 at its end); `exit2 [CODE]`, `garbage`, `partial` etc. as for any command.
 
-To make the component scan, copy a track into the income folder with plain
-`cp`, which writes the data. A clone (`cp -c`, or a Finder copy within one
-APFS volume) may arrive without a content-change event, which the
-component would hold as a file still being written (not checked):
+To make the component scan, copy a track into the income folder. A plain
+`cp` arrives as created and modified; a clone (`cp -c`, `ditto`, or a
+Finder copy within one APFS volume) as created and cloned, with no
+content-change event after it, which the component also takes as a
+complete file (unit-tested, not checked in the app):
 
 ```bash
 S="$INTAKE_MOCK_STATE/root"
@@ -291,7 +296,7 @@ cp "$S/library/music.hq/Test Collection A/UAT Artist/UAT Artist - 2026 - 09 Plac
 | State | For | Change |
 |---|---|---|
 | `scan-arrivals` | `scan.next` | sidecars and summary rows for the three arrivals: `itk_000a0010` (`16 Arrival Resolved`, `resolved`, confidence 0.92), `itk_000a0011` (`17 Arrival Review`, `resolved` with `needs_review`, 0.7) and `itk_000a0012` (`18 Arrival New`, `new` with `needs_review`, 0.41); the scan's `written` lists all three. Reply files for `propose` (the two resolved ones, Test Collection A 0.88 and Test Collection B 0.6), `assign` (`E_NO_EVIDENCE` for the new one), `assign --collection` and `reject` |
-| `arrivals-proposed` | `propose.next` | `itk_000a0010` and `itk_000a0011` go `proposed` (sidecars and summaries, engine proposals); their propose replies go, approve replies are added |
+| `arrivals-proposed` | `propose.next` | `itk_000a0010` goes `proposed` (sidecar and summary, engine proposal); its propose reply goes, an approve reply is added. `itk_000a0011` stays `resolved`: it needs review, so the component never proposes it after a scan |
 
 The in-app checks of PLAN-B12 with the `autoscan` scenario (the income is
 `uat`, local, under the state's `root/`):
@@ -305,7 +310,7 @@ The in-app checks of PLAN-B12 with the `autoscan` scenario (the income is
 | 5. Checkbox off and on | nothing |
 | 6. A failing scan | `echo 'exit2 E_INTERNAL' > scan.mode` (or `exit2 E_NO_RULES`), then copy a track |
 | 7. gc mutes its own renames | `echo uat-09-gc_done > gc.next`, then Delete local copy… on `09 Placed` (`uat-10`/`11`/`12` likewise) |
-| 8. Auto-propose after the scan | `echo scan-arrivals > scan.next; echo arrivals-proposed > propose.next`, before the start (check 1) or before a copy: the scan writes three roots, the component proposes `itk_000a0010` and `itk_000a0011` only, then reloads once |
+| 8. Auto-propose after the scan | `echo scan-arrivals > scan.next; echo arrivals-proposed > propose.next`, before the start (check 1) or before a copy: the scan writes three roots, the component proposes `itk_000a0010` only (`itk_000a0011` needs review, `itk_000a0012` is new), then reloads once |
 | 9. The status bar pill | as 8, with `slow 20` for a longer look |
 
 Remove `scan.mode` after checks 4, 6 and 9.
@@ -315,6 +320,11 @@ Remove `scan.mode` after checks 4, 6 and 9.
 `$INTAKE_MOCK_STATE/calls.log` gets one line per invocation, `--mock-setup`
 included, with the arguments joined by tabs. A backslash, tab or newline
 inside an argument is written as `\\`, `\t` or `\n`.
+
+`$INTAKE_MOCK_STATE/gc.trace` gets one line per file a `gc` state stages,
+`mv`, the old path and the new path inside `.intake-gc-<id>/`, joined by
+tabs, before the stage folder is deleted. Like `calls.log`, `--mock-setup`
+keeps it.
 
 ## Other environment variables
 

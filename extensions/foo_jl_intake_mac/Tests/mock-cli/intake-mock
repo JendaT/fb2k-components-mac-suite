@@ -309,8 +309,10 @@ apply_deletes() {
 # .intake-gc-<id>/ inside the root's folder, keeping its relative path, and
 # only then is the stage dir deleted. A file watcher sees renames at the old
 # paths (what the component's gc mute has to cover, B12), then removals
-# inside the stage dir. It runs before the state's files are copied, so the
-# gc_done tombstone is written after the files are gone, as by the CLI.
+# inside the stage dir. Each rename is one line in $STATE/gc.trace
+# ("mv<TAB>old<TAB>new"), so a test can tell the staging from a plain
+# delete. It runs before the state's files are copied, so the gc_done
+# tombstone is written after the files are gone, as by the CLI.
 gc_stage() {
     local list="$1/gc" id rp side s rel stage files
     local idre='^itk_[0-9a-f]{8}$' re='"path": *"([^"]*)"'
@@ -337,6 +339,7 @@ gc_stage() {
             [ -f "$rp/$rel" ] || continue
             case "$rel" in */*) mkdir -p "$stage/${rel%/*}" ;; *) mkdir -p "$stage" ;; esac
             mv -f "$rp/$rel" "$stage/$rel"
+            printf 'mv\t%s\t%s\n' "$rp/$rel" "$stage/$rel" >> "$STATE/gc.trace"
         done
         rm -rf "$stage"
     done < "$list"
@@ -1353,7 +1356,10 @@ set_root_status() {
     else
         replace_all "$s" "\"status\":\"$old\"" "\"status\":\"$new\""; s="$REPLY"
     fi
-    printf '%s\n' "$s" > "$side.mock-tmp" && mv -f "$side.mock-tmp" "$side"
+    # A .tmp name, which the component's auto-scan ignores (B12): the real
+    # CLI writes sidecars in place, so another temp name under an income
+    # folder would make every mock execute schedule a scan.
+    printf '%s\n' "$s" > "$side.tmp" && mv -f "$side.tmp" "$side"
 }
 
 # The library copy of placed whole-folder root $1: its *.wav (fixtures hold
