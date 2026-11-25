@@ -68,7 +68,9 @@ static void testKeys() {
     CHECK(activityRunKey("execute-20261124-1") == "run:execute-20261124-1", "run key");
     CHECK(activitySwapKey(7) == "swap:7", "swap key");
     CHECK(activityCensusKey(7) == "census:7", "census key");
-    CHECK(activityLaneKey(7) != activitySwapKey(7) && activitySwapKey(7) != activityCensusKey(7),
+    CHECK(activityChainKey(7) == "chain:7", "chain key (B12)");
+    CHECK(activityLaneKey(7) != activitySwapKey(7) && activitySwapKey(7) != activityCensusKey(7) &&
+              activityChainKey(7) != activityLaneKey(7),
           "the same number in two spaces gives two keys");
 
     ActivityKind k = ActivityKind::Swap;

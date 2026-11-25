@@ -16,9 +16,14 @@
 //     B12's background scan and the propose after it too);
 //   - activityRunKey(stem): an execute or resume run, by its run stem;
 //   - activitySwapKey(serial): one swap of playlist rows;
-//   - activityCensusKey(serial): the Delete flow's sidecar reads.
-//  progress() sets done/total and the album being worked on; rename()
-//  changes the kind and the count (the propose after an assign or a scan);
+//   - activityCensusKey(serial): the Delete flow's sidecar reads;
+//   - activityChainKey(serial): B12's chunked propose (IntakeProposeChain),
+//     one entry for the whole chain, whose chunks each hold their own lane
+//     token.
+//  progress() sets done/total and the album being worked on (the chained
+//  propose: the roots handled, and the first album of the chunk running);
+//  rename() changes the kind and the count (the propose after an assign or
+//  a scan; the chained propose when roots join it);
 //  end() makes the entry a result, succeeded or failed with a short reason
 //  (a result may name another kind for its text: the assign or scan that
 //  failed before the propose after it); deadline() sets the time and the
@@ -53,6 +58,8 @@
 //  Running texts (UTF-8, "…" U+2026; one album: its label instead of the
 //  count; the label is "Artist – Album" from IntakeActionTable albumLabel):
 //     Propose             "Proposing 3 albums…"            "Proposing Album…"
+//                         (B12's chained propose: "Proposing 49 albums…", then
+//                         "Proposing 10/49: Artist – Album" once a chunk ended)
 //     Assign              "Assigning 3 albums…"
 //     AssignThenPropose   "Proposing 2 albums…" (the propose after an assign)
 //     Approve, Reject     "Approving 3 albums…", "Rejecting 3 albums…"
@@ -218,6 +225,7 @@ std::string activityLaneKey(uint64_t token);
 std::string activityRunKey(const std::string &stem);
 std::string activitySwapKey(uint64_t serial);
 std::string activityCensusKey(uint64_t serial);
+std::string activityChainKey(uint64_t serial);
 
 // The kind of a mutating CLI command (a dry run of execute: ExecuteDryRun).
 // False for the read-only commands (version, status, collections, income).

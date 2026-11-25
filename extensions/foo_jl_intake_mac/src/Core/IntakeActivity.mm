@@ -154,6 +154,10 @@ std::string activityCensusKey(uint64_t serial) {
     return "census:" + std::to_string(serial);
 }
 
+std::string activityChainKey(uint64_t serial) {
+    return "chain:" + std::to_string(serial);
+}
+
 bool activityKindFor(CliCommand command, bool dryRun, ActivityKind &out) {
     switch (command) {
         case CliCommand::Propose: out = ActivityKind::Propose; return true;
