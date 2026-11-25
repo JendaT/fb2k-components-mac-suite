@@ -504,7 +504,7 @@ copies of the repo fixtures, flac 1.5.0:
   in-collection marker. P5 is not built, and a tag-immune key only helps
   it.
 - **Migration: none.** No sidecars or journal exist anywhere, production or
-  test. The Amunet test environment (`music.intake-test`) has only ever seen
+  test. The NAS test environment (`music.intake-test`) has only ever seen
   a `scan --dry-run` (verified by the overseer, 2026-11-14).
 
 **Regression gate.** A test that runs `execute` on a release containing an

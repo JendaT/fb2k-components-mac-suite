@@ -16,7 +16,7 @@ Two read-only probes on the affected machine settle earlier open questions:
    liveness detection is not the problem.
 2. **The mounted SMB volume exposes NO volume UUID**: both
    `NSURLVolumeUUIDStringKey` and DiskArbitration return nothing for
-   `/Volumes/music` (`DADiskCreateFromBSDName` on `//jendalen@Amunet…/music`
+   `/Volumes/music` (`DADiskCreateFromBSDName` on `//<user>@<nas>…/music`
    yields no description). Therefore a remap target can NEVER be derived from
    the mount itself on this setup — neither by the automatic sync nor by the
    manual Repair Volume UUIDs tool (whose mounted-volume discovery hits the
