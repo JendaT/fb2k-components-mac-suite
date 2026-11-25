@@ -865,10 +865,18 @@ void proposeAfterScanOrEnd(uint64_t token, const AutoScanOutcome &outcome, CliOu
         endAutoScanRun(token, outcome.activity, outcome.newRoots, outcome.exit, true);
         return;
     }
+    // Like a user's propose: nothing mutating goes to the CLI when the
+    // provider went inert while the scan ran.
+    const std::shared_ptr<const IntakeView> view = providerCurrentView();
     CliConfig config;
-    if (!serviceMutationConfig(config)) {
-        const std::string line =
-            "propose: not run after auto-scan of " + st.autoScanIncome + ": intake is not running or has no CLI path";
+    std::string why;
+    if (view && view->isInert()) {
+        why = "intake is inert: " + view->inertReason();
+    } else if (!serviceMutationConfig(config)) {
+        why = "intake is not running or has no CLI path";
+    }
+    if (!why.empty()) {
+        const std::string line = "propose: not run after auto-scan of " + st.autoScanIncome + ": " + why;
         logInfo(line);
         ActivityResult notStarted = activityNotStarted(line);
         notStarted.kind = ActivityKind::Propose;  // the entry is still the scan's
@@ -2734,13 +2742,24 @@ bool actionsLaneBusy() {
 
 bool actionsLaneFree() {
     const ActionsState &st = actionsState();
-    return !st.stopped && st.runScanDone && !st.lane.busy();
+    // Execute follow-ups pending or running count as busy: between a run's
+    // end and its follow-up's gc the lane is free (the reload, then the
+    // swap), and a scan taking it then would make the delete step refuse
+    // and keep the local copies.
+    return !st.stopped && st.runScanDone && !st.lane.busy() && st.followUpsUnfinished.empty() && !st.followUpActive;
 }
 
 AutoScanStart actionsStartAutoScan(const AutoScanJob &job, std::function<void(AutoScanExit how)> done) {
     ActionsState &st = actionsState();
     if (!actionsLaneFree()) return AutoScanStart::LaneTaken;
     const std::string &name = job.income.name;
+    // The driver gives the scheduler no incomes while the provider is
+    // inert; this covers a job checked before that load's status reached it.
+    const std::shared_ptr<const IntakeView> view = providerCurrentView();
+    if (view && view->isInert()) {
+        logInfo("auto-scan: " + name + " not started: intake is inert: " + view->inertReason());
+        return AutoScanStart::Refused;
+    }
     CliConfig config;
     if (!serviceMutationConfig(config)) {
         logInfo("auto-scan: " + name + " not started: intake is not running or has no CLI path");

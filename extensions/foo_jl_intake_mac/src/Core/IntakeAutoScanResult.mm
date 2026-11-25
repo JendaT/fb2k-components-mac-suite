@@ -69,6 +69,9 @@ ScanReply readScanReply(id data) {
                 if (root.id.empty()) continue;
                 root.rootPath = utf8(fields[@"root_path"]);
                 root.status = utf8(fields[@"status"]);
+                id review = fields[@"needs_review"];
+                root.needsReview = review != nil && CFGetTypeID((__bridge CFTypeRef)review) == CFBooleanGetTypeID() &&
+                                   [(NSNumber *)review boolValue];
                 reply.written.push_back(std::move(root));
             }
         }
@@ -108,6 +111,10 @@ ScanFollowUp proposeAfterScan(const std::string &income, const std::string &inco
         }
         if (haveIncomeKey && normalizePath(w.rootPath, rootKey) == PathStatus::Ok && rootKey == incomeKey) {
             out.skipped.push_back(w.id + " (the income folder itself)");
+            continue;
+        }
+        if (w.needsReview) {
+            out.skipped.push_back(w.id + " (needs review)");
             continue;
         }
         out.propose.push_back(w.id);

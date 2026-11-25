@@ -11,15 +11,16 @@
 //  boundary), rescan and dropped events under an income, on an ancestor
 //  and with no path, Mount/Unmount and HistoryDone never counting, mutes
 //  by event id (below, at and after the start and end ids, an end not yet
-//  known, passed mutes), open and closed files, and one report per income
-//  per callback. gc's mute paths (autoScanMutePaths: the income entries'
-//  physical spelling, the longest income, ASCII case, NFC, outside every
-//  income, repeats). The income entries from a WatchSet. Presence: local (also
-//  through a local symlink), on a mounted share (also at its mount point
-//  itself, or through a local symlink into it), missing (unmounted mount
-//  point, absent folder, no mount table), a loop, with a recording link
-//  reader proving nothing at or under the share is ever examined, and one
-//  real temp directory through posixLinkReader. The scheduler on a fake
+//  known, passed mutes), open and closed files (a clone never opens), and
+//  one report per income per callback. gc's mute paths (autoScanMutePaths:
+//  the income entries' physical spelling, the longest income, ASCII case,
+//  NFC, outside every income, repeats). The income entries from a WatchSet.
+//  Presence: local (also through a local symlink), on a mounted share (also
+//  at its mount point itself, or through a local symlink into it), missing
+//  (unmounted mount point, absent folder, no mount table), a loop, with a
+//  recording link reader proving nothing at or under the share is ever
+//  examined, and one real temp directory through posixLinkReader. The
+//  scheduler on a fake
 //  clock: the quiet period and its postponement, due exactly at 60 s, the
 //  open-file hold and its 30-minute cap, one at a time, a busy lane, oldest
 //  first, coalescing, events during a run (exactly one more run), startup,
@@ -353,6 +354,14 @@ void testOpenClose() {
     CHECK(h.paths.empty(), "a file outside every income is not tracked");
     h = hitsOf({ev("/Users/x/Music/fixture-income/Album", C | F | D)});
     CHECK(h.paths.empty(), "a path reported as both file and folder never opens");
+    // A clone (cp -c, ditto, a Finder copy within one APFS volume): Cloned,
+    // then Created|Cloned, and no Modified ever follows.
+    const uint32_t K = fsevent::kItemCloned;
+    h = hitsOf({ev(b, K | F), ev(b, C | K | F)});
+    CHECK(h.incomes == idx({0}) && h.paths.size() == 1 && h.paths[0].path == b && !h.paths[0].open,
+          "a clone counts and is complete when it appears: closed, never open");
+    h = hitsOf({ev(b, C | F), ev(b, C | K | F)});
+    CHECK(h.paths.size() == 1 && !h.paths[0].open, "a clone over a path seen open closes it");
 }
 
 void testDedupe() {
@@ -720,6 +729,16 @@ void testExits() {
     ls.exit(job->token, AutoScanExit::LaneTaken, at(1));
     retry = ls.next(at(1), true);
     CHECK(retry && retry->startup, "a startup scan stays a startup scan when retried");
+
+    Sched le = fresh();
+    le.noteStartup({"local"}, at(0));
+    job = le.next(at(0), true);
+    le.noteHits(hit({0}), L, at(1));  // a copy starts during the presence check
+    le.exit(job->token, AutoScanExit::LaneTaken, at(2));
+    CHECK(!le.next(at(2), true) && le.nextWakeup(at(2), true) == at(61),
+          "events during a startup check: the retry waits for their quiet period");
+    retry = le.next(at(61), true);
+    CHECK(retry && !retry->startup, "then a new-files scan");
 
     Sched r = fresh();
     job = checking(r);

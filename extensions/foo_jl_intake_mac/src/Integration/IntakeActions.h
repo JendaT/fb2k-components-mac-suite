@@ -249,7 +249,8 @@
 //  per-root error is set for the scan. After a scan that exited 0 or 1, the
 //  same lane run proposes the roots it newly wrote that are resolved
 //  (PLAN-B12 scope addition 1; IntakeAutoScanResult proposeAfterScan: never
-//  a new root, never one it kept, never the income folder itself): one Info
+//  a new root, never one that needs review, never one it kept, never the
+//  income folder itself; nothing while the provider is inert): one Info
 //  line "propose: starting after auto-scan of <name> for N roots: <ids>",
 //  then `propose <ids>` on the scan's lane token. The lane stays
 //  LaneHolder::Scan until that propose ends, so the menu keeps reading
@@ -369,15 +370,18 @@ RootErrorStore &actionsErrorStore();
 bool actionsLaneBusy();
 
 // Main thread (B12, the auto-scan's laneFree): a mutating call could take
-// the lane now: on_quit has not run, the leftover-run scan is done and no
-// call holds the lane.
+// the lane now: on_quit has not run, the leftover-run scan is done, no call
+// holds the lane, and no Execute follow-up (swap, then delete) is waiting
+// for its reload or running: the lane is free between those steps, and the
+// delete step refuses while a scan holds it.
 bool actionsLaneFree();
 
 // B12: how actionsStartAutoScan went.
 enum class AutoScanStart {
     Started,   // the scan is on its way; `done` runs once, later
     LaneTaken, // the lane is not free (see actionsLaneFree): nothing started
-    Refused,   // no CLI configuration (intake not running, no CLI path): nothing started, one Info line
+    Refused,   // no CLI configuration (intake not running, no CLI path) or intake is inert: nothing started,
+               // one Info line
 };
 
 // Main thread (B12, IntakeAutoScanDriver): `scan <income> --json` for

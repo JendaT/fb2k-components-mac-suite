@@ -27,12 +27,16 @@ static_assert(fsevent::kItemRenamed == kFSEventStreamEventFlagItemRenamed, "FSEv
 static_assert(fsevent::kItemModified == kFSEventStreamEventFlagItemModified, "FSEvents flag");
 static_assert(fsevent::kItemIsFile == kFSEventStreamEventFlagItemIsFile, "FSEvents flag");
 static_assert(fsevent::kItemIsDir == kFSEventStreamEventFlagItemIsDir, "FSEvents flag");
+static_assert(fsevent::kItemCloned == kFSEventStreamEventFlagItemCloned, "FSEvents flag");
 
 namespace {
 
 constexpr uint32_t kRescanFlags = fsevent::kMustScanSubDirs | fsevent::kUserDropped | fsevent::kKernelDropped;
 constexpr uint32_t kCountFlags = fsevent::kItemCreated | fsevent::kItemRenamed | fsevent::kItemModified;
-constexpr uint32_t kCloseFlags = fsevent::kItemModified | fsevent::kItemRenamed | fsevent::kItemRemoved;
+// A clone is complete when it appears (Created|Cloned, never a Modified
+// after it), so Cloned closes like a write.
+constexpr uint32_t kCloseFlags =
+    fsevent::kItemModified | fsevent::kItemRenamed | fsevent::kItemRemoved | fsevent::kItemCloned;
 constexpr uint32_t kItemChangeFlags = kCountFlags | fsevent::kItemRemoved;
 
 char asciiLower(char c) {
@@ -507,9 +511,12 @@ AutoScanResult AutoScanScheduler::exit(uint64_t token, AutoScanExit how, TimePoi
     }
     switch (how) {
         case AutoScanExit::LaneTaken:
-            // Retried as it was: still due, a startup entry still at once.
+            // Retried as it was: still due, a startup entry still at once,
+            // unless events came during the check (noteHits made it wait
+            // for their quiet period, so a copy in progress is not scanned
+            // halfway).
             e->state = State::Pending;
-            e->startup = job.startup;
+            e->startup = job.startup && !e->eventsDuringRun;
             return AutoScanResult::Pending;
         case AutoScanExit::CapKilled:
             makeIdle(*e);

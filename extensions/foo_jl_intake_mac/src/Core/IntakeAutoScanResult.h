@@ -10,10 +10,11 @@
 //  The reply (readScanReply). Doc 03 does not pin scan's `data`, so it is
 //  read leniently: an array of blocks, one per income scanned, each an
 //  object whose `written` array holds the roots the scan wrote (objects with
-//  `id`, `root_path`, `status`) and whose `kept` array the roots it left as
-//  they were (CLI 0.3.0 commands.ts ScanBlock). Anything else (no array, a
-//  block that is no object, a missing or mistyped member) adds nothing; the
-//  counts are known once some block has a `written` or `kept` array. A row
+//  `id`, `root_path`, `status`, `needs_review`) and whose `kept` array the
+//  roots it left as they were (CLI 0.3.0 commands.ts ScanBlock). Anything
+//  else (no array, a block that is no object, a missing or mistyped member)
+//  adds nothing; the counts are known once some block has a `written` or
+//  `kept` array. A row
 //  of `written` counts even without a string id; only rows with one are
 //  listed (the auto-propose after the scan names roots by id).
 //
@@ -50,16 +51,19 @@
 //  (resolver.ts buildSidecar: "resolved" at or above the review threshold,
 //  else "new"), so no `status` call is needed. Skipped, with one Debug
 //  line: a new root (doc 03: propose only from resolved; doc 01: new is
-//  never auto-proposed), a row with any other or no status, and a root that
-//  is the income folder itself (loose files at its top: the loader ignores
+//  never auto-proposed), a row with any other or no status, a root that is
+//  the income folder itself (loose files at its top: the loader ignores
 //  such a root, IntakeLoadPolicy dropIncomeFolderRoots, so nothing acts on
 //  it; compared as IntakePath keys, as both paths are the CLI's spelling of
-//  one income). Any other outcome (exit 2, E_NO_CLI, E_CLI_TIMEOUT,
-//  cancelled) proposes nothing. The scan's errors do not filter: they name
-//  an archive that failed to unpack or an income path that is missing,
-//  never a root it wrote. Ids keep the scan's order; a repeated id counts
-//  once. A resolved root that needs review is proposed too (`propose <id>`
-//  by id proposes it; the flag stays).
+//  one income), and a resolved root with `needs_review` true (resolver
+//  confidence 0.50-0.79: doc 01 makes only roots at 0.80 or above
+//  auto-eligible for propose, and the CLI's own automatic mode, `propose
+//  --all-resolved`, skips them; `propose <id>` by id would not, so the
+//  component leaves them out). Any other outcome (exit 2, E_NO_CLI,
+//  E_CLI_TIMEOUT, cancelled) proposes nothing. The scan's errors do not
+//  filter: they name an archive that failed to unpack or an income path
+//  that is missing, never a root it wrote. Ids keep the scan's order; a
+//  repeated id counts once.
 //  No user choice is at stake: a root the scan just wrote has no assignment
 //  and no proposal yet, so propose runs identify and the assign engine for
 //  it (tools/intake commands-p3.ts cmdPropose). A root left with no target
@@ -90,6 +94,7 @@ struct ScanWrittenRoot {
     std::string id;
     std::string rootPath;  // root_path; "" when absent
     std::string status;    // the status written ("new", "resolved", ...); "" when absent
+    bool needsReview = false;  // needs_review; false when absent or not a JSON boolean
 };
 
 struct ScanReply {
@@ -131,7 +136,8 @@ struct ScanFollowUp {
     std::vector<std::string> propose;  // ids for `propose`, the scan's order
     std::vector<MutationRoot> roots;   // the same roots: root_path, status Resolved, no target
     // Written but not proposed, in order: "itk_... (new)", "itk_... (no
-    // status)", "itk_... (the income folder itself)".
+    // status)", "itk_... (the income folder itself)", "itk_... (needs
+    // review)".
     std::vector<std::string> skipped;
     // "auto-scan: local: no propose for 2 roots: itk_a (new), itk_b (new)";
     // empty when nothing was skipped.

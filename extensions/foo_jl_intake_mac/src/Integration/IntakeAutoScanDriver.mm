@@ -323,9 +323,14 @@ void autoScanAfterLoad(const LoaderStatus &status) {
     d.scanOffered = cliSupportsCommand(status.cliInfo, CliCommand::Scan);
     d.cliVersion = status.cliInfo.cli;
     if (status.state == LoaderState::Ready) logNotOffered(d);
-    // Without `scan` the scheduler and the sink get no incomes: nothing is
-    // counted, scheduled or scanned.
-    d.incomes = d.scanOffered ? status.autoScanIncomes : std::vector<AutoScanIncome>();
+    // Without `scan`, or while the provider is inert (doc 03 "Inert state":
+    // nothing mutating goes to that CLI; after a failed version gate the
+    // status still holds the last passing version's commands and income
+    // folders), the scheduler and the sink get no incomes: nothing is
+    // counted, scheduled or scanned. The next load that is not inert brings
+    // them back.
+    const bool inert = status.state == LoaderState::Inert;
+    d.incomes = d.scanOffered && !inert ? status.autoScanIncomes : std::vector<AutoScanIncome>();
     d.scheduler.setIncomes(d.incomes);
     publishSnapshot(d);
     if (status.state == LoaderState::Ready && !d.startupConsidered) {

@@ -18,7 +18,9 @@
 //     (LoaderStatus::autoScanIncomes, the loader's watch set spelling) go to
 //     the scheduler and the snapshot, or none while the CLI's `version`
 //     does not list `scan` (then nothing is scanned automatically; one Info
-//     line per session while auto_scan is on). After the first Ready load
+//     line per session while auto_scan is on) and none while the load left
+//     the provider inert (doc 03 "Inert state", e.g. a failed version gate:
+//     nothing mutating goes to that CLI). After the first Ready load
 //     of the session, with auto_scan on, once the leftover-run scan is done
 //     (actionsAfterRunScan), the presence check runs for every income
 //     folder on a utility queue: each local one is due for one startup scan
@@ -41,8 +43,9 @@
 //  unmounted folder ends it (one Debug line; Idle), and otherwise
 //  IntakeActions' actionsStartAutoScan takes the lane (LaneHolder::Scan)
 //  and starts `scan <income> --json`: a lane taken meanwhile (a click, the
-//  leftover-run scan) puts it back (Pending, retried 5 s later), no CLI
-//  configuration ends it (Refused). A started scan is Running until
+//  leftover-run scan, an Execute follow-up waiting for its reload) puts it
+//  back (Pending, retried 5 s later), no CLI configuration or an inert
+//  provider ends it (Refused). A started scan is Running until
 //  IntakeActions hands back its exit (Finished, Refused for E_NO_CLI or a
 //  refused request, CapKilled at the 15-minute cap, after which the income
 //  is not scanned again this session: one Info line). Every path ends with

@@ -50,10 +50,13 @@
 //     reported in `passedMutes` once an event in the callback has a later
 //     id: FSEvents delivers in id order, so nothing muted can follow.
 //   - Open files: FSEvents reports a file's content change when the writer
-//     closes it, so a file event with Created and none of Modified, Renamed
-//     or Removed means a file still being written (open). A later file
-//     event for the path with any of those closes it. Only files open
-//     (ItemIsFile without ItemIsDir): a new folder is never written to.
+//     closes it, so a file event with Created and none of Modified, Renamed,
+//     Removed or Cloned means a file still being written (open). A later
+//     file event for the path with any of those closes it. A clone (`cp -c`,
+//     ditto, a Finder copy within one APFS volume) arrives as Created|Cloned
+//     and never gets a Modified: its content is complete when it appears, so
+//     it never opens. Only files open (ItemIsFile without ItemIsDir): a new
+//     folder is never written to.
 //     Ignored and muted events neither count nor open or close a path.
 //   - Each income is reported once per callback, so a bulk copy posts once.
 //
@@ -81,8 +84,8 @@
 //     Pending, then income order) that is due (60 s quiet, or a startup
 //     entry), has no open file younger than 30 min, and is not disabled,
 //     while no income is Checking or Running and the lane is free (lane
-//     not busy and the leftover-run scan done; Integration decides). It
-//     moves to Checking under a new token.
+//     not busy, the leftover-run scan done, no Execute follow-up pending;
+//     Integration decides). It moves to Checking under a new token.
 //   - Exits (exit(token, how, now)), every one of them ends the job:
 //       Missing (presence check)        -> Idle
 //       LaneTaken (after the check)     -> Pending, retried
@@ -147,6 +150,7 @@ inline constexpr uint32_t kItemRenamed = 0x00000800;
 inline constexpr uint32_t kItemModified = 0x00001000;
 inline constexpr uint32_t kItemIsFile = 0x00010000;
 inline constexpr uint32_t kItemIsDir = 0x00020000;
+inline constexpr uint32_t kItemCloned = 0x00400000;
 } // namespace fsevent
 
 struct AutoScanIncome {
