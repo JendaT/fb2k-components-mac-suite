@@ -621,10 +621,8 @@ std::vector<SwapRow> swapRowsFromHandles(metadb_handle_list_cref handles, const 
 }
 
 std::vector<SwapRow> swapIncomeRows(t_size playlist, const std::unordered_set<std::string> &rootIds,
-                                    const IntakeView &view, NativePathMenuBudget *budget, std::vector<t_size> *indices,
-                                    size_t *unchecked) {
+                                    const IntakeView &view, NativePathMenuBudget *budget, size_t *unchecked) {
     PlaylistScan scan = scanPlaylist(playlist, rootIds, view, budget);
-    if (indices) *indices = std::move(scan.indices);
     if (unchecked) *unchecked = scan.unchecked;
     return std::move(scan.rows);
 }
@@ -769,35 +767,6 @@ void swapReadPlacedFiles(std::vector<IntakeRecord> records,
             if (*callback) (*callback)(std::move(*replies));
         });
     });
-}
-
-std::vector<PlaylistRootRow> playlistRowsOfRoot(t_size playlist, const std::string &id, const IntakeView &view) {
-    std::vector<PlaylistRootRow> out;
-    auto pm = playlist_manager::get();
-    if (playlist == SIZE_MAX || playlist >= pm->get_playlist_count()) return out;
-    metadb_handle_list items;
-    pm->playlist_get_all_items(playlist, items);
-    pfc::string8 native;
-    ViewScratch scratch;
-    for (t_size i = 0; i < items.get_count(); i++) {
-        @autoreleasepool {
-            const metadb_handle_ptr handle = items[i];
-            if (!handle.is_valid()) continue;
-            const char *path = intakeNativePath(handle->get_path(), native);
-            if (path == nullptr) continue;
-            const IntakeRecord *income = view.recordFor(path, scratch);
-            const IntakeRecord *library = income == nullptr ? view.libraryRecordFor(path, scratch) : nullptr;
-            const IntakeRecord *record = income != nullptr ? income : library;
-            if (record == nullptr || record->id != id) continue;
-            PlaylistRootRow row;
-            row.index = i;
-            row.handle = handle;
-            row.native = stripFileScheme(path);
-            row.library = income == nullptr;
-            out.push_back(std::move(row));
-        }
-    }
-    return out;
 }
 
 void swapShutdown() {

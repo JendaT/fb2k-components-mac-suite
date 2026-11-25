@@ -7,7 +7,7 @@
 ## What this is
 
 An end-to-end pipeline for ingesting new music (bought, downloaded, friend-shared)
-into the canonical library on Amunet (`/volume1/music/music.hq` et al.), operated
+into the canonical library on the NAS (`/volume1/music/music.hq` et al.), operated
 primarily from foobar2000 via SimPlaylist, powered by a Bun CLI.
 
 ```
@@ -18,7 +18,7 @@ income folders ──▶ intake CLI ──▶ proposals (.intake.json sidecars)
                                    (review, adjust, approve)
                                         │
                                         ▼
-                              intake execute (copy → Amunet,
+                              intake execute (copy → NAS,
                               verify, tag, journal) → intake gc
 ```
 
@@ -50,7 +50,7 @@ doc 2 second for the tools worker.
 3. **Sidecar-first, files untouched until approval.** Working state lives in
    `.intake.json` per release root. Audio files get permanent provenance tags
    only at execute.
-4. **Copy + verified GC, never move.** Execute copies to Amunet, verifies by
+4. **Copy + verified GC, never move.** Execute copies to the NAS, verifies by
    audio hash, marks `placed`. `intake gc` deletes local copies later, after
    re-verification; may relocate into the SSD `dj/` zone instead when the
    target collection is DJ-mirrored.
@@ -73,7 +73,7 @@ doc 2 second for the tools worker.
 Canonical structure doc: `music.hq-structure.md` (drafted; lives in the rules
 repo, NOT here — it contains personal collection data).
 
-## Amunet-side state (proposal)
+## NAS-side state (proposal)
 
 New sibling `/volume1/music/music.meta/` holding `intake-journal.ndjson`
 (append-only) and future sync-base snapshots. Deliberately a sibling of ALL

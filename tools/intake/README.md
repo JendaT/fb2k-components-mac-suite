@@ -165,7 +165,7 @@ The shim detects the API shape itself:
 The shim reads the beets config from `$BEETSDIR` (default `~/.config/beets`),
 never opens the library database and never writes to the release dir.
 
-Execute/gc need `journal.path` in structure.yaml (the Amunet location is
+Execute/gc need `journal.path` in structure.yaml (the NAS location is
 pending confirmation; nothing runs without it). Execute copies and verifies —
 income originals are only ever removed by `gc`, which re-verifies both the
 journal record and the placed files' audio hashes first, then leaves the

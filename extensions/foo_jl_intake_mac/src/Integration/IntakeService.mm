@@ -180,18 +180,6 @@ public:
                 autoScanAfterLoad(copy);
             });
         };
-        // The temporary test_actions aid runs after the first successful
-        // load. With its key empty nothing is installed.
-        if (testActionsPending()) {
-            LoadFinishedHandler autoScan = ls.onLoadFinished;
-            ls.onLoadFinished = [autoScan](const LoaderStatus &st) {
-                autoScan(st);
-                if (st.state != LoaderState::Ready) return;
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    testActionsAfterLoad();
-                });
-            };
-        }
         // Runs on the loader queue; a weak reference, so a watch set handed
         // over while on_quit runs finds the watcher gone (or stopped).
         std::weak_ptr<IntakeWatcher> weakWatcher = watcher_;

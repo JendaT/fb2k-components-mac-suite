@@ -471,7 +471,7 @@ struct ActionsState {
     // starts before it is done.
     bool runScanStarted = false;
     bool runScanDone = false;
-    std::vector<std::function<void()>> afterRunScan;  // the test aid, B12's startup check (actionsAfterRunScan)
+    std::vector<std::function<void()>> afterRunScan;  // waiting for it: B12's startup check (actionsAfterRunScan)
     // The Execute follow-ups of ended runs, queued once their reload is
     // back: one chain at a time (swap, then the delete census and gc), the
     // running one in followUpActive (null: none). The chain's gc holds the
@@ -1927,7 +1927,6 @@ GcIncomeRows countIncomeRows(const IntakeView &view, const std::unordered_set<st
 struct DeleteFlow {
     uint64_t serial = 0;
     ActionEntry entry;  // its roots: gcEligibleRoots of the menu's
-    std::shared_ptr<const DeleteTestHooks> test;  // the test aid's delete-sheet step, else null
     // The sheet's window, chosen at the click (as for the picker).
     __weak NSWindow *hostWindow = nil;
     // The playlist the click came from (the active one then): counted first
@@ -1939,16 +1938,7 @@ struct DeleteFlow {
     GcIncomeRows income;
     // While the sheet is up (released on a later main-queue turn).
     NSAlert *alert = nil;
-    bool closed = false;  // the sheet has ended (the test aid's timer then does nothing)
 };
-
-void deleteReport(const std::shared_ptr<const DeleteTestHooks> &test, const std::string &line) {
-    if (test && test->report) test->report(line);
-}
-
-void deleteDone(const std::shared_ptr<const DeleteTestHooks> &test) {
-    if (test && test->done) test->done();
-}
 
 // Ends `flow` if it is still the current one; its alert is released on a
 // later main-queue turn. By value, as endPicker.
@@ -2090,32 +2080,6 @@ void deleteAfterSwap(std::shared_ptr<DeleteFlow> flow) {
     swapChainNext(chain, 0);
 }
 
-// The test aid's line for the sheet it shows.
-std::string deleteSheetDescription(const DeleteFlow &flow, bool sheet) {
-    std::string line = sheet ? "sheet shown: " : "shown app-modal (no window could take a sheet): ";
-    line += "\"" + gcConfirmTitle(flow.entry.roots.size()) + "\"; " + gcConfirmSummary(flow.confirm, flow.income) +
-            "; buttons Delete, Cancel" + (flow.income.offerSwap() ? ", Swap, then delete" : "");
-    if (flow.test) {
-        char seconds[32];
-        snprintf(seconds, sizeof seconds, "%g", flow.test->closeSeconds);
-        line += std::string("; closing as Cancel in ") + seconds + " s";
-    }
-    return line;
-}
-
-// The test aid: Cancel after `seconds`. Common modes include the modal
-// panel mode, so this also fires while the app-modal fallback runs.
-void scheduleDeleteCancel(std::shared_ptr<DeleteFlow> flow, NSButton *cancel, double seconds) {
-    __weak NSButton *weakCancel = cancel;
-    NSTimer *timer = [NSTimer timerWithTimeInterval:seconds
-                                            repeats:NO
-                                              block:^(NSTimer *) {
-                                                  NSButton *button = weakCancel;
-                                                  if (button != nil && !flow->closed) [button performClick:nil];
-                                              }];
-    [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
-}
-
 void showDeleteSheet(const std::shared_ptr<DeleteFlow> &flow) {
     NSAlert *alert = [[NSAlert alloc] init];
     alert.alertStyle = NSAlertStyleWarning;
@@ -2123,13 +2087,12 @@ void showDeleteSheet(const std::shared_ptr<DeleteFlow> &flow) {
     alert.informativeText = NSStr(gcConfirmText(flow->confirm, flow->income));
     NSButton *deleteButton = [alert addButtonWithTitle:@"Delete"];
     if ([deleteButton respondsToSelector:@selector(setHasDestructiveAction:)]) deleteButton.hasDestructiveAction = YES;
-    NSButton *cancel = [alert addButtonWithTitle:@"Cancel"];  // Escape (NSAlert's Cancel rule)
+    [alert addButtonWithTitle:@"Cancel"];  // Escape (NSAlert's Cancel rule)
     if (flow->income.offerSwap()) [alert addButtonWithTitle:@"Swap, then delete"];
     flow->alert = alert;
 
     std::shared_ptr<DeleteFlow> current = flow;
     void (^finish)(NSModalResponse) = ^(NSModalResponse response) {
-        current->closed = true;
         if (actionsState().stopped) {  // quit started: drop it
             endDeleteFlow(current);
             return;
@@ -2142,8 +2105,6 @@ void showDeleteSheet(const std::shared_ptr<DeleteFlow> &flow) {
             logDebug("delete-local: cancelled in the confirmation");
             endDeleteFlow(current);
         }
-        // The test aid's step goes on once the sheet has closed.
-        deleteDone(current->test);
     };
     // The window chosen at the click; if it can no longer take a sheet, the
     // main or key window as they are now.
@@ -2151,10 +2112,6 @@ void showDeleteSheet(const std::shared_ptr<DeleteFlow> &flow) {
     if (!usableSheetHost(host)) host = activeSheetHost();
     if (host != nil) {
         [alert beginSheetModalForWindow:host completionHandler:finish];
-        if (flow->test) {
-            deleteReport(flow->test, deleteSheetDescription(*flow, true));
-            scheduleDeleteCancel(flow, cancel, flow->test->closeSeconds);
-        }
         return;
     }
     // App-modal from a run-loop callout, never inside this main-queue block
@@ -2163,10 +2120,6 @@ void showDeleteSheet(const std::shared_ptr<DeleteFlow> &flow) {
         if (actionsState().stopped) {
             endDeleteFlow(current);
             return;
-        }
-        if (current->test) {
-            deleteReport(current->test, deleteSheetDescription(*current, false));
-            scheduleDeleteCancel(current, cancel, current->test->closeSeconds);
         }
         finish([alert runModal]);
     });
@@ -2395,6 +2348,15 @@ struct RunScanResult {
     std::vector<EnvelopeResult> finished;  // aligned with scan.finish
 };
 
+// Main thread: the leftover-run scan is done; the callers waiting for it
+// (actionsAfterRunScan) run now, in order.
+void runScanFinished(ActionsState &st) {
+    st.runScanDone = true;
+    std::vector<std::function<void()>> waiting = std::move(st.afterRunScan);
+    st.afterRunScan.clear();
+    for (std::function<void()> &fn : waiting) fn();
+}
+
 void onRunScan(const std::shared_ptr<RunScanResult> &result) {
     ActionsState &st = actionsState();
     if (st.stopped) return;
@@ -2437,10 +2399,7 @@ void onRunScan(const std::shared_ptr<RunScanResult> &result) {
                        followUpsAfterReload(run.stem, run.file.command, run.file.ids, run.file.followUps, true));
         deleteRunFilesLater(run.stem);
     }
-    st.runScanDone = true;
-    std::vector<std::function<void()>> waiting = std::move(st.afterRunScan);
-    st.afterRunScan.clear();
-    for (std::function<void()> &fn : waiting) fn();
+    runScanFinished(st);
 }
 
 // Main thread: the "Assign to other collection…" flow for `entry` (see the
@@ -2547,22 +2506,15 @@ std::string actionsResume(const ActionEntry &entry) {
     return startDetachedRun(CliCommand::Resume, entry.roots);
 }
 
-} // anonymous namespace
-
-std::string actionsSwap(const ActionEntry &entry, metadb_handle_list_cref handles,
-                        std::shared_ptr<const SwapTestHooks> test) {
+// Main thread: Swap to library paths for `entry` on the rows of `handles`
+// (see the top of IntakeActions.h). Returns what happened so far.
+std::string actionsSwap(const ActionEntry &entry, metadb_handle_list_cref handles) {
     ActionsState &st = actionsState();
-    // The test aid hears every early end, so its next step can run.
-    auto endNow = [&test](const std::string &what) {
-        if (test && test->report) test->report(what);
-        if (test && test->done) test->done();
-        return what;
-    };
-    if (st.stopped) return endNow("not run: intake is not running");
-    if (!entry.enabled) return endNow("not run: the item is disabled");
-    if (entry.roots.empty()) return endNow("not run: no qualifying root");
+    if (st.stopped) return "not run: intake is not running";
+    if (!entry.enabled) return "not run: the item is disabled";
+    if (entry.roots.empty()) return "not run: no qualifying root";
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
-    if (!view) return endNow(notRun(entry.action, "no intake data yet"));
+    if (!view) return notRun(entry.action, "no intake data yet");
     // The host frees `handles` when this returns: the rows are copied now.
     NativePathMenuBudget budget;
     size_t unchecked = 0;
@@ -2572,49 +2524,39 @@ std::string actionsSwap(const ActionEntry &entry, metadb_handle_list_cref handle
                 " selected row(s) on a slow volume could not be checked and are left as they are");
     }
     if (rows.empty()) {
-        return endNow(notRun(entry.action, "none of the selected rows points at an income path of these roots"));
+        return notRun(entry.action, "none of the selected rows points at an income path of these roots");
     }
     std::string why;
     const size_t count = rows.size();
     const bool started = swapStart(
         activePlaylist(), std::move(rows), view, serviceActionInfo().libraryPrefix,
-        [test](const SwapResult &result) {
-            if (test && test->report) test->report(result.line);
-            if (test && test->done) test->done();
-        },
+        [](const SwapResult &) {},
         why);
-    if (!started) return endNow(notRun(entry.action, why));
+    if (!started) return notRun(entry.action, why);
     return "swapping " + std::to_string(count) + " row(s)";
 }
 
-std::string actionsDeleteLocal(const ActionEntry &entry, std::shared_ptr<const DeleteTestHooks> test) {
+// Main thread: Delete local copy… for `entry`. Returns what happened so far.
+std::string actionsDeleteLocal(const ActionEntry &entry) {
     ActionsState &st = actionsState();
-    // The test aid hears every early end, so its next step can run.
-    auto endNow = [&test](const std::string &what) {
-        deleteReport(test, what);
-        deleteDone(test);
-        return what;
-    };
-    if (st.stopped) return endNow("not run: intake is not running");
-    if (!entry.enabled) return endNow("not run: the item is disabled");
-    if (entry.roots.empty()) return endNow("not run: no qualifying root");
+    if (st.stopped) return "not run: intake is not running";
+    if (!entry.enabled) return "not run: the item is disabled";
+    if (entry.roots.empty()) return "not run: no qualifying root";
     // The permanent guard first: placed, verified roots only
     // (requestForEntry applies it again to whatever finally runs).
     ActionEntry eligible = entry;
     eligible.roots = gcEligibleRoots(entry.roots);
-    if (eligible.roots.empty()) return endNow(notRun(entry.action, "no placed root with placed.verified"));
+    if (eligible.roots.empty()) return notRun(entry.action, "no placed root with placed.verified");
     if (st.deleteFlow) {
         logInfo("delete-local: the confirmation is already open or being prepared; this request is ignored");
-        return endNow("ignored: the delete confirmation is already open or being prepared");
+        return "ignored: the delete confirmation is already open or being prepared";
     }
     // No confirmation for a call that could not start anyway.
     const std::string why = whyNotStartable();
-    if (!why.empty()) return endNow(notRun(entry.action, why));
+    if (!why.empty()) return notRun(entry.action, why);
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
-    if (view && view->isInert()) return endNow(notRun(entry.action, "intake is inert: " + view->inertReason()));
+    if (view && view->isInert()) return notRun(entry.action, "intake is inert: " + view->inertReason());
     if (!serviceActionInfo().confirmGc) {
-        // The test aid only shows the sheet: with no sheet, nothing runs.
-        if (test) return endNow("no confirmation: confirm_gc is 0; nothing deleted");
         const std::string what = runMutation(eligible, std::string());
         return "no confirmation (confirm_gc 0); gc: " + what;
     }
@@ -2627,7 +2569,6 @@ std::string actionsDeleteLocal(const ActionEntry &entry, std::shared_ptr<const D
     auto flow = std::make_shared<DeleteFlow>();
     flow->serial = ++st.deleteSerial;
     flow->entry = eligible;
-    flow->test = std::move(test);
     flow->hostWindow = sheetHostWindow();  // now, while the pointer is where the menu was
     flow->playlist = playlistRefFor(activePlaylist());
     st.deleteFlow = flow;
@@ -2649,21 +2590,16 @@ std::string actionsDeleteLocal(const ActionEntry &entry, std::shared_ptr<const D
                        if (!late || now.stopped || now.deleteFlow != late || late->filesRead) return;
                        const std::string why =
                            "the sidecars could not be read within 10 s (the share is not answering)";
-                       const std::string what =
-                           notRun(IntakeAction::DeleteLocal, why + "; no confirmation, nothing deleted");
+                       notRun(IntakeAction::DeleteLocal, why + "; no confirmation, nothing deleted");
                        ActivityResult timedOut;
                        timedOut.succeeded = false;
                        timedOut.reason = "no answer within 10 s";
                        timedOut.detail = why;
                        activityEnd(activityCensusKey(serial), timedOut);
                        endDeleteFlow(late);
-                       deleteReport(late->test, what);
-                       deleteDone(late->test);
                    });
     return "reading the file lists of " + rootCountText(eligible.roots.size());
 }
-
-namespace {
 
 // Main thread: runs `entry` as a click on its menu item does. Returns what
 // happened, for a log line.
@@ -2705,7 +2641,7 @@ void actionsStartRunScan() {
     st.runScanStarted = true;
     const std::string dir = st.outputDirectory;
     if (dir.empty()) {
-        st.runScanDone = true;
+        runScanFinished(st);
         return;
     }
     dispatch_async(st.queue, ^{
@@ -2827,16 +2763,6 @@ static ActionTable menuTableFor(metadb_handle_list_cref sel, size_t &rootCount) 
     return buildActionTable(roots, context, menuActions(), libraryRoots);
 }
 
-ActionTable actionsTableForHandles(metadb_handle_list_cref handles) {
-    if (actionsState().stopped) return ActionTable();
-    size_t rootCount = 0;
-    return menuTableFor(handles, rootCount);
-}
-
-ActionTable actionsTableFor(const std::vector<const IntakeRecord *> &roots, const IntakeView *view) {
-    return buildActionTable(roots, liveContext(view), menuActions());
-}
-
 void actionsBuildMenu(metadb_handle_list_cref sel, pfc::list_t<jl_context_action> &out) {
     out.remove_all();
     ActionsState &st = actionsState();
@@ -2905,7 +2831,6 @@ void actionsShutdown() {
     // adopts or finishes them); only the watching stops.
     for (auto &watch : st.exitWatches) watch.second->cancel();
     st.exitWatches.clear();
-    st.afterRunScan.clear();
 }
 
 } // namespace intake

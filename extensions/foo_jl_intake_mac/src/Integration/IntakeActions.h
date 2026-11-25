@@ -211,8 +211,8 @@
 //  finished as above when it ends; a dead one is finished at once (one Info
 //  line, then its console line); orphan files are deleted (one Info line
 //  with the count). Until the scan is done no mutating call starts (the
-//  menu shows mutating items disabled), and the test_actions aid and the
-//  auto-scan's startup check (B12) wait for it (actionsAfterRunScan).
+//  menu shows mutating items disabled), and the auto-scan's startup check
+//  (B12) waits for it (actionsAfterRunScan).
 //
 //  Mutation lane (IntakeMutationLane, main thread): one mutating call at a
 //  time. A call that finds the lane busy is not started (one Error line).
@@ -296,18 +296,10 @@
 
 #include "../../../../shared/jl_decorator_api.h"
 
-#include "../Core/IntakeActionTable.h"
 #include "../Core/IntakeAutoScan.h"
 #include "../Core/IntakeRootErrors.h"
 
-#include <functional>
-#include <memory>
-#include <string>
-#include <vector>
-
 namespace intake {
-
-class IntakeView;
 
 // Main thread (provider context_actions).
 void actionsBuildMenu(metadb_handle_list_cref sel, pfc::list_t<jl_context_action> &out);
@@ -316,51 +308,14 @@ void actionsBuildMenu(metadb_handle_list_cref sel, pfc::list_t<jl_context_action
 // Swap, which copies the rows it needs before returning.
 void actionsExecute(uint32_t actionId, metadb_handle_list_cref sel);
 
-// Temporary acceptance aid (IntakeTestActions.mm, removed with it): main
-// thread, the table the menu builds for `handles` (rows matched by income
-// path or, for Delete, through the library index), with the live context;
-// for the test aid's `rows` and `swap` steps.
-ActionTable actionsTableForHandles(metadb_handle_list_cref handles);
-
-// Temporary acceptance aid: main thread, the table for `roots` (records of
-// a view the caller holds) with the live context, exactly as the menu
-// builds it; for the test aid's `delete-sheet` step.
-ActionTable actionsTableFor(const std::vector<const IntakeRecord *> &roots, const IntakeView *view);
-
-// Temporary acceptance aid hooks (IntakeTestActions.mm, removed with it):
-// Swap and Delete local copy… for a test_actions step. Main thread, each at
-// most once and `report` first; neither runs after on_quit.
-struct SwapTestHooks {
-    std::function<void(const std::string &line)> report;  // the swap's console line, or why nothing ran
-    std::function<void()> done;
-};
-
-// The `delete-sheet` step: the real confirmation, ended as Cancel after
-// closeSeconds. `report` gets the step's line when the sheet is up (or why
-// the flow ended before it); `done` runs once the sheet has closed or the
-// flow ended early.
-struct DeleteTestHooks {
-    double closeSeconds = 0;
-    std::function<void(const std::string &line)> report;
-    std::function<void()> done;
-};
-
-// Main thread: Swap to library paths for `entry` on the rows of `handles`
-// (see the top of this file); `test` null runs it as a click does. Returns
-// what happened so far, for a log line.
-std::string actionsSwap(const ActionEntry &entry, metadb_handle_list_cref handles,
-                        std::shared_ptr<const SwapTestHooks> test = nullptr);
-
-// Main thread: Delete local copy… for `entry`; `test` null runs it as a
-// click does. Returns what happened so far.
-std::string actionsDeleteLocal(const ActionEntry &entry, std::shared_ptr<const DeleteTestHooks> test = nullptr);
-
 // Main thread (on_init, after the service started): the leftover-run scan,
 // once per session (see the top of this file).
 void actionsStartRunScan();
 
 // Main thread: runs `fn` once the leftover-run scan is done (at once when
-// it is); never after on_quit.
+// it is); never after on_quit. B12: the auto-scan's startup check waits
+// here, so a live execute run adopted by the scan holds the lane before
+// the startup scans ask for it.
 void actionsAfterRunScan(std::function<void()> fn);
 
 // Any thread: the per-root command errors (the loader's annotator).
@@ -395,13 +350,5 @@ AutoScanStart actionsStartAutoScan(const AutoScanJob &job, std::function<void(Au
 // Main thread (on_quit): later results are dropped; nothing is killed
 // (detached runs and their files stay for the next session).
 void actionsShutdown();
-
-// Temporary acceptance aid (IntakeTestActions.mm): main thread, when the
-// service starts; foo_jl_intake.test_actions holds steps.
-bool testActionsPending();
-
-// Temporary acceptance aid: main thread, after each successful load; runs
-// foo_jl_intake.test_actions once per session.
-void testActionsAfterLoad();
 
 } // namespace intake

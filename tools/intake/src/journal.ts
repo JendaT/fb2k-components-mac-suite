@@ -1,7 +1,7 @@
 // Intake journal (doc 03): append-only NDJSON, one record per line. The
 // journal is the authority for "is it in the library"; sidecars are working
 // copies. Location comes from structure.yaml `journal.path` (the real path on
-// Amunet is pending confirmation; tests point it into a temp dir).
+// the NAS is pending confirmation; tests point it into a temp dir).
 
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { dirname } from "node:path";

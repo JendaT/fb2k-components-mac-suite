@@ -214,7 +214,8 @@ ActionTable buildActionTable(const std::vector<const IntakeRecord *> &roots, con
                              const std::vector<IntakeAction> &exposed = menuActions(),
                              const std::vector<const IntakeRecord *> &libraryRoots = {});
 
-// The first entry for `action`, or nullptr.
+// The first entry for `action`, or nullptr. Only the unit tests use it;
+// the menu goes by entry index.
 const ActionEntry *findEntry(const ActionTable &table, IntakeAction action);
 
 // The permanent gc guard (see the top of this file): the roots whose
