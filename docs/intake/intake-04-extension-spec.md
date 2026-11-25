@@ -716,15 +716,15 @@ are CLI commands on the mutation lane.
   the scan's order, each once. Never a `new` root, a row with another
   status or none, a root the scan kept (`kept`: without `--force` the CLI
   never rewrites a folder that has a sidecar, so `written` holds only new
-  roots), a root that is the income folder itself (see Income-folder
-  guard), or a resolved root whose row has `needs_review` true (resolver
-  confidence 0.50-0.79: doc 01 makes only roots at 0.80 or above
-  auto-eligible for propose, and the CLI's own `propose --all-resolved`
-  skips them; proposing by id would not, so the component leaves them for
-  Propose by hand); those skipped get one Debug line. Doc 03 pins no
-  `data` for `scan`, so the reply is read leniently; a missing or mistyped
-  member adds nothing. The propose's root errors become tooltips like any
-  propose's; an `E_NO_TARGET` root stays resolved. Its 10 s report is one
+  roots), or a root that is the income folder itself (see Income-folder
+  guard); those skipped get one Debug line. A resolved root that needs
+  review (resolver confidence 0.50-0.79) is proposed too, by id, unlike
+  the CLI's own `propose --all-resolved`: the user's choice (2026-11-25),
+  so its target shows early; propose approves nothing and the flag stays.
+  Doc 03 pins no `data` for `scan`, so the reply is read leniently; a
+  missing or mistyped member adds nothing. The propose's root errors
+  become tooltips like any propose's; an `E_NO_TARGET` root stays
+  resolved. Its 10 s report is one
   Info line like the scan's, and a cap kill of the propose disables
   nothing. Nothing to propose, no CLI configuration or an inert provider
   (one Info line) ends the run.
@@ -994,8 +994,7 @@ and the context menu. (v2 idea, out of scope: a dedicated intake queue panel.)
   synthetic corpus): a release lands in an income folder → the automatic
   scan about 60 s later (B12; at launch for a local income folder) → rows
   tint, a resolved release already proposed by the same run (Propose by
-  hand for one left resolved, e.g. one that needs review) → adjust one
-  target via picker → approve → execute → green ● → swap to library paths
+  hand for one left resolved) → adjust one target via picker → approve → execute → green ● → swap to library paths
   → delete local.
 - Automatic scan (B12), in the app on the mock CLI, pending: the startup
   scan, then one reload; a copy into the income folder scans once, about
@@ -1004,7 +1003,7 @@ and the context menu. (v2 idea, out of scope: a dedicated intake queue panel.)
   while it runs; the checkbox off and on again; a failing scan (exit 2)
   logs and opens nothing, and frees the lane; a gc in the income folder
   starts no scan; resolved roots the scan wrote are proposed in the same
-  run with one reload, except one that needs review; the status bar shows
+  run with one reload, also one that needs review; the status bar shows
   the scan and its result.
   Network income folders, mount events, the open-file hold and the cap
   kill are covered by unit tests only.

@@ -294,11 +294,9 @@ share, a symlink loop): no scan, one Debug line.
 - **The propose after it** (`proposeAfterScan`): after exit 0 or 1, the
   rows of the reply's `data[].written` with a string id and `status`
   exactly `resolved`, each once, in the scan's order, except a root that is
-  the income folder itself and one whose row has `needs_review` true (doc
-  01: only 0.80 and above is auto-eligible; the CLI's `--all-resolved`
-  skips them, proposing by id would not), go to `propose <ids>` on the same
-  lane token (`LaneRun::ProposeAfterScan`). `data` is not pinned by doc 03
-  and is read leniently. The lane stays `LaneHolder::Scan`, so the menu keeps
+  the income folder itself, go to `propose <ids>` on the same lane token
+  (`LaneRun::ProposeAfterScan`). `data` is not pinned by doc 03 and is
+  read leniently. The lane stays `LaneHolder::Scan`, so the menu keeps
   "(scan running)". The propose's root errors become tooltips (baseline
   resolved); its console line and its 10 s report are Info.
 - **The end** (`endAutoScanRun`, the only path that lets go of the token):
@@ -358,7 +356,8 @@ Debug: an income that became pending (`auto-scan: new files in income
 local; scanning it once they stopped for 60 s`), each income's startup
 classification, a missing folder, each gc mute, and the roots written but
 not proposed (`auto-scan: local: no propose for 2 roots: itk_0000000c
-(new), itk_0000000d (needs review)`).
+(new), ...`). A resolved root that needs review is proposed too (the
+user's choice, 2026-11-25; `--all-resolved` would skip it).
 
 **Limits.**
 

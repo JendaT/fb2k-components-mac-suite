@@ -1013,7 +1013,7 @@ First release, contributed by @Scannou (#56).
 - **Status bar**: SimPlaylist shows the running command with its progress at the bottom right, and its result for 10 seconds; a click lists them.
 - **Live updates**: Income folders are watched with FSEvents; a sidecar change or a finished command reloads the status.
 - **Automatic scan**: New files in an income folder are scanned 60 s after they stop arriving, and local income folders once at startup.
-- **Propose after scan**: Releases an automatic scan writes as resolved are proposed in the same run, unless they need review.
+- **Propose after scan**: Releases an automatic scan writes as resolved are proposed in the same run, also those that need review.
 - **Income folder guard**: A release root that is an income folder itself (loose files at its top level) is ignored, so stray rows under the folder are not tinted or acted on.
 - **Network shares**: `mac-volume://` rows match, also when a share is mounted twice; a stalled volume is skipped instead of blocking; accented names away from every release cost no Unicode normalisation.
 - **Share links**: Rows kept under a local symlink to the music share (`file://<link>/...`, the plorg shadow link) match the share's releases; the link is read without touching the share.

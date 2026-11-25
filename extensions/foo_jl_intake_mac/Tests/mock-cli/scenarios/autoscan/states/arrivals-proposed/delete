@@ -1,3 +1,3 @@
-# proposed: propose refuses it now (E_BAD_STATUS); assign, approve and reject answer.
-# itk_000a0011 (resolved, needs review) is never auto-proposed, so it stays resolved.
+# proposed: propose refuses them now (E_BAD_STATUS); assign, approve and reject answer.
 responses/propose.d/itk_000a0010.json
+responses/propose.d/itk_000a0011.json

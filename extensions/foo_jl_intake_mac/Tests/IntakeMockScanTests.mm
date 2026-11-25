@@ -10,7 +10,7 @@
 //   - scan.next applies a scan state: `written` lists the roots it added
 //     (autoscan's scan-arrivals: two resolved, one of them needing review,
 //     and one new), only sidecars are written, and the mock's propose
-//     answers for the root the component proposes (resolved, no review);
+//     answers for the roots the component proposes (the resolved ones);
 //   - the CLI's errors: no income, an unknown or a missing income, --all
 //     next to a missing one, an income named by its path, a dry run, a CLI
 //     without scan;
@@ -152,17 +152,18 @@ static void testScanArrivals() {
     CHECK(statusOf(state, "itk_000a0010") == "resolved" && statusOf(state, "itk_000a0012") == "new",
           "status lists them");
 
-    // What the component does next: propose the resolved root that needs
-    // no review (never the one that does, never the new one).
+    // What the component does next: propose the resolved roots, the one
+    // that needs review too (never the new one).
     CHECK(mock::writeFile(state + "/propose.next", "arrivals-proposed\n"), "propose.next written");
-    CHECK_EQ(runMock(state, {"propose", "itk_000a0010", "--json"}, out), 0, "propose: exit 0");
+    CHECK_EQ(runMock(state, {"propose", "itk_000a0010", "itk_000a0011", "--json"}, out), 0, "propose: exit 0");
     NSArray *rows = arrayOf(parse(out)[@"data"]);
-    CHECK(rows.count == 1 && str(dictAt(rows, 0)[@"id"]) == "itk_000a0010" &&
-              str(dictAt(rows, 0)[@"status"]) == "proposed",
-          "a proposed row for it");
-    CHECK(statusOf(state, "itk_000a0010") == "proposed" && statusOf(state, "itk_000a0011") == "resolved" &&
+    CHECK(rows.count == 2 && str(dictAt(rows, 0)[@"id"]) == "itk_000a0010" &&
+              str(dictAt(rows, 0)[@"status"]) == "proposed" && str(dictAt(rows, 1)[@"id"]) == "itk_000a0011" &&
+              str(dictAt(rows, 1)[@"status"]) == "proposed",
+          "a proposed row for each");
+    CHECK(statusOf(state, "itk_000a0010") == "proposed" && statusOf(state, "itk_000a0011") == "proposed" &&
               statusOf(state, "itk_000a0012") == "new",
-          "arrivals-proposed applied; the root that needs review and the new root untouched");
+          "arrivals-proposed applied; the new root untouched");
     CHECK_EQ(runMock(state, {"propose", "itk_000a0012", "--json"}, out), 2, "propose on the new root: exit 2");
     CHECK(firstErrorCode(parse(out)) == "E_BAD_STATUS", "E_BAD_STATUS");
 

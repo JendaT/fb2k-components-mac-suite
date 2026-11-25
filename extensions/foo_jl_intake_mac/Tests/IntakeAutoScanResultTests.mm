@@ -11,9 +11,8 @@
 //  texts). The start and 10 s lines, and the errors text (none, a path, an
 //  empty msg, more than three). The auto-propose after a scan
 //  (proposeAfterScan, PLAN-B12 scope addition 1): only resolved written
-//  roots (new, other and missing statuses skipped with one line), never one
-//  that needs review, never a kept root, never the income folder itself,
-//  `needs_review` read as a JSON boolean only, per scan outcome, order and
+//  roots (new, other and missing statuses skipped with one line), never a
+//  kept root, never the income folder itself, per scan outcome, order and
 //  repeats, the roots it hands on, and its start and 10 s lines. Envelopes
 //  from CLI-shaped JSON through parseEnvelope. Synthetic names only.
 //
@@ -100,12 +99,6 @@ ScanWrittenRoot written(const char *id, const char *status, const std::string &r
     return ScanWrittenRoot{id, rootPath.empty() ? std::string(kIncome) + "/" + id : rootPath, status};
 }
 
-ScanWrittenRoot writtenNeedsReview(const char *id, const char *status, const std::string &rootPath = std::string()) {
-    ScanWrittenRoot w = written(id, status, rootPath);
-    w.needsReview = true;
-    return w;
-}
-
 ScanReply replyOf(std::vector<ScanWrittenRoot> rows) {
     ScanReply r;
     r.counted = true;
@@ -135,13 +128,8 @@ void testReply() {
     r = readScanReply(@[
         @{
             @"written" : @[
-                @{
-                    @"id" : @"itk_00000001",
-                    @"root_path" : @"/Users/x/Music/fixture-income/A",
-                    @"status" : @"resolved",
-                    @"needs_review" : @YES
-                },
-                @{@"id" : @"itk_00000002", @"needs_review" : @1},
+                @{@"id" : @"itk_00000001", @"root_path" : @"/Users/x/Music/fixture-income/A", @"status" : @"resolved"},
+                @{@"id" : @"itk_00000002"},
                 @{@"root_path" : @"/Users/x/Music/fixture-income/C", @"status" : @"new"},
                 @{@"id" : @7, @"status" : @"new"},
                 @"itk_00000005",
@@ -156,15 +144,13 @@ void testReply() {
     CHECK_EQ(r.keptCount, 3, "every block's kept");
     CHECK(r.written.size() == 3, "only rows with a string id are listed");
     CHECK(r.written.size() == 3 && r.written[0].id == "itk_00000001" &&
-              r.written[0].rootPath == "/Users/x/Music/fixture-income/A" && r.written[0].status == "resolved" &&
-              r.written[0].needsReview,
-          "id, root_path, status, needs_review");
+              r.written[0].rootPath == "/Users/x/Music/fixture-income/A" && r.written[0].status == "resolved",
+          "id, root_path, status");
     CHECK(r.written.size() == 3 && r.written[1].id == "itk_00000002" && r.written[1].rootPath.empty() &&
-              r.written[1].status.empty() && !r.written[1].needsReview,
-          "missing members read as empty, a needs_review that is a number as false");
-    CHECK(r.written.size() == 3 && r.written[2].id == "itk_00000006" && r.written[2].status == "new" &&
-              !r.written[2].needsReview,
-          "in order, across blocks; no needs_review: false");
+              r.written[1].status.empty(),
+          "missing members read as empty");
+    CHECK(r.written.size() == 3 && r.written[2].id == "itk_00000006" && r.written[2].status == "new",
+          "in order, across blocks");
 }
 
 // --- the outcome ---
@@ -323,19 +309,6 @@ void testProposeStatuses() {
     CHECK(proposeAfterScan("local", kIncome, CliOutcome::Ok, ScanReply()).propose.empty() &&
               proposeAfterScan("local", kIncome, CliOutcome::Ok, ScanReply()).skippedLine.empty(),
           "nothing written: nothing, no line");
-
-    // doc 01: only a resolved root at 0.80 or above is auto-eligible; the
-    // CLI's --all-resolved skips needs_review, and so does the auto-propose.
-    const ScanFollowUp review = proposeAfterScan(
-        "local", kIncome, CliOutcome::Ok,
-        replyOf({writtenNeedsReview("itk_00000001", "resolved"), written("itk_00000002", "resolved"),
-                 writtenNeedsReview("itk_00000003", "new")}));
-    CHECK(idsAre(review.propose, {"itk_00000002"}) && review.roots.size() == 1,
-          "a resolved root that needs review is not proposed");
-    CHECK(idsAre(review.skipped, {"itk_00000001 (needs review)", "itk_00000003 (new)"}) &&
-              review.skippedLine == "auto-scan: local: no propose for 2 roots: itk_00000001 (needs review), "
-                                    "itk_00000003 (new)",
-          "it is skipped with the Debug line; a new one still says new");
 }
 
 void testProposeOutcomes() {
@@ -408,15 +381,15 @@ void testProposeThroughOutcome() {
     const CliResult r = result(json, 0);
     const AutoScanOutcome o = autoScanOutcome("local", r);
     const ScanFollowUp next = proposeAfterScan("local", kIncome, r.envelope.outcome, o.reply);
-    CHECK(idsAre(next.propose, {"itk_00000001"}), "the resolved roots written that need no review");
-    CHECK(next.roots.size() == 1 && next.roots[0].rootPath == std::string(kIncome) + "/Fixture Artist - Fixture Album",
+    CHECK(idsAre(next.propose, {"itk_00000001", "itk_00000003"}),
+          "the resolved roots written, one that needs review included");
+    CHECK(next.roots.size() == 2 && next.roots[0].rootPath == std::string(kIncome) + "/Fixture Artist - Fixture Album",
           "root_path from the reply");
-    CHECK(idsAre(next.skipped, {"itk_00000002 (new)", "itk_00000003 (needs review)"}),
-          "the new one and the one that needs review skipped");
+    CHECK(idsAre(next.skipped, {"itk_00000002 (new)"}), "the new one skipped");
     for (const MutationRoot &m : next.roots) {
         CHECK(m.rootPath.find("Old Album") == std::string::npos, "a kept root is never proposed");
     }
-    CHECK(o.newRoots == 4 && next.propose.size() == 1, "a row without an id counts as written but cannot be named");
+    CHECK(o.newRoots == 4 && next.propose.size() == 2, "a row without an id counts as written but cannot be named");
 
     const std::string partial =
         "{\"ok\":false,\"data\":[" + block("[" + row("itk_00000001", "resolved", "A") + "]", "[]") +

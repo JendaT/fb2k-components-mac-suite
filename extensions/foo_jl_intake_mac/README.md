@@ -191,8 +191,8 @@ income folder is scanned without a menu item:
   this Mac's disks is scanned once. Folders on a network share are scanned
   only when files arrive in them through this Mac.
 - **Then propose.** Releases the scan wrote as resolved are proposed in the
-  same run. Releases it left as new, or resolved but needing review, are
-  not.
+  same run, also those that need review (the flag stays until you
+  approve). Releases it left as new are not.
 - **Ignored.** Sidecars, partial downloads (`.part`, `.download`, ...),
   Finder files such as `.DS_Store`, removals, and the files a scan or a
   Delete local copy moves around itself.
