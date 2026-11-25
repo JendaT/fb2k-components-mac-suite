@@ -27,14 +27,16 @@ The component reads every key at startup.
 `rules_dir`, `watch_folders`, `share_links` (B11), `swap_prefix_from`,
 `swap_prefix_to`, the row colours `tint_new`, `tint_review`,
 `tint_proposed`, `tint_approved`, `tint_placed` and `tint_rejected` (B10),
-`confirm_gc` (B9, on the page since B10), `confirm_reject` (B6) and
-`log_level`. These are no longer hidden: the page writes them and they
-apply at once, with no restart (a CLI, bun or rules change reloads with
-`version`; a watched-folders change rebuilds the watch set; a share-links
-change reads the links again and rebuilds the match keys of the last load,
-with no CLI call; a colour change rebuilds the rows' decorations from the
-last load, with at most one invalidate-all and no CLI call; the log level
-and the two confirmations apply immediately, from the next context menu).
+`confirm_gc` (B9, on the page since B10), `confirm_reject` (B6),
+`auto_scan` (B12) and `log_level`. These are no longer hidden: the page
+writes them and they apply at once, with no restart (a CLI, bun or rules
+change reloads with `version`; a watched-folders change rebuilds the watch
+set; a share-links change reads the links again and rebuilds the match keys
+of the last load, with no CLI call; a colour change rebuilds the rows'
+decorations from the last load, with at most one invalidate-all and no CLI
+call; the log level and the two confirmations apply immediately, from the
+next context menu; `auto_scan` off drops the pending scans, on waits for
+the next new file).
 They are described below because in-app checks set them with `sqlite3`
 while foobar2000 is quit.
 
@@ -277,6 +279,41 @@ affects (up to 10, then "and N more") and has an optional reason field; the
 reason is passed as `--reason`. With `0`, Reject runs at once, without a
 reason. Approve, Propose and Resume never ask. Execute always asks (B8): its
 dry run, then a sheet listing what it will place.
+
+## foo_jl_intake.auto_scan
+
+`configInts`, `1` (default) or `0`; any value but `0` is on. The page's
+"Scan income folders automatically" checkbox (Income folders section, B12).
+With `1`, the component runs `intake scan <income> --json` by itself for
+one income folder 60 s after new files stop arriving there (later files
+postpone it; a file still being written holds it, at most 30 minutes), one
+scan at a time on the mutation lane, and then `propose` for the releases
+that scan wrote as resolved. After the first successful load of a session
+each income folder on this Mac's disks is scanned once; folders on a
+network share only when files arrive through this Mac. It needs a CLI
+whose `version` lists `scan` and the income folders from `intake income`.
+Errors go to the console only; every scan that ran is followed by one
+reload. Doc 04 "Automatic income scan" and
+[`runtime-notes.md`](runtime-notes.md) have the rules and the console
+lines.
+
+With `0`, nothing is scanned automatically. Turning it off drops the scans
+waiting for their turn; a scan already running finishes, with the propose
+after it. Turning it on starts nothing until the next new file in an
+income folder (the startup scan happens only at the session's first
+successful load, and only when the key is on then).
+
+At `log_level` 1 a change logs `[intake] auto-scan off: income folders are
+no longer scanned automatically` or `[intake] auto-scan on: new files in an
+income folder are scanned`; at startup with `0`, level 2 logs `[intake]
+auto-scan: off (foo_jl_intake.auto_scan is 0)`.
+
+```bash
+# quit foobar2000 first
+sqlite3 ~/Library/foobar2000-v2/config.sqlite \
+  "INSERT INTO configInts(name,value) VALUES('foo_jl_intake.auto_scan',0)
+   ON CONFLICT(name) DO UPDATE SET value=excluded.value;"
+```
 
 # Hidden keys
 

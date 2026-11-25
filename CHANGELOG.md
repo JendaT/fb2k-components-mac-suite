@@ -1012,15 +1012,18 @@ First release, contributed by @Scannou (#56).
 - **Quit before follow-ups**: Quitting foobar2000 after a placement ended but before its swap or delete ran logs one console line per run, so they can be done by hand.
 - **Status bar**: SimPlaylist shows the running command with its progress at the bottom right, and its result for 10 seconds; a click lists them.
 - **Live updates**: Income folders are watched with FSEvents; a sidecar change or a finished command reloads the status.
+- **Automatic scan**: New files in an income folder are scanned 60 s after they stop arriving, and local income folders once at startup.
+- **Propose after scan**: Releases an automatic scan writes as resolved are proposed in the same run.
 - **Income folder guard**: A release root that is an income folder itself (loose files at its top level) is ignored, so stray rows under the folder are not tinted or acted on.
 - **Network shares**: `mac-volume://` rows match, also when a share is mounted twice; a stalled volume is skipped instead of blocking; accented names away from every release cost no Unicode normalisation.
 - **Share links**: Rows kept under a local symlink to the music share (`file://<link>/...`, the plorg shadow link) match the share's releases; the link is read without touching the share.
 - **Swap with share links**: A playlist that uses a share link gets library rows in the link form; a row whose link does not lead to the library copy is skipped.
 - **Delete with share links**: Rows under a link that does not point at the mounted share count as unchecked, so "Swap, then delete" deletes nothing.
-- **Preferences**: Tools > Intake sets the CLI, bun, rules folder, watched folders, share links, library mapping, row colours, confirmations and log level, with a status line, Test CLI and Reload now.
+- **Preferences**: Tools > Intake sets the CLI, bun, rules folder, watched folders, share links, library mapping, row colours, confirmations, automatic scan and log level, with a status line, Test CLI and Reload now.
 
 #### Notes
 - **Changes only through the CLI**: Reads sidecars and CLI output; music files and sidecars change only through the intake command-line tool.
 - **Requirements**: A SimPlaylist build with the row decorator API, and an intake CLI that reports schema 1.
 - **Changes made on the NAS**: Need Refresh; FSEvents sees only changes made through this Mac.
 - **Fields outside playlists**: Library viewers do not update when a field value changes.
+- **Automatic scan limits**: Files written on the NAS by another machine start no scan; tracks arriving after a folder's scan are not added.

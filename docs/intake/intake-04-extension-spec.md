@@ -2,9 +2,12 @@
 
 **Repo destination:** `docs/intake/intake-04-extension-spec.md`
 **Owner:** extension worker · **Depends on:** doc 3 v1.2 (contract, normative), schema 1
-**Status:** v1.4 — 2026-11-20 (Part A implemented and review-hardened; Part B
+**Status:** v1.5 — 2026-11-25 (Part A implemented and review-hardened; Part B
 built and accepted in-app on the mock, user acceptance pending; share links
-built, in-app run pending). v1.4 adds share links (B11, the plorg shadow
+built, in-app run pending; automatic income scan built, untested in the app).
+v1.5 adds the automatic income scan (B12): `scan <income>` on new files in an
+income folder and at startup, the propose after it, the `auto_scan`
+preference. v1.4 (2026-11-20) adds share links (B11, the plorg shadow
 link, `docs/shadow-link.md`): path matching, preferences page, Swap, Delete
 local copy. v1.3 (2026-11-16) applies CR-EXT-002 (`docs/intake/CR-EXT-002-doc04.md`):
 Swap, Delete local copy, row colours, confirmations, cache gate, reload
@@ -135,7 +138,10 @@ mirrored in the header):
 Read-only view over intake state + command trigger, built to doc 03 v1.2
 (schema 1) and checked against SimPlaylist v2 (`dev/simplaylist`, same API).
 Reads sidecars and CLI `--json` output, mutates only through `intake`
-commands, never writes files, tags, sidecars or the journal.
+commands, never writes files, tags, sidecars or the journal. Commands run
+from the context menu, and one runs by itself: `scan <income>` when new
+files land in an income folder, then `propose` for the roots it resolved
+(B12, see Automatic income scan).
 
 ### State acquisition
 - **Version gate:** `intake version --json` passes only when `data.schema` is
@@ -143,7 +149,9 @@ commands, never writes files, tags, sidecars or the journal.
 - **Feature detection** through `data.commands`, else the `cli` semver: Reject
   when `reject` is listed (fallback ≥ 0.2.0); Resume by id needs ≥ 0.2.1
   (0.2.0 ignores ids with `--resume`); income watch only when `income` is
-  listed. `proposal.ranked`, `assigned_by`, `target_path` by presence. When a
+  listed; the automatic scan only when `scan` is listed (no semver
+  fallback) and income folders are known. `proposal.ranked`,
+  `assigned_by`, `target_path` by presence. When a
   CLI before 0.3.0 omits the last two they are unknown: no "· yours" mark
   and no slot-pending gating (execute's own refusal is shown instead). The
   component does not read sidecars to fill them in.
@@ -245,8 +253,16 @@ commands, never writes files, tags, sidecars or the journal.
   or removed (its roots change without a sidecar event), or an FSEvents
   rescan, dropped-events, mount or unmount flag (everything counts as
   changed); other names are ignored.
+- **Arrivals (B12):** the same stream also hands every event of each
+  callback, before the filter above, to the automatic scan. It has its own
+  rule: a file or folder created, renamed or modified under an income
+  folder that is not a sidecar or other ignored name, or a rescan or
+  dropped-events flag there, schedules a scan of that income; mount and
+  unmount flags do not (see Automatic income scan). It never changes what
+  reloads.
 - **Reload:** an event batch (1 s debounce), the exit of a command the
-  component started, a change of the CLI path, bun path or rules folder
+  component started (an automatic scan: once, after the propose that
+  follows it), a change of the CLI path, bun path or rules folder
   (with `version` first), a mount event, Refresh or the page's Reload now
   triggers one coalesced full `status --json` load, never a filtered one
   (doc 03 gives `--filter` no cost guarantee). Other preference changes
@@ -428,7 +444,8 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
   mutating command is spawned with zero ids or in an all-roots form
   (`--all-resolved`, `--approved`, `--all`).
 - No items without a CLI path, else **Refresh intake status** is always there.
-  `scan`, `resolve` and `identify` are not offered.
+  `resolve` and `identify` are not offered. `scan` has no item: it runs by
+  itself (see Automatic income scan).
 
 | Action | Enabled on roots in | Runs |
 |---|---|---|
@@ -608,6 +625,139 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
 The picker, Reject… and Delete local copy… sheets pick their window the same
 way.
 
+### Automatic income scan (B12)
+`intake scan <income>` runs by itself when new music lands in an income
+folder (user go, relayed 2026-11-21: "go with the automatic option"). The
+component still changes nothing itself: the scan, and the propose after it,
+are CLI commands on the mutation lane.
+
+- **Which folders:** the income folders from `intake income --json`, in the
+  spelling FSEvents reports (the loader's watch set entry: a local symlink
+  resolved, e.g. `/private/var/...` for `/var/...`; a share path as
+  written), only while `version` lists `scan`. Without it nothing is
+  counted or scanned, with one Info line per session while `auto_scan` is
+  on. Folders that only the watched-folders preference names are never
+  scanned.
+- **What counts:** the watcher hands every event of each FSEvents callback
+  (before the reload filter, rescans and markers included) to a pure
+  matcher on its own queue, string work only, against an immutable snapshot
+  of the income folders and gc mutes. An event belongs to the income with
+  the longest folder holding it at a `/` boundary, ASCII case ignored (the
+  folder itself included). It counts with Created, Renamed or Modified, on
+  a file or a folder; removal only, or metadata only, does not.
+  MustScanSubDirs, UserDropped and KernelDropped count for the income
+  holding the path and every income under it, and for every income when
+  the event has no path. Mount, Unmount, HistoryDone and EventIdsWrapped
+  never count: a share mounting is no arrival.
+- **Ignored,** with everything under them (any path component below the
+  income folder, ASCII case ignored): `.intake*.json` (sidecars, doc 05's
+  hint file), `.DS_Store`, `._*`, `.dat.nosync*`, `Thumbs.db`,
+  `desktop.ini`, `@eaDir`, `.AppleDouble`, `__MACOSX`; names ending in
+  `.part`, `.tmp`, `.download`, `.crdownload` or `.incomplete`; scan's own
+  archive output `*.unpacked` and `*.unpacked.partial`; gc's staging
+  folders `.intake-gc-*`. Without the last two, every scan that unpacks an
+  archive and every gc would schedule the next scan.
+- **gc mute:** gc renames a root's files into `.intake-gc-<id>/`, and the
+  events at the old paths would look like arrivals. Right before any gc is
+  dispatched (Delete local copy…, with or without its sheet, and the
+  Execute follow-up's delete) its roots' folders, in the FSEvents spelling,
+  are muted from the current FSEvents event id; when gc exits or is refused
+  the mute gets its end id. Events under those folders with ids in between
+  never count, however late the watcher's queue delivers them. The mute
+  goes with the first callback that carries an id past its end id, or
+  10 min after gc ended. Execute has no mute: it copies into the library
+  and leaves the income files alone.
+- **When:** 60 s after the latest counted event in that income; later
+  events postpone it. A file created and not yet closed (FSEvents reports
+  a content change when the writer closes the file) holds its income too,
+  for at most 30 min from when it appeared. One scan at a time, the
+  income pending longest first, and at most one pending scan per income;
+  events during an income's scan give it exactly one more, 60 s after the
+  latest. Only that income: `scan <name> --json`, never `--all` (a name
+  starting with `-` is sent as the income's absolute path from `income
+  --json`, which the CLI also matches, since it would parse the name as a
+  flag).
+- **Startup** (once per session): after the session's first successful
+  load, with `auto_scan` on then, once the leftover execute-run check is
+  done, each income folder on a local disk is due for one scan at once
+  (later events postpone it like any other). One on a network volume is
+  scanned on events only; a missing one gets no startup scan.
+- **Presence check,** before every scan and at startup, on a utility queue
+  (never the main thread or the watcher's queue): the mount table
+  (`getmntinfo(MNT_NOWAIT)`) first, then the path walked with
+  `lstat`/`readlink` only where the table puts it on a local filesystem,
+  then one `lstat` for a directory on a local folder. Nothing at or under a
+  network mount point is examined, the mount point included: a folder on a
+  mounted share counts as present without a look. A missing folder or an
+  unmounted share skips the scan (one Debug line) until the next event.
+- **Lane:** a due scan waits until the mutation lane is free (nothing
+  running, the leftover-run check done), checked every 5 s while it is
+  busy; a user command that takes the lane first goes first. The scan
+  holds the lane from its start until its exit, and on through the
+  propose after it. Meanwhile the menu's mutating items read
+  "(scan running)", and a click that finds the lane taken logs "a
+  background scan is running".
+- **Timeouts:** class mutating. At 10 s one Info line (`E_CLI_TIMEOUT`,
+  the scan goes on), with no tooltip and no reload. At the 15-minute cap
+  the runner kills it, and that income is not scanned automatically again
+  this session (one Info line). A slow network scan can hold the lane
+  that long.
+- **Propose after it** (PLAN-B12 scope addition 1): after a scan that
+  exited 0 or 1, the same lane run proposes, by id, the roots its reply
+  lists as newly written (`data[].written`) with `status` `resolved`, in
+  the scan's order, each once. Never a `new` root, a row with another
+  status or none, a root the scan kept (`kept`: without `--force` the CLI
+  never rewrites a folder that has a sidecar, so `written` holds only new
+  roots), or a root that is the income folder itself (see Income-folder
+  guard); those skipped get one Debug line. Doc 03 pins no `data` for
+  `scan`, so the reply is read leniently; a missing or mistyped member
+  adds nothing. A resolved root that needs review is proposed too (the
+  flag stays). The propose's root errors become tooltips like any
+  propose's; an `E_NO_TARGET` root stays resolved. Its 10 s report is one
+  Info line like the scan's, and a cap kill of the propose disables
+  nothing. Nothing to propose, or no CLI configuration (one Info line),
+  ends the run.
+- **End:** every path releases the lane once; a run in which a process
+  ran is followed by one reload. Errors never open a sheet or alert.
+- **Log,** all Info, never an Error line: `auto-scan: scanning income
+  <name> (startup|new files)`; `auto-scan: <name> done in 12.3 s: 2 new
+  roots, 1 kept` (no counts when the reply has none), `… done in 12.3 s
+  with errors: …; <errors>`, `auto-scan: <name> failed: <errors>`,
+  `auto-scan: <name> cancelled`, `auto-scan: <name> not started (…)`;
+  `propose: starting after auto-scan of <name> for 2 roots: <ids>`, then
+  the propose's own result line. `<errors>` is up to three `CODE: msg
+  (path)`, then `(+N more)`. Debug: an income that became pending, each
+  income's startup classification, a missing folder, gc mutes, the roots
+  not proposed. Errors from a scan stay per command: `E_NO_CLI`,
+  `E_NO_RULES` or `E_CLI_TIMEOUT` from it never make the provider inert.
+- **Setting:** `auto_scan` (see Preferences page), applied before the
+  first load and at once on a change, with one Info line. Off: pending
+  scans are dropped and events ignored; a running scan finishes, with the
+  propose after it, and starts no further run. On: nothing starts until
+  the next counted event.
+- **Quit:** nothing is scheduled or started after `on_quit`. A running
+  scan goes on (mutating calls are not killed before the cap); its result
+  only releases the lane, and no propose follows.
+- **Limits:**
+  - FSEvents reports only changes made through this Mac. Files written into
+    a network income folder by another machine (the NAS itself, another
+    computer) start no scan: run `intake scan` by hand. FSEvents on SMB is
+    untested.
+  - Files that arrived in a network income folder while foobar2000 was not
+    running wait for the next event there: only local folders get the
+    startup scan.
+  - The CLI keeps a folder's existing sidecar (doc 03). A scan in a gap
+    between two slow downloads (a downloader that fetches the next track
+    into memory, so no file is open meanwhile) writes the sidecar for half
+    an album, and the later tracks are never scanned. Only a CLI change can
+    fix it (amendment 004 candidate).
+  - A file created and never written or closed (an empty `touch`) holds
+    its income for the full 30 min.
+  - The CLI has no locking: a scan run by hand in Terminal while the
+    component scans can race.
+  - Scans waiting for their turn are not shown in the status bar; only the
+    running one is.
+
 ### Status bar (B14)
 A `jl_status_provider` (`shared/jl_status_api.h`; user request: "a status
 bar to see the list of ongoing operations ... bottom right in
@@ -633,15 +783,22 @@ keeps its line up to date.
   | Delete local copy… (`gc`, the Execute follow-up's too) | "Deleting local copies of 3 albums…" | "Deleted local copies of 3 albums" |
   | Delete local copy…'s sidecar reads (`confirm_gc` on) | "Counting playlist rows for 3 albums…" | "Counted playlist rows for 3 albums" |
   | Swap to library paths (the Execute follow-up's too) | "Swapping 12 playlist rows…" | "Swapped 12 playlist rows" |
+  | Automatic scan (B12) | "Scanning income local…" (the income's name, never a count), then "Proposing 2 albums…" for the propose after it (always the count) | "Scanned local", "Scanned local: 3 new albums" (the roots the scan wrote, `new` ones included), "Scanned local, proposed 2 albums" |
 
   A failure shows "Propose failed: <reason>" (Assign, Approve, Reject
   alike), "Placement check failed: …", "Execute failed: …", "Resume failed:
-  …", "Delete failed: …", "Row count failed: …" or "Swap failed: …". The
-  reason is the first root's error without its "<command>: " prefix when no
-  root succeeded, "<k> of <n> albums" when some did. An assign that failed
+  …", "Delete failed: …", "Row count failed: …", "Swap failed: …" or "Scan
+  failed: …". The reason is the first root's error without its
+  "<command>: " prefix when no root succeeded, "<k> of <n> albums" when
+  some did. An assign that failed
   for some roots ends its entry as "Assign failed: <k> of <n> albums" even
   when the propose after it succeeded; the Delete flow's sidecar reads end
-  as "Row count failed: …" when a file list could not be read. A result
+  as "Row count failed: …" when a file list could not be read. A scan names
+  no roots: its reason is its first error as "CODE: msg", "stopped at the
+  15-minute cap", "cancelled" or "not started". A scan that exited 1 ends
+  its entry as "Scan failed: …" even when the propose after it succeeded
+  (that propose's failure, if any, goes into the detail); a propose after a
+  clean scan that fails shows "Propose failed: …". A result
   carries state succeeded with the check icon, or failed with the cross
   icon, and no progress. Labels are cut at 60 bytes and reasons at 120,
   never inside a character or a composed character sequence (a letter
@@ -653,7 +810,8 @@ keeps its line up to date.
   running entries first, begun last first, then the results still inside
   their 10 s, newest first. Title: the line's text (an n/m entry: "Placing
   12/40"). Detail: the album placing now, else "<first album> and N more",
-  empty for one album; a failure's detail is its console line. Ids are
+  empty for one album and for the automatic scan and the propose after it
+  (their label is an income); a failure's detail is its console line. Ids are
   stable while the entry exists; started and ended are Unix epoch
   milliseconds (ended 0 while running).
 - **Lifetimes:** an entry begins when its operation has what it needs (the
@@ -665,7 +823,9 @@ keeps its line up to date.
   entry ends at the latest at the mutating calls' 15-minute cap, as
   "Placement check failed: no answer within 15 min", and an answer after
   that is ignored. The sidecar reads end with their replies or after 10 s
-  ("Row count failed: no answer within 10 s").
+  ("Row count failed: no answer within 10 s"). The automatic scan's entry
+  begins when the scan holds the lane and ends when the lane is released
+  after it and the propose after it; the 10 s reports do not end it.
 - **Execute progress:** not from the CLI's output (written only at exit)
   but from the statuses each published load shows: done = the run's roots
   now `placed`, the album = the root that turned `placing` since the last
@@ -718,9 +878,13 @@ keeps its line up to date.
   report the lane is released, the late result is discarded (the
   confirmation says the check did not finish in 10 s; an execute dry run
   raises no `E_CLI_TIMEOUT`, per doc 03) and the process runs on, unkilled.
-  Mutating actions are disabled while busy ("(execute running)"
-  while an execute holds it). The CLI has no locking, so Terminal runs are
-  not protected by the lane.
+  The automatic scan (B12) holds it as its own holder from the scan's
+  start until its exit and the propose after it. Mutating actions are
+  disabled while busy ("(execute running)" while an execute holds it,
+  "(scan running)" while the automatic scan does; a click that finds it
+  taken by the scan logs "a background scan is running"). A due scan
+  waits until the lane is free. The CLI has no locking, so Terminal runs
+  are not protected by the lane.
 - **Envelope:** one object with a boolean `ok`, an `errors` array and `data`,
   matching the exit code (0 ok; 1 partial: apply `data`, report `errors`; 2
   error: `data` null). A root succeeded when its `id` is in `data`. Anything
@@ -748,8 +912,12 @@ unless 0, default on. Off runs the command at once with no sheet (Reject
 then without a reason) and drops the item's ellipsis from the next menu.
 Execute placement always asks (dry run, then its sheet). A status line
 (state, CLI version, root count, last error) with Test CLI and Reload now,
-and the income folders in use. configStore (`foo_jl_intake.`), cached;
-never read on the decorate path.
+and the income folders in use, headed by the checkbox "Scan income folders
+automatically" (`auto_scan`, B12, a configInt, on unless 0, default on;
+the hint under it: "Runs intake scan on an income folder 60 s after new
+files stop arriving there. Folders on this Mac are also scanned once at
+startup."), applied at once (see Automatic income scan: Setting).
+configStore (`foo_jl_intake.`), cached; never read on the decorate path.
 
 ### Failure behavior
 - **Codes:** CLI codes in `errors[]` are an open set, shown from `msg`/`path`
@@ -765,17 +933,23 @@ never read on the decorate path.
   of the CLI path, bun path or rules folder, an FSEvents batch or a mount
   (other preference changes load nothing, see Reload).
 - **Everything else is per command:** console line + per-root tooltip; never
-  modal, never inert. A failed refresh keeps the last data.
+  modal, never inert. A failed refresh keeps the last data. The automatic
+  scan names no roots, so its errors are an Info line and its status bar
+  result only (the propose after it sets tooltips as usual).
 - **Timeouts** (doc 03 v1.2), classified by command whatever its flags:
 
   | Class | At 10 s | Kill |
   |---|---|---|
   | read-only: `version`, `status`, `collections`, `income` | report `E_CLI_TIMEOUT` | allowed (SIGTERM to the group, SIGKILL 2 s later) |
-  | mutating: `propose`, `assign`, `approve`, `reject`, `gc`, dry runs included | report, keep running, reload on exit | not before the 15-minute cap; terminated at it |
+  | mutating: `propose`, `assign`, `approve`, `reject`, `gc`, `scan` (B12), dry runs included | report, keep running, reload on exit | not before the 15-minute cap; terminated at it |
   | `execute`, dry run and `--resume` included | none (doc 03 exception) | never; detached, survives quitting foobar2000 |
 
   A dry run that outlives its 10 s report releases the mutation lane (see
-  CLI invocation).
+  CLI invocation). The automatic scan's report, and that of the propose
+  after it, is one Info line with no tooltip and no reload (the run
+  reloads once, at its end); a scan terminated at the cap is not run
+  automatically again for its income this session (see Automatic income
+  scan).
 - An inert provider still triggers SimPlaylist's 16 pt gutter (provider
   presence enables it, see Part A); accepted.
 
@@ -806,6 +980,18 @@ and the context menu. (v2 idea, out of scope: a dedicated intake queue panel.)
   intentionally do not render in the flat fallback mode for very large
   playlists (Part A scope note).
 - Full flow demo on synthetic fixtures only (mock CLI, or the real CLI on a
-  synthetic corpus): a release lands in an income folder → rows tint →
-  propose → adjust one target via picker → approve → execute → green ● →
-  swap to library paths → delete local.
+  synthetic corpus): a release lands in an income folder → the automatic
+  scan about 60 s later (B12; at launch for a local income folder) → rows
+  tint, a resolved release already proposed by the same run (Propose by
+  hand for one left resolved) → adjust one target via picker → approve →
+  execute → green ● → swap to library paths → delete local.
+- Automatic scan (B12), in the app on the mock CLI, pending: the startup
+  scan, then one reload; a copy into the income folder scans once, about
+  60 s after the last of several copies; no scan for a `.part` file,
+  `.DS_Store`, a sidecar edit or a removal; "(scan running)" in the menu
+  while it runs; the checkbox off and on again; a failing scan (exit 2)
+  logs and opens nothing, and frees the lane; a gc in the income folder
+  starts no scan; resolved roots the scan wrote are proposed in the same
+  run with one reload; the status bar shows the scan and its result.
+  Network income folders, mount events, the open-file hold and the cap
+  kill are covered by unit tests only.

@@ -28,7 +28,8 @@ to library paths edits playlist entries, not files.
 - The intake command-line tool, answering `version --json` with
   `"schema": 1`. The component is written against CLI 0.3.0 and detects
   newer features by command. For example, Resume placement needs 0.2.1 or
-  later, and the income folder list needs a CLI that offers `income`.
+  later, the income folder list needs a CLI that offers `income`, and the
+  automatic scan one that offers `scan` and `income`.
 - bun, when the CLI path is the CLI's `cli.ts`.
 
 ## Setup
@@ -47,6 +48,7 @@ at once; nothing needs a restart.
 | Row colours | One colour per status, with opacity, a "No tint" switch for each, and Reset colours. |
 | Confirmations | Ask before Delete local copy, Ask before Reject (both on by default). Execute placement always asks. |
 | Log level | Error, Info or Debug. Lines appear in View > Console with an `[intake]` prefix. |
+| Scan income folders automatically | Above the income folder list. Runs `intake scan` on an income folder by itself when new files arrive there. On by default. See [Automatic scan](#automatic-scan). |
 
 The Status block shows the state, the CLI version, the number of releases
 and the last error. **Test CLI** runs `intake version`, and **Reload now**
@@ -165,8 +167,9 @@ qualify. "(2 of 3)" in a title means it runs on only some of them.
 - An ellipsis means a dialog comes first. Reject and Delete local copy
   lose it when their confirmation is turned off.
 - Only one command runs at a time. While one runs, the other command items
-  are disabled; during an Execute their titles say "(execute running)".
-  Swap to library paths and Refresh stay available.
+  are disabled; during an Execute their titles say "(execute running)",
+  during an automatic scan "(scan running)". Swap to library paths and
+  Refresh stay available.
 - An Execute keeps running when foobar2000 quits. The next start picks it
   up again, with the swap and delete chosen in its sheet.
 
@@ -174,6 +177,35 @@ How commands are run, timed out and watched is described in
 [`docs/runtime-notes.md`](docs/runtime-notes.md). The settings, including
 the ones not on the preferences page, are in
 [`docs/hidden-options.md`](docs/hidden-options.md).
+
+## Automatic scan
+
+With "Scan income folders automatically" on (the default), new music in an
+income folder is scanned without a menu item:
+
+- **When.** 60 seconds after the last new file arrives in an income folder,
+  `intake scan <income>` runs for that folder only. Copying many files
+  gives one scan, after the last one. A file still being written holds the
+  scan, for at most 30 minutes.
+- **At startup.** After the first successful load, each income folder on
+  this Mac's disks is scanned once. Folders on a network share are scanned
+  only when files arrive in them through this Mac.
+- **Then propose.** Releases the scan wrote as resolved are proposed in the
+  same run. Releases it left as new are not.
+- **Ignored.** Sidecars, partial downloads (`.part`, `.download`, ...),
+  Finder files such as `.DS_Store`, removals, and the files a scan or a
+  Delete local copy moves around itself.
+- **One at a time.** A scan waits for a running command and blocks the
+  other command items while it runs. The reload follows when it ends.
+- **Errors** go to the console only, never a dialog. A scan stopped at the
+  15-minute limit is not run automatically again for that folder until
+  foobar2000 restarts. A missing folder or an unmounted share is skipped.
+- **Limits.** Files put on the NAS by another computer start no scan: run
+  `intake scan` by hand. The CLI keeps a folder's sidecar once written, so
+  tracks that reach a folder after its scan are not added to it.
+
+The status bar shows the scan ("Scanning income local…") and its result
+("Scanned local: 3 new albums", "Scanned local, proposed 2 albums").
 
 ## Status bar
 
@@ -186,8 +218,8 @@ of running commands and those that ended in the last 10 seconds.
 
 - Shown: Propose, Assign, Approve, Reject, Execute (its check, the
   placement, and a placement picked up at start), Resume, Delete local copy
-  (and its file list reads), and Swap to library paths. Loads and Refresh
-  are not.
+  (and its file list reads), Swap to library paths, and the automatic scan
+  with the propose after it. Loads and Refresh are not.
 - A command that failed for some albums shows as failed ("Assign failed: 1
   of 3 albums"), also when the propose after an assign succeeded. A
   placement check that never answers (a share that stopped responding)
