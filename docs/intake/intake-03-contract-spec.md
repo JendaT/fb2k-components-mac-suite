@@ -206,7 +206,7 @@ sidecars ↔ journal ↔ future sync-base snapshots.
 
 1. Freeze proposal → compute final tag set (identify result + provenance:
    `INTAKE_DATE`, `INTAKE_SOURCE`, `INTAKE_BATCH`; TXXX / VorbisComment).
-2. Copy release to a temp dir on Amunet target volume → write final tags to
+2. Copy release to a temp dir on the NAS target volume → write final tags to
    the **copies** (none to a FLAC keyed by the `fsha1:` fallback, see
    audio_hash) → fsync.
 3. Verify: audio_hash of every copy == sidecar hash; file count match.
@@ -227,7 +227,7 @@ of by `gc` with the rest of the local original; with `--relocate-dj`,
 shadows are relocated into the dj zone along with the primary files
 (relocate means move, not delete — disposal by deletion is plain `gc`).
 
-## Journal (Amunet)
+## Journal (NAS)
 
 `/volume1/music/music.meta/intake-journal.ndjson` *(location pending
 confirmation)* — deliberately a sibling of ALL `music.*` tiers: one journal
@@ -324,7 +324,7 @@ Applied by CR adjudication; decision table in `AMENDMENTS.md` entry 003.
   `flac_decode_failed` issue, `needs_review` on the root, no provenance tag
   write for that file. `flac` is a resolve-time dependency. Supersedes the
   v1.1 CR-001.4 option B wording. Migration: none — no sidecars or journal
-  exist, production or test (the Amunet test environment
+  exist, production or test (the NAS test environment
   `music.intake-test` has only seen a `scan --dry-run`).
 - **CR-004.1** — version gate compares the integer `schema`.
 - **CR-004.2** — the three specifically handled codes named: `E_NO_RULES`,
