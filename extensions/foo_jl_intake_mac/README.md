@@ -174,12 +174,17 @@ qualify. "(2 of 3)" in a title means it runs on only some of them.
   up again, with the swap and delete chosen in its sheet.
 - Propose on more than 5 releases (also the propose after an Assign and
   after an automatic scan) runs `propose` for 5 at a time, one after the
-  other, because each release can take the CLI a minute or two. Between
-  two batches the other commands are available; a batch waits for a
-  command that runs. Releases you propose while batches run join them. A
-  batch stopped at the 15-minute limit, or a missing CLI, stops the rest
-  (one console line lists the releases not proposed); errors of single
-  releases do not.
+  other, because each release can take the CLI a minute or two. A batch
+  killed at the 15-minute limit loses only its 5 releases. While a batch
+  runs, the menu's other commands stay disabled, as for any command; a
+  click or an automatic scan gets in only in the short gap between two
+  batches, and the next batch then waits for it. Releases proposed in such
+  a gap join the batches; releases that already failed in them do not
+  (the console says so: propose them again afterwards). A batch stopped at
+  the 15-minute limit, or a missing CLI, stops the rest (one console line
+  lists the releases not proposed); errors of single releases do not.
+  When foobar2000 quits, the batch running finishes; the releases not
+  started stay resolved: propose them again.
 
 How commands are run, timed out and watched is described in
 [`docs/runtime-notes.md`](docs/runtime-notes.md). The settings, including

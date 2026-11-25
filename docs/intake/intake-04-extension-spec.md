@@ -476,25 +476,35 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
   tooltip, and the lane was held the whole time. 5 or fewer roots keep
   their single call. One chain at a time; roots asked for while it runs
   join it, by id, against the roots still pending and those it already
-  handled (the total grows; one Info line, also when none is new). Before
-  each chunk a reload runs and every pending root's status is checked
-  again: a root no longer `resolved`, or gone, is skipped (one Debug line).
-  The lane is free between chunks: a click or an automatic scan may take
-  it, and the chain waits for it (retried every 2 s, one Info line per
-  wait, never a queued call); while a chunk runs a mutating click is
-  refused as for any call. A chunk's root errors become tooltips like any
-  propose's (baseline `resolved`); its result line is Info, Error only when
-  the whole chunk failed. The chain stops when a chunk was killed at the
-  15-minute cap or ended with `E_NO_CLI`, when a chunk could not start, or
-  when the provider is inert or the CLI path gone; per-root and other
-  envelope errors do not stop it. Lines: `propose: starting for 49 roots,
-  in chunks of 5: <ids>` (or `starting after assign` / `after auto-scan of
+  handled (the total grows; one Info line, also when none is new). A root
+  the chain already failed does not join again: the line names it, to be
+  proposed again after the chain ends. Before each chunk a reload runs
+  (also after a wait for the lane) and every pending root's status is
+  checked again: a root no longer `resolved`, or not in the view, is
+  skipped (one Debug line). A reload that does not succeed stops the chain
+  (the view kept is the old one). Each chunk holds the lane until it exits,
+  so the menu's mutating items stay disabled while it runs; the lane is
+  free only between chunks, during the reload, when a click or an
+  automatic scan may take it. The chain then waits for it (retried every
+  2 s, one Info line per wait, never a queued call), and also while an
+  execute run's swap and delete are still to run. A chunk's root errors
+  become tooltips like any propose's (baseline `resolved`); its result line
+  is Info, Error only when the whole chunk failed. The chain stops when a
+  chunk was killed at the 15-minute cap or ended with `E_NO_CLI`, when a
+  chunk could not start, when the reload before a chunk failed, or when the
+  provider is inert or the CLI path gone; per-root and other envelope
+  errors do not stop it. After its last chunk the chain ends at once,
+  without waiting for the lane. Lines: `propose: starting for 49 roots, in
+  chunks of 5: <ids>` (or `starting after assign` / `after auto-scan of
   <name>`), `propose: chunk 2 of 10 starting for 5 roots: <ids>`, the
   chunk's result line with `(chunk 2 of 10)`, at the end `propose: done for
-  46 of 49 roots in 10 chunks; failed: <ids>`; a stop `propose: stopped
-  after chunk k of n (<reason>); M roots not proposed: <ids>`. A quit drops
-  the chain: a chunk running goes on, and the roots not started yet get one
-  Info line `propose: M roots not proposed (quit): <ids>`.
+  46 of 49 roots in 10 chunks; failed: <ids>` (plus `; skipped: <id>
+  (proposed), <id> (not in the view)`); a stop `propose: stopped after
+  chunk k of n (<reason>); done for 34 of 40 roots; failed: <ids>; M roots
+  not proposed: <ids>` (`stopped before the first chunk (<reason>)` when
+  none ran). A quit drops the chain: a chunk running goes on, and the
+  roots not started yet stay `resolved`, with one Info line `propose: M
+  roots not proposed (quit): <ids>`.
 - **Alternates** only from `ranked` minus the target (no sidecar fallback).
   **Assign to other collection…** (first when amber) opens a picker fed by
   `intake collections --json`: a search field over a list visible from
@@ -770,7 +780,7 @@ are CLI commands on the mutation lane.
   `auto-scan: <name> cancelled`, `auto-scan: <name> not started (…)`;
   `propose: starting after auto-scan of <name> for 2 roots: <ids>`, then
   the propose's own result line (more than 5 roots: the chunked propose's
-  lines). `<errors>` is up to three `CODE: msg
+  lines, Error only when a whole chunk failed). `<errors>` is up to three `CODE: msg
   (path)`, then `(+N more)`. Debug: an income that became pending, each
   income's startup classification, a missing folder, gc mutes, the roots
   not proposed. Errors from a scan stay per command: `E_NO_CLI`,
@@ -820,7 +830,7 @@ keeps its line up to date.
   | Operation | While it runs | Result |
   |---|---|---|
   | Propose | "Proposing 3 albums…", "Proposing Artist – Album…" | "Proposed 3 albums" |
-  | Chunked propose (more than 5 roots: Propose, after an assign or a scan) | "Proposing 49 albums…" until the first chunk ends, then "Proposing 10/49: Artist – Album" (10 handled, the chunk running starts with that album) or "Proposing 10/49" between chunks | "Proposed 49 albums", "Propose failed: 3 of 49 albums", "Propose failed: <stop reason>" |
+  | Chunked propose (more than 5 roots: Propose, after an assign or a scan) | "Proposing 49 albums…" until the first chunk ends or roots are skipped, then "Proposing 10/49: Artist – Album" (10 handled, skipped ones included; the chunk running starts with that album) or "Proposing 10/49" between chunks | "Proposed 49 albums", "Propose failed: 3 of 49 albums" (counting the roots proposed or failed; skipped ones are left out), "Propose failed: all 49 albums skipped (not resolved now)", "Propose failed: <stop reason>" |
   | Assign to X, Assign to other collection… | "Assigning 3 albums…", then "Proposing 2 albums…" for the propose after it | "Assigned 3 albums", "Assigned and proposed 2 albums" |
   | Approve, Reject… | "Approving 3 albums…", "Rejecting 3 albums…" | "Approved 3 albums", "Rejected 3 albums" |
   | Execute placement… dry run | "Checking placement of 3 albums…" | "Checked placement of 3 albums" |
@@ -931,8 +941,8 @@ keeps its line up to date.
   raises no `E_CLI_TIMEOUT`, per doc 03) and the process runs on, unkilled.
   The automatic scan (B12) holds it as its own holder from the scan's
   start until its exit and the propose after it. The chunked propose takes
-  it per chunk and releases it after each one; a busy lane is retried
-  every 2 s. Mutating actions are
+  it per chunk and releases it after each one; a busy lane, or an execute
+  run's swap and delete still to run, is retried every 2 s. Mutating actions are
   disabled while busy ("(execute running)" while an execute holds it,
   "(scan running)" while the automatic scan does; a click that finds it
   taken by the scan logs "a background scan is running"). A due scan
@@ -1003,7 +1013,8 @@ configStore (`foo_jl_intake.`), cached; never read on the decorate path.
   reloads once, at its end); a scan terminated at the cap is not run
   automatically again for its income this session (see Automatic income
   scan). A chunk's report (chunked propose) is one Info line, `propose:
-  chunk k of n still running after 10 s`, with no tooltip and no reload;
+  chunk k of n still running (E_CLI_TIMEOUT: no reply after 10 s; the
+  chunk continues)`, with no tooltip and no reload;
   the lane stays held until the chunk exits. A chunk terminated at the cap
   sets the timeout tooltip on its own roots only and stops the chain.
 - An inert provider still triggers SimPlaylist's 16 pt gutter (provider

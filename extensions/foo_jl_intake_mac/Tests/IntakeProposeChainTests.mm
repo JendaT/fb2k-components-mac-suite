@@ -10,9 +10,13 @@
 //  decision per envelope outcome (the hard-cap kill through
 //  interpretProcessResult), the end's ActivityResult (all done, partial,
 //  total failure, skipped roots, a chunk error that failed no root), the
-//  progress for the status bar's n/m and the chunk numbers. Also through
-//  summarizeMutation on synthetic envelopes and the ActivityModel texts, as
-//  Integration uses them. Synthetic ids, paths and labels only.
+//  progress for the status bar's n/m and the chunk numbers, the stop line
+//  (the tally so far, the roots not proposed, before the first chunk), the
+//  roots of a join that already failed, finished() after the last chunk
+//  (the chain ends without another chunk) and the label of the end. Also
+//  through summarizeMutation on synthetic envelopes (a hard-cap kill, E_NO_CLI)
+//  and the ActivityModel texts, as Integration uses them. Synthetic ids,
+//  paths and labels only.
 //
 // TEST_DEPS: src/Core/IntakeMutationResult.mm src/Core/IntakeEnvelope.mm src/Core/IntakeErrorMap.mm
 // TEST_DEPS: src/Core/IntakePath.mm src/Core/IntakeLog.mm src/Core/IntakeCommandArgs.mm
@@ -157,6 +161,23 @@ static void testAdd() {
     CHECK_EQ(d.add(roots({6})), 0, "a skipped root does not join again");
     CHECK_EQ(d.total(), 9, "the total counts every root added");
     CHECK(d.firstRoot()->id == idFor(1), "the first root stays");
+
+    // failedAmong: the roots of a join that this chain already failed.
+    struct FailedRow {
+        const char *what;
+        std::vector<MutationRoot> join;
+        std::vector<std::string> failed;
+    };
+    const FailedRow failedTable[] = {
+        {"a failed root", roots({3}), ids({3})},
+        {"done, skipped, pending and new roots", roots({1, 6, 9, 10}), {}},
+        {"in the join's order, each once", roots({10, 3, 3, 1}), ids({3})},
+        {"nothing", {}, {}},
+    };
+    for (const FailedRow &row : failedTable) {
+        g_context = std::string("add/failed-among/") + row.what;
+        CHECK(d.failedAmong(row.join) == row.failed, "failed ids");
+    }
 }
 
 static void testNextChunk() {
@@ -215,14 +236,14 @@ static void testNextChunk() {
     s.except[idFor(1)] = IntakeStatus::Proposed;
     s.except[idFor(3)] = std::nullopt;
     ProposeChunk chunk = c.nextChunk(s.fn());
-    CHECK(chunk.skippedLine == "propose: skipped 2 roots no longer resolved: " + idFor(1) + " (proposed), " +
+    CHECK(chunk.skippedLine == "propose: skipped 2 roots not resolved now: " + idFor(1) + " (proposed), " +
                                    idFor(3) + " (not in the view)",
           "one Debug line for the skipped");
     ProposeChain one;
     one.add(range(1, 2));
     Statuses s1;
     s1.except[idFor(1)] = IntakeStatus::New;
-    CHECK(one.nextChunk(s1.fn()).skippedLine == "propose: skipped 1 root no longer resolved: " + idFor(1) + " (new)",
+    CHECK(one.nextChunk(s1.fn()).skippedLine == "propose: skipped 1 root not resolved now: " + idFor(1) + " (new)",
           "singular");
     ProposeChain none;
     none.add(range(1, 2));
@@ -404,11 +425,47 @@ static void testResult() {
     r = skipped.result();
     CHECK(skipped.named() == 10 && !r.succeeded && r.reason == "1 of 10 albums", "skipped roots count neither way");
     CHECK(skipped.summaryLine() == "propose: done for 9 of 10 roots in 2 chunks; failed: " + idFor(3) +
-                                       "; skipped (no longer resolved): " + idFor(5) + " " + idFor(9),
-          "the skipped in the summary");
+                                       "; skipped: " + idFor(5) + " (proposed), " + idFor(9) + " (not in the view)",
+          "the skipped in the summary, with why");
 
     ProposeChain onlySkipped = run(6, {}, {{idFor(2), IntakeStatus::Proposed}});
     CHECK(onlySkipped.result().succeeded, "a skipped root is no failure");
+    CHECK_EQ(onlySkipped.named(), 5, "the end's count leaves the skipped out");
+
+    // Every root skipped: nothing proposed, never a check.
+    struct AllSkippedRow {
+        const char *what;
+        std::map<std::string, std::optional<IntakeStatus>> except;
+        std::string reason;
+        std::string summary;
+    };
+    const AllSkippedRow allSkipped[] = {
+        {"proposed meanwhile",
+         {{idFor(1), IntakeStatus::Proposed}, {idFor(2), IntakeStatus::Proposed}, {idFor(3), IntakeStatus::Proposed},
+          {idFor(4), IntakeStatus::Proposed}, {idFor(5), IntakeStatus::Proposed}, {idFor(6), IntakeStatus::Rejected}},
+         "all 6 albums skipped (not resolved now)",
+         "propose: nothing proposed; skipped: " + idFor(1) + " (proposed), " + idFor(2) + " (proposed), " + idFor(3) +
+             " (proposed), " + idFor(4) + " (proposed), " + idFor(5) + " (proposed), " + idFor(6) + " (rejected)"},
+        {"not in the view",
+         {{idFor(1), std::nullopt}, {idFor(2), std::nullopt}, {idFor(3), std::nullopt}, {idFor(4), std::nullopt},
+          {idFor(5), std::nullopt}, {idFor(6), std::nullopt}},
+         "all 6 albums skipped (not resolved now)",
+         "propose: nothing proposed; skipped: " + idFor(1) + " (not in the view), " + idFor(2) +
+             " (not in the view), " + idFor(3) + " (not in the view), " + idFor(4) + " (not in the view), " +
+             idFor(5) + " (not in the view), " + idFor(6) + " (not in the view)"},
+    };
+    for (const AllSkippedRow &row : allSkipped) {
+        g_context = std::string("result/all-skipped/") + row.what;
+        ProposeChain c = run(6, {}, row.except);
+        r = c.result();
+        CHECK(c.finished() && c.chunksRecorded() == 0, "no chunk ran");
+        CHECK_EQ(c.named(), 0, "the end's count");
+        CHECK(c.firstNamed() == nullptr, "no label for the end");
+        CHECK(!r.succeeded, "failed, never a check");
+        CHECK(r.reason == row.reason, "its reason");
+        CHECK(c.summaryLine() == row.summary, "the summary");
+        CHECK(r.detail == row.summary, "the detail is the summary");
+    }
 
     g_context = "result/chunk-error";
     // A chunk whose call reported an error but failed no root (exit 1 with
@@ -422,8 +479,8 @@ static void testResult() {
     c.record(chunk.roots, succeededAll(chunk));
     r = c.result();
     CHECK(!r.succeeded, "the chunk's error keeps the cross");
-    CHECK(r.reason == "E_JOURNAL: journal lagging" || r.reason == "journal lagging", "its own reason");
-    CHECK(c.summaryLine().find("propose: done for 6 roots in 2 chunks; ") == 0, "the summary, then the reason");
+    CHECK(r.reason == "journal lagging", "its own reason (the envelope's error as summarizeMutation renders it)");
+    CHECK(c.summaryLine() == "propose: done for 6 roots in 2 chunks; journal lagging", "the summary, then the reason");
 
     g_context = "result/without-error";
     // Every failed root failed without an error (a cancelled call).
@@ -434,6 +491,132 @@ static void testResult() {
     r = w.result();
     CHECK(!r.succeeded && !r.reason.empty() && r.reason.find("failed:") == std::string::npos,
           "the first failing chunk's reason, not the summary's list");
+}
+
+// A chunk that stops the chain, through summarizeMutation and record as
+// Integration runs it, and the stop line built from what is left.
+static void testStopLine() {
+    g_context = "stop-line";
+    struct Row {
+        const char *what;
+        CliOutcome outcome;
+        std::vector<CliError> errors;
+        std::string reason;
+    };
+    const Row table[] = {
+        {"hard cap", CliOutcome::Timeout, {err("E_CLI_TIMEOUT", "still running at the hard cap; terminated")},
+         "the chunk was terminated at the 15-minute cap"},
+        {"E_NO_CLI", CliOutcome::NoCli, {err("E_NO_CLI", "exit code 127")}, "Intake CLI not available: exit code 127"},
+    };
+    for (const Row &row : table) {
+        g_context = std::string("stop-line/") + row.what;
+        // 14 roots: chunk 1 proposes 4 and fails 1, chunk 2 stops the chain.
+        ProposeChain c;
+        c.add(range(1, 14));
+        ProposeChunk chunk = c.nextChunk(kAllResolved);
+        const EnvelopeResult partial =
+            env(CliOutcome::Partial, rows(ids({1, 2, 4, 5})),
+                {err("E_NO_TARGET", "no collection matched", "/income/fixture/" + idFor(3))});
+        c.record(chunk.roots, summarizeMutation(CliCommand::Propose, chunk.roots, partial));
+        chunk = c.nextChunk(kAllResolved);
+        const EnvelopeResult stopped = env(row.outcome, nil, row.errors);
+        const MutationOutcome o = summarizeMutation(CliCommand::Propose, chunk.roots, stopped);
+        CHECK(o.succeeded.empty() && o.rootErrors.size() == 5, "every root of the chunk failed, with the error");
+        c.record(chunk.roots, o);
+        const ProposeChainStop stop = proposeChainStopFor(stopped);
+        CHECK(stop.stop && stop.reason == row.reason, "it stops the chain");
+        CHECK(c.failed() == ids({3, 6, 7, 8, 9, 10}), "the chunk's roots count as failed");
+        CHECK(c.notProposed() == ids({11, 12, 13, 14}), "not proposed: the pending roots");
+        CHECK(c.stopLine(stop.reason) == "propose: stopped after chunk 2 of 3 (" + row.reason +
+                                             "); done for 4 of 10 roots; failed: " + idFor(3) + " " + idFor(6) + " " +
+                                             idFor(7) + " " + idFor(8) + " " + idFor(9) + " " + idFor(10) +
+                                             "; 4 roots not proposed: " + idFor(11) + " " + idFor(12) + " " +
+                                             idFor(13) + " " + idFor(14),
+              "the stop line: the tally so far, then the roots not proposed");
+    }
+
+    struct LineRow {
+        const char *what;
+        int done;  // chunks recorded, all succeeded
+        bool refused;  // the next chunk handed out, then refused
+        std::map<std::string, std::optional<IntakeStatus>> except;
+        std::string line;
+    };
+    const LineRow lines[] = {
+        {"before the first chunk", 0, false, {},
+         "propose: stopped before the first chunk (intake is inert: fixture); 7 roots not proposed: " + idFor(1) + " " +
+             idFor(2) + " " + idFor(3) + " " + idFor(4) + " " + idFor(5) + " " + idFor(6) + " " + idFor(7)},
+        {"the first chunk refused", 0, true, {},
+         "propose: stopped before the first chunk (intake is inert: fixture); 7 roots not proposed: " + idFor(1) + " " +
+             idFor(2) + " " + idFor(3) + " " + idFor(4) + " " + idFor(5) + " " + idFor(6) + " " + idFor(7)},
+        {"after a chunk, with a skipped root", 1, false, {{idFor(2), IntakeStatus::Proposed}},
+         "propose: stopped after chunk 1 of 2 (intake is inert: fixture); done for 5 roots; skipped: " + idFor(2) +
+             " (proposed); 1 root not proposed: " + idFor(7)},
+    };
+    for (const LineRow &row : lines) {
+        g_context = std::string("stop-line/") + row.what;
+        ProposeChain c;
+        c.add(range(1, 7));
+        Statuses s;
+        s.except = row.except;
+        for (int i = 0; i < row.done; i++) {
+            const ProposeChunk chunk = c.nextChunk(s.fn());
+            c.record(chunk.roots, succeededAll(chunk));
+        }
+        if (row.refused) c.nextChunk(s.fn());
+        CHECK(c.stopLine("intake is inert: fixture") == row.line, "the stop line");
+    }
+}
+
+// The chain is finished as soon as its last chunk is recorded, so it ends
+// without the lane, a view or another chunk; and the end's label.
+static void testEnd() {
+    g_context = "end/finished";
+    ProposeChain c;
+    c.add(range(1, 7));
+    ProposeChunk chunk = c.nextChunk(kAllResolved);
+    c.record(chunk.roots, succeededAll(chunk));
+    CHECK(!c.finished(), "roots pending: not finished");
+    chunk = c.nextChunk(kAllResolved);
+    CHECK(!c.finished() && c.inFlight(), "the last chunk in flight: not finished");
+    c.record(chunk.roots, succeededAll(chunk));
+    CHECK(c.finished() && c.pendingCount() == 0 && !c.inFlight(), "the last chunk recorded: finished");
+    CHECK(c.result().succeeded && c.named() == 7, "the result at once");
+
+    struct Row {
+        const char *what;
+        std::map<std::string, std::optional<IntakeStatus>> except;
+        std::string firstNamed;
+        size_t named;
+    };
+    // 6 roots; those listed are skipped.
+    const Row table[] = {
+        {"nothing skipped", {}, idFor(1), 6},
+        {"the first root skipped",
+         {{idFor(1), IntakeStatus::Proposed}},
+         idFor(2), 5},
+        {"one named root",
+         {{idFor(1), IntakeStatus::Proposed}, {idFor(2), std::nullopt}, {idFor(3), IntakeStatus::Approved},
+          {idFor(4), IntakeStatus::Proposed}, {idFor(6), IntakeStatus::Rejected}},
+         idFor(5), 1},
+    };
+    for (const Row &row : table) {
+        g_context = std::string("end/label/") + row.what;
+        ProposeChain e;
+        e.add(range(1, 6));
+        Statuses s;
+        s.except = row.except;
+        for (;;) {
+            const ProposeChunk next = e.nextChunk(s.fn());
+            if (next.roots.empty()) break;
+            e.record(next.roots, succeededAll(next));
+        }
+        CHECK(e.firstRoot()->id == idFor(1), "the begin's label stays the first root added");
+        CHECK(e.firstNamed() != nullptr && e.firstNamed()->id == row.firstNamed &&
+                  e.firstNamed()->rootPath == "/income/fixture/" + row.firstNamed,
+              "the end's label: the first root proposed or failed");
+        CHECK_EQ(e.named(), row.named, "the end's count");
+    }
 }
 
 static void testProgress() {
@@ -515,6 +698,8 @@ int main() {
         testRecord();
         testStop();
         testResult();
+        testStopLine();
+        testEnd();
         testProgress();
         testStatusBarTexts();
     }

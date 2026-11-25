@@ -71,12 +71,21 @@ size_t ProposeChain::add(const std::vector<MutationRoot> &roots) {
     for (const MutationRoot &r : roots) {
         if (r.id.empty() || known(r.id)) continue;
         known_.insert(r.id);
-        order_.push_back(r.id);
+        added_.push_back(r);
         pending_.push_back(r);
-        if (!first_) first_ = r;
         added++;
     }
     return added;
+}
+
+std::vector<std::string> ProposeChain::failedAmong(const std::vector<MutationRoot> &roots) const {
+    const std::unordered_set<std::string> failed(failed_.begin(), failed_.end());
+    std::unordered_set<std::string> seen;
+    std::vector<std::string> out;
+    for (const MutationRoot &r : roots) {
+        if (failed.count(r.id) != 0 && seen.insert(r.id).second) out.push_back(r.id);
+    }
+    return out;
 }
 
 ProposeChunk ProposeChain::nextChunk(const ProposeStatusOf &statusOf) {
@@ -95,11 +104,12 @@ ProposeChunk ProposeChain::nextChunk(const ProposeStatusOf &statusOf) {
         skipped_.push_back(r.id);
         out.skipped.push_back(r.id + (status ? std::string(" (") + intakeStatusName(*status) + ")"
                                              : std::string(" (not in the view)")));
+        skippedNotes_.push_back(out.skipped.back());
     }
     pending_.erase(pending_.begin(), pending_.begin() + static_cast<std::ptrdiff_t>(taken));
     if (!out.skipped.empty()) {
         out.skippedLine = "propose: skipped " + plural(out.skipped.size(), "root", "roots") +
-                          " no longer resolved: " + joined(out.skipped, ", ");
+                          " not resolved now: " + joined(out.skipped, ", ");
     }
     if (!out.roots.empty()) {
         inFlight_ = out.roots;
@@ -169,19 +179,61 @@ ProposeChainProgress ProposeChain::progress() const {
     return out;
 }
 
-std::string ProposeChain::summaryLine() const {
+const MutationRoot *ProposeChain::firstNamed() const {
+    if (named() == 0) return nullptr;
+    std::unordered_set<std::string> namedIds(succeeded_.begin(), succeeded_.end());
+    namedIds.insert(failed_.begin(), failed_.end());
+    for (const MutationRoot &r : added_) {
+        if (namedIds.count(r.id) != 0) return &r;
+    }
+    return nullptr;
+}
+
+std::string ProposeChain::tallyText(bool withChunks) const {
     const size_t n = named();
-    std::string out = "propose: done for ";
-    out += failed_.empty() ? plural(n, "root", "roots")
-                           : std::to_string(succeeded_.size()) + " of " + plural(n, "root", "roots");
-    out += " in " + plural(chunksRecorded_, "chunk", "chunks");
-    if (!failed_.empty()) out += "; failed: " + joined(failed_, " ");
-    if (!skipped_.empty()) out += "; skipped (no longer resolved): " + joined(skipped_, " ");
+    std::string out;
+    if (n > 0 || skippedNotes_.empty()) {
+        out = "done for ";
+        out += failed_.empty() ? plural(n, "root", "roots")
+                               : std::to_string(succeeded_.size()) + " of " + plural(n, "root", "roots");
+        if (withChunks) out += " in " + plural(chunksRecorded_, "chunk", "chunks");
+        if (!failed_.empty()) out += "; failed: " + joined(failed_, " ");
+    }
+    if (!skippedNotes_.empty()) {
+        if (!out.empty()) out += "; ";
+        out += "skipped: " + joined(skippedNotes_, ", ");
+    }
+    return out;
+}
+
+std::string ProposeChain::summaryLine() const {
+    // Every root skipped: "propose: nothing proposed; skipped: ...".
+    std::string out = std::string("propose: ") + (named() == 0 && !skippedNotes_.empty() ? "nothing proposed; " : "") +
+                      tallyText(true);
     if (failed_.empty() && !firstReason_.empty()) out += "; " + firstReason_;
     return out;
 }
 
+std::string ProposeChain::stopLine(const std::string &reason) const {
+    std::string out = chunksRecorded_ == 0
+                          ? "propose: stopped before the first chunk (" + reason + ")"
+                          : "propose: stopped after chunk " + std::to_string(chunksRecorded_) + " of " +
+                                std::to_string(chunkCount()) + " (" + reason + ")";
+    if (named() > 0 || !skippedNotes_.empty()) out += "; " + tallyText(false);
+    const std::vector<std::string> left = notProposed();
+    if (!left.empty()) out += "; " + plural(left.size(), "root", "roots") + " not proposed: " + joined(left, " ");
+    return out;
+}
+
 ActivityResult ProposeChain::result() const {
+    if (named() == 0 && !skipped_.empty()) {
+        // Nothing proposed: never a check.
+        ActivityResult none;
+        none.succeeded = false;
+        none.reason = "all " + plural(skipped_.size(), "album", "albums") + " skipped (not resolved now)";
+        none.detail = summaryLine();
+        return none;
+    }
     MutationOutcome all;
     all.succeeded = succeeded_;
     all.rootErrors = rootErrors_;

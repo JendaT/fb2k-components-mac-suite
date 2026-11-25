@@ -277,25 +277,31 @@
 //  no batch holds the lane for 15 minutes and a cap kill loses at most one
 //  chunk. 5 or fewer keep their single call. One chain at a time: roots
 //  asked for while it runs join it (deduplicated against its pending and
-//  handled roots; one Info line, also when none is new). Before each chunk
-//  the view is refreshed and every pending root's status re-checked: a root
-//  no longer resolved, or gone, is skipped (one Debug line). Between chunks
-//  the lane is free (a user's mutating click or an auto-scan may take it;
-//  while a chunk runs a click is refused as today); a busy lane is waited
-//  for with a 2 s retry (one Info line per wait, one timer at most). Lines,
-//  Info unless a whole chunk failed: "propose: starting for 49 roots, in
-//  chunks of 5: <ids>", "propose: chunk 2 of 10 starting for 5 roots:
-//  <ids>", its 10 s report "propose: chunk 2 of 10 still running after
-//  10 s" (no tooltip, no refresh), its result line with "(chunk 2 of 10)",
-//  and at the end "propose: done for 46 of 49 roots in 10 chunks; failed:
-//  <ids>". Per-root errors become tooltips as for any propose (baseline
-//  resolved). The chain stops (one Info line "propose: stopped after chunk
-//  k of n (<reason>); M roots not proposed: <ids>") when a chunk was killed
-//  at the hard cap, on E_NO_CLI, when a chunk is refused, the view turns
-//  inert or the CLI path is gone; per-root and other envelope errors do not
-//  stop it. A quit drops it: the chunk running goes on, and the roots not
-//  handed out yet get one Info line "propose: M roots not proposed (quit):
-//  <ids>".
+//  handled roots; one Info line, also when none is new, naming the roots it
+//  already failed: they are proposed again only after it ends). Before
+//  each chunk (also after a wait for the lane) the view is refreshed and
+//  every pending root's status re-checked: a root no longer resolved, or
+//  not in the view, is skipped (one Debug line); a refresh that did not
+//  succeed stops the chain. Between chunks the lane is free (a user's
+//  mutating click or an auto-scan may take it; while a chunk runs a click
+//  is refused as today); a busy lane, or an Execute follow-up still to run
+//  (as actionsLaneFree), is waited for with a 2 s retry (one Info line per
+//  wait, one timer at most). After the last chunk the chain ends at once,
+//  without the lane. Lines, Info unless a whole chunk failed: "propose:
+//  starting for 49 roots, in chunks of 5: <ids>", "propose: chunk 2 of 10
+//  starting for 5 roots: <ids>", its 10 s report "propose: chunk 2 of 10
+//  still running (E_CLI_TIMEOUT: no reply after 10 s; the chunk
+//  continues)" (no tooltip, no refresh), its result line with "(chunk 2 of
+//  10)", and at the end "propose: done for 46 of 49 roots in 10 chunks;
+//  failed: <ids>". Per-root errors become tooltips as for any propose
+//  (baseline resolved). The chain stops (one Info line "propose: stopped
+//  after chunk k of n (<reason>); done for 34 of 40 roots; failed: <ids>;
+//  M roots not proposed: <ids>", or "stopped before the first chunk") when
+//  a chunk was killed at the hard cap, on E_NO_CLI, when a chunk is
+//  refused, a refresh before a chunk failed, the view turns inert or the
+//  CLI path is gone; per-root and other envelope errors do not stop it. A
+//  quit drops it: the chunk running goes on, and the roots not handed out
+//  yet get one Info line "propose: M roots not proposed (quit): <ids>".
 //
 //  gc mute (B12): every gc (Delete local copy…, confirmed or not, and the
 //  Execute follow-up's delete on its held token) goes through runMutation,

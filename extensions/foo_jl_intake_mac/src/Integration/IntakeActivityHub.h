@@ -38,8 +38,9 @@
 //     with the new total; each chunk's end reports activityProgress (done of
 //     total) and the next chunk's start the album it begins with
 //     ("Proposing 10/49: Artist – Album"); the chain's end (its aggregate
-//     result) or stop (failed with the stop's reason) ends it. The chunks'
-//     own lane tokens have no entries.
+//     result, counting the roots proposed or failed, renamed first to the
+//     first of them as its label) or stop (failed with the stop's reason)
+//     ends it. The chunks' own lane tokens have no entries.
 //   - run stem: startDetachedRun and onRunScan's adopted runs begin
 //     (activityBeginRun); finishRun (at tracker.remove) and onRunRefused end.
 //   - swap serial: swapStart begins, its finish ends.

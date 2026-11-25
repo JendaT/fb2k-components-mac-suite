@@ -88,24 +88,32 @@ a time [`src/Core/IntakeMutationLane.h`]:
   holds the lane for 15 minutes and a cap kill loses at most one chunk.
   The lane is released after each chunk. Then one reload; its end
   re-checks the pending roots' statuses (a root no longer `resolved`, or
-  missing from the view, is skipped) and starts the next chunk. Roots that
-  join while no chunk runs (a new chain included) get one more reload
-  first, so the roots a scan or an assign just wrote are in the view. A
-  busy lane (a click or an automatic scan took it between chunks) is
-  retried with one `dispatch_after` of 2 s on the main queue, never two at
-  once, never after quit, with one Info line per wait; no CLI call is
-  queued. One chain at a time: roots asked for meanwhile join it,
-  deduplicated by id against its pending, running and handled roots.
-- A chunk's 10 s report is one Info line (no tooltip, no reload). The
-  chain stops after a chunk that was killed at the hard cap (envelope
-  outcome `Timeout`: a mutating call is killed only there) or ended with
-  `E_NO_CLI` (or, never for a mutating call, cancelled), after a refused
-  chunk, and before a chunk when the view is inert or the CLI path is
-  gone; it goes on after per-root errors and other envelope errors. A stop
-  logs one Info line naming the roots not proposed and ends the status bar
-  entry failed. A quit drops the chain: a chunk running finishes on its
-  own (its result only releases the lane), and the roots not started get
-  one Info line.
+  missing from the view, is skipped) and starts the next chunk. A reload
+  that does not succeed (loader state other than ready) stops the chain:
+  the view kept is the old one. Roots that join while no chunk runs (a new
+  chain included) get one more reload first, so the roots a scan or an
+  assign just wrote are in the view. A busy lane (a click or an automatic
+  scan took it between chunks), or an Execute follow-up still to run (the
+  same rule as `actionsLaneFree`, so the follow-up's gc finds the lane
+  free), is retried with one `dispatch_after` of 2 s on the main queue,
+  never two at once, never after quit, with one Info line per wait; no CLI
+  call is queued. When the wait ends, a reload runs before the chunk. After
+  the last chunk the chain ends at once, without the lane, a view or a CLI
+  path. One chain at a time: roots asked for meanwhile join it,
+  deduplicated by id against its pending, running and handled roots; roots
+  it already failed are named in the join's line, not retried.
+- A chunk's 10 s report is one Info line, `propose: chunk k of n still
+  running (E_CLI_TIMEOUT: no reply after 10 s; the chunk continues)` (no
+  tooltip, no reload). The chain stops after a chunk that was killed at
+  the hard cap (envelope outcome `Timeout`: a mutating call is killed only
+  there) or ended with `E_NO_CLI` (or, never for a mutating call,
+  cancelled), after a refused chunk, after a failed reload, and before a
+  chunk when the view is inert or the CLI path is gone; it goes on after
+  per-root errors and other envelope errors. A stop logs one Info line
+  with the tally so far and the roots not proposed, and ends the status
+  bar entry failed. A quit drops the chain: a chunk running finishes on
+  its own (its result only releases the lane), and the roots not started
+  get one Info line.
 - Mutating menu items are disabled while the lane is busy, with
   "(execute running)" in their titles during an execute and
   "(scan running)" during the automatic scan. A click that finds the lane

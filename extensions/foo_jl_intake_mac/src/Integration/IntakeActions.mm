@@ -879,18 +879,33 @@ void startOnQueue(uint64_t token, std::shared_ptr<const CliConfig> config, std::
 // lane run (LaneRun::ProposeChunk, LaneHolder::Mutating): the lane is free
 // between chunks, and a chunk killed at the hard cap stops the chain having
 // lost only that chunk. One chain at a time; roots asked for while it runs
-// join it (chainJoin). Each chunk starts after a refresh: the one after the
-// chunk before, or the one chainJoin asks for when roots join while no
-// chunk runs (a new chain included), so the status re-check sees what the
-// last call, the scan or the assign wrote. A busy lane is waited for with a
+// join it (chainJoin). Each chunk starts after a refresh that succeeded:
+// the one after the chunk before, the one chainJoin asks for when roots
+// join while no chunk runs (a new chain included), or the one after a wait
+// for the lane, so the status re-check sees what the last call, the scan,
+// the assign or the lane's other holder wrote; a refresh that fails stops
+// the chain (its statuses would be the old view's). A busy lane, or an
+// Execute follow-up still to run (as actionsLaneFree), is waited for with a
 // 2 s retry (one timer at most, one Info line per wait), never a queued
-// call. The status bar has one entry for the whole chain
-// (activityChainKey).
+// call. A chain with nothing left finishes without the lane. The status
+// bar has one entry for the whole chain (activityChainKey).
+
+// The lane as the chain may take it: as actionsLaneFree (the caller checks
+// st.stopped): between an execute run's end and its follow-up's gc the
+// lane is free, and a chunk taking it then would make the delete step
+// refuse and keep the local copies.
+bool chainLaneFree() {
+    const ActionsState &st = actionsState();
+    return st.runScanDone && !st.lane.busy() && st.followUpsUnfinished.empty() && !st.followUpActive;
+}
 
 // Who holds the lane, for the waiting line.
 std::string chainLaneHolderText() {
     ActionsState &st = actionsState();
     if (!st.runScanDone) return "the check for an execute run left by an earlier session";
+    if (!st.lane.busy() && (!st.followUpsUnfinished.empty() || st.followUpActive)) {
+        return "the swap and delete after an execute run";
+    }
     switch (st.lane.holder()) {
         case LaneHolder::Execute: return "execute running";
         case LaneHolder::Scan: return "a background scan";
@@ -926,14 +941,12 @@ void clearChain() {
     // chainRetryArmed stays: the timer on its way clears it.
 }
 
-// Stops the chain: one Info line, the status bar entry ends failed.
+// Stops the chain: one Info line (the tally so far and the roots not
+// proposed), the status bar entry ends failed.
 void stopChain(const std::string &reason) {
     ActionsState &st = actionsState();
     if (st.chainSerial == 0) return;
-    const std::vector<std::string> left = st.chain.notProposed();
-    std::string line = "propose: stopped after chunk " + std::to_string(st.chain.chunksRecorded()) + " of " +
-                       std::to_string(st.chain.chunkCount()) + " (" + reason + ")";
-    if (!left.empty()) line += "; " + rootCountText(left.size()) + " not proposed: " + idList(left);
+    const std::string line = st.chain.stopLine(reason);
     logInfo(line);
     ActivityResult stopped;
     stopped.succeeded = false;
@@ -943,15 +956,22 @@ void stopChain(const std::string &reason) {
     clearChain();
 }
 
-// Every root handled: the summary line and the aggregate result.
+// Every root handled: the summary line and the aggregate result. Its count
+// is the roots proposed or failed (skipped ones excluded), its label the
+// first of them (the album named when it is one).
 void finishChain() {
     ActionsState &st = actionsState();
     logInfo(st.chain.summaryLine());
-    activityEnd(activityChainKey(st.chainSerial), st.chain.result(), st.chain.named());
+    const std::string key = activityChainKey(st.chainSerial);
+    if (const MutationRoot *named = st.chain.firstNamed()) {
+        activityRename(key, ActivityKind::Propose, st.chain.named(), activityLabelFor(named->id, named->rootPath));
+    }
+    activityEnd(key, st.chain.result(), st.chain.named());
     clearChain();
 }
 
 void runNextChunk();
+void chainRefreshThenNext();
 
 // The lane is busy: the next chunk is tried again in 2 s.
 void chainRetryLater() {
@@ -966,32 +986,54 @@ void chainRetryLater() {
                    ^{
                        ActionsState &now = actionsState();
                        now.chainRetryArmed = false;
-                       // A refresh on its way runs the next chunk itself.
-                       if (now.stopped || now.chainSerial == 0 || now.chainRefresh != 0) return;
-                       runNextChunk();
+                       // A refresh on its way runs the next chunk itself;
+                       // a chunk running needs no retry.
+                       if (now.stopped || now.chainSerial == 0 || now.chainRefresh != 0 || now.chainToken != 0) {
+                           return;
+                       }
+                       if (!chainLaneFree()) {
+                           chainRetryLater();
+                           return;
+                       }
+                       // The wait is over: a refresh first (what the lane's
+                       // holder wrote), then the next chunk.
+                       chainRefreshThenNext();
                    });
 }
 
-// A refresh, whose end runs the next chunk (unless the chain moved on).
+// A refresh, whose end runs the next chunk (unless the chain moved on). A
+// refresh that did not succeed stops the chain: the view kept is the old
+// one, where the roots a scan or an assign just wrote are missing and would
+// be skipped.
 void chainRefreshThenNext() {
     ActionsState &st = actionsState();
     const uint64_t serial = st.chainSerial;
     const uint64_t refresh = ++st.chainRefreshNext;
     st.chainRefresh = refresh;
-    serviceRefreshAfterCommand([serial, refresh](const LoaderStatus &) {
+    serviceRefreshAfterCommand([serial, refresh](const LoaderStatus &status) {
         ActionsState &now = actionsState();
         if (now.stopped || now.chainSerial != serial || now.chainRefresh != refresh) return;
         now.chainRefresh = 0;
-        if (now.chainRetryArmed) return;  // the retry on its way runs it
+        if (!now.chain.finished() && status.state != LoaderState::Ready) {
+            stopChain(std::string("the status reload failed (") + loaderStateName(status.state) +
+                      (status.error.empty() ? std::string() : ": " + status.error) + ")");
+            return;
+        }
+        // A retry on its way finds a chunk running, or the lane still busy.
         runNextChunk();
     });
 }
 
 // The next chunk, on the statuses of the current view; finishes the chain
-// when nothing resolved is left, waits when the lane is busy.
+// when nothing is left (without the lane) or nothing resolved is, waits when
+// the lane is busy.
 void runNextChunk() {
     ActionsState &st = actionsState();
     if (st.stopped || st.chainSerial == 0 || st.chainToken != 0 || st.chainRefresh != 0) return;
+    if (st.chain.finished()) {
+        finishChain();
+        return;
+    }
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
     if (!view) {
         stopChain("no intake data");
@@ -1006,7 +1048,7 @@ void runNextChunk() {
         stopChain("intake is not running or has no CLI path");
         return;
     }
-    const uint64_t token = st.runScanDone ? st.lane.acquire(LaneHolder::Mutating) : 0;
+    const uint64_t token = chainLaneFree() ? st.lane.acquire(LaneHolder::Mutating) : 0;
     if (token == 0) {
         chainRetryLater();
         return;
@@ -1059,10 +1101,17 @@ std::string chainJoin(const std::vector<MutationRoot> &roots, const std::string 
         chainRefreshThenNext();
         return "propose: " + rootCountText(added) + chunks;
     }
+    // Roots this chain already failed do not join again (a retry of them
+    // waits for its end): the line says so, with their ids.
+    const std::vector<std::string> failedBefore = st.chain.failedAmong(roots);
     const size_t added = st.chain.add(roots);
     std::string what;
     if (added == 0) {
         what = "propose: " + rootCountText(roots.size()) + origin + ": already in the running propose";
+        if (!failedBefore.empty()) {
+            what += "; " + std::to_string(failedBefore.size()) +
+                    " of them failed in it, propose them again after it ends: " + idList(failedBefore);
+        }
         logInfo(what);
     } else {
         // The roots added are the last pending ones.
@@ -1070,7 +1119,15 @@ std::string chainJoin(const std::vector<MutationRoot> &roots, const std::string 
         const std::vector<std::string> joined(pending.end() - static_cast<std::ptrdiff_t>(added), pending.end());
         what = "propose: " + rootCountText(added) + origin + " join the running propose (" +
                std::to_string(st.chain.total()) + " in all)";
-        logInfo(what + ": " + idList(joined));
+        std::string line = what + ": " + idList(joined);
+        if (!failedBefore.empty()) {
+            const std::string again = "; " + rootCountText(failedBefore.size()) +
+                                      " failed in it already, propose them again after it ends: " +
+                                      idList(failedBefore);
+            what += again;
+            line += again;
+        }
+        logInfo(line);
         const MutationRoot *first = st.chain.firstRoot();
         activityRename(activityChainKey(st.chainSerial), ActivityKind::Propose, st.chain.total(),
                        activityLabelFor(first->id, first->rootPath));
@@ -1087,7 +1144,8 @@ void onChunkBudget(uint64_t token) {
     if (st.stopped || token == 0 || token != st.chainToken) return;
     // Like the propose after an auto-scan: one Info line, no tooltip, no
     // refresh; the lane stays held until the chunk exits.
-    logInfo("propose: " + chainChunkText(st.chain.chunksStarted()) + " still running after 10 s");
+    logInfo("propose: " + chainChunkText(st.chain.chunksStarted()) +
+            " still running (E_CLI_TIMEOUT: no reply after 10 s; the chunk continues)");
 }
 
 void onChunkFinished(uint64_t token, const std::vector<MutationRoot> &roots, const CliResult &result) {
@@ -1121,8 +1179,13 @@ void onChunkFinished(uint64_t token, const std::vector<MutationRoot> &roots, con
     st.chain.record(roots, outcome);
     chainShowProgress();
     const ProposeChainStop stop = proposeChainStopFor(result.envelope);
-    if (stop.stop) {
-        stopChain(stop.reason);
+    if (stop.stop || st.chain.finished()) {
+        // Stopped, or nothing left: the chain ends now, without the lane.
+        if (stop.stop) {
+            stopChain(stop.reason);
+        } else {
+            finishChain();
+        }
         serviceRefreshAfterCommand();  // the chunk's tooltips and what it wrote
         return;
     }

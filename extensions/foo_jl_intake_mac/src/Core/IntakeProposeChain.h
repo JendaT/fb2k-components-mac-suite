@@ -16,16 +16,20 @@
 //  already pending, in the chunk in flight or handled by this chain (done,
 //  failed or skipped) is not added again, so roots asked for while the chain
 //  runs join it without repeats. total() counts every root added.
+//  failedAmong() names the roots of a join that this chain already tried
+//  and failed: they do not join again, and the join's line says so.
 //
 //  A chunk (nextChunk). Up to kProposeChunkSize pending roots whose CURRENT
-//  status (statusOf: the current view, read just before the chunk) is
-//  resolved, in order; they are in flight until record(). A pending root met
-//  on the way that is no longer resolved, or missing from the view, is
-//  handled as skipped (`propose` would refuse it: doc 03, propose only from
-//  resolved) and listed in the chunk's skipped line (one Debug line). The
-//  chunk's roots carry status Resolved, the baseline of their errors
-//  (RootErrorStore). Empty while a chunk is in flight, or when nothing
-//  resolved is pending (finished() then says whether the chain is done).
+//  status (statusOf: the current view, read just before the chunk; the
+//  caller reads it only from a load that succeeded) is resolved, in order;
+//  they are in flight until record(). A pending root met on the way that is
+//  no longer resolved, or missing from the view, is handled as skipped
+//  (`propose` would refuse it: doc 03, propose only from resolved) and
+//  listed with its status, or "not in the view", in the chunk's skipped
+//  line (one Debug line). The chunk's roots carry status Resolved, the
+//  baseline of their errors (RootErrorStore). Empty while a chunk is in
+//  flight, or when nothing resolved is pending (finished() then says
+//  whether the chain is done).
 //
 //  After a chunk (record): each root of the chunk in flight is done when its
 //  id is in MutationOutcome::succeeded, else failed; a root in flight that
@@ -47,21 +51,32 @@
 //  The end (result): activityResultFor over all chunks together, so a
 //  partial failure reads "Propose failed: 3 of 49 albums" (a cross, B14
 //  decision a) and a total one the first root's error; skipped roots count
-//  neither way (named() = done + failed). Its detail is summaryLine():
+//  neither way (named() = done + failed, the result's count; firstNamed()
+//  its label when it is one). A chain whose every root was skipped
+//  proposed nothing: failed, "all 49 albums skipped (not resolved now)",
+//  never a check. Its detail is summaryLine():
 //   "propose: done for 49 roots in 10 chunks"
 //   "propose: done for 46 of 49 roots in 10 chunks; failed: itk_a itk_b itk_c"
-//  plus "; skipped (no longer resolved): itk_x" when roots were skipped, and
-//  "; <reason>" when chunks reported an error but failed no root. Where
-//  activityResultFor would fall back to that line (no root error to show:
-//  every failed root failed without one, or a chunk's error failed none),
-//  the reason is the first failing chunk's own (activityResultFor of that
-//  chunk: "cancelled", the envelope's error).
+//  plus "; skipped: itk_x (proposed), itk_y (not in the view)" when roots
+//  were skipped ("propose: nothing proposed; skipped: ..." when every root
+//  was), and "; <reason>" when chunks reported an error but failed no
+//  root. Where activityResultFor would fall back to that line (no root
+//  error to show: every failed root failed without one, or a chunk's error
+//  failed none), the reason is the first failing chunk's own
+//  (activityResultFor of that chunk: "cancelled", the envelope's error).
+//
+//  A stop (stopLine): "propose: stopped after chunk 9 of 10 (<reason>)", or
+//  "stopped before the first chunk (<reason>)" when none was recorded, then
+//  the tally so far ("; done for 34 of 40 roots; failed: <ids>", the
+//  skipped) and "; 4 roots not proposed: <ids>" (notProposed()).
 //
 //  Progress (progress): done of total for the status bar's n/m, and the
 //  root the chunk in flight starts with (its album is the one worked on
 //  now). Before anything is handled the current root is left empty, so the
 //  line keeps its plain form ("Proposing 49 albums…") until the first chunk
-//  ends ("Proposing 10/49: Artist – Album" afterwards).
+//  ends or roots are skipped ("Proposing 10/49: Artist – Album" afterwards;
+//  done counts skipped roots, so the n/m runs to 49/49 while the result
+//  counts only the roots proposed or failed).
 //
 //  Chunk numbers: chunksStarted() counts the chunks handed out (the one in
 //  flight included), chunksRecorded() the ones recorded, chunkCount() the
@@ -105,7 +120,7 @@ struct ProposeChunk {
     // Handled as skipped on the way: "itk_a (proposed)", "itk_b (not in the
     // view)", in order.
     std::vector<std::string> skipped;
-    // "propose: skipped 2 roots no longer resolved: itk_a (proposed), itk_b
+    // "propose: skipped 2 roots not resolved now: itk_a (proposed), itk_b
     // (not in the view)"; empty when none was skipped.
     std::string skippedLine;
 
@@ -134,6 +149,10 @@ public:
     // file); returns how many were added.
     size_t add(const std::vector<MutationRoot> &roots);
 
+    // The ids among `roots` whose propose this chain already tried and
+    // failed, in the order of `roots`, each once.
+    std::vector<std::string> failedAmong(const std::vector<MutationRoot> &roots) const;
+
     // The next chunk (see the top of this file).
     ProposeChunk nextChunk(const ProposeStatusOf &statusOf);
 
@@ -141,7 +160,7 @@ public:
     // call named.
     void record(const std::vector<MutationRoot> &chunk, const MutationOutcome &outcome);
 
-    size_t total() const { return order_.size(); }
+    size_t total() const { return added_.size(); }
     size_t done() const { return succeeded_.size() + failed_.size() + skipped_.size(); }
     size_t named() const { return succeeded_.size() + failed_.size(); }
     size_t pendingCount() const { return pending_.size(); }
@@ -160,7 +179,10 @@ public:
     const std::vector<std::string> &skipped() const { return skipped_; }
 
     // The first root ever added (the status bar's label); null when none.
-    const MutationRoot *firstRoot() const { return first_ ? &*first_ : nullptr; }
+    const MutationRoot *firstRoot() const { return added_.empty() ? nullptr : &added_.front(); }
+    // The first root, in the order added, that was proposed or failed (the
+    // label of the end's result); null when none.
+    const MutationRoot *firstNamed() const;
 
     size_t chunksStarted() const { return chunksStarted_; }
     size_t chunksRecorded() const { return chunksRecorded_; }
@@ -170,18 +192,22 @@ public:
 
     std::string summaryLine() const;
     ActivityResult result() const;
+    // The stop's Info line and status bar detail (see the top of this file).
+    std::string stopLine(const std::string &reason) const;
 
 private:
     bool known(const std::string &id) const { return known_.count(id) != 0; }
+    // "done for 46 of 49 roots[ in 10 chunks]; failed: <ids>[; skipped: ...]"
+    std::string tallyText(bool withChunks) const;
 
-    std::vector<std::string> order_;          // every id added, in order
-    std::unordered_set<std::string> known_;   // the same, for lookups
-    std::optional<MutationRoot> first_;
+    std::vector<MutationRoot> added_;         // every root added, in order
+    std::unordered_set<std::string> known_;   // their ids, for lookups
     std::vector<MutationRoot> pending_;       // in order
     std::vector<MutationRoot> inFlight_;      // the chunk handed out, not recorded yet
     std::vector<std::string> succeeded_;
     std::vector<std::string> failed_;
     std::vector<std::string> skipped_;
+    std::vector<std::string> skippedNotes_;  // "itk_a (proposed)", "itk_b (not in the view)"
     std::vector<std::pair<std::string, std::string>> rootErrors_;  // naming order, all chunks
     std::vector<std::string> failedWithoutError_;
     std::string firstReason_;  // the reason of the first chunk whose own result failed

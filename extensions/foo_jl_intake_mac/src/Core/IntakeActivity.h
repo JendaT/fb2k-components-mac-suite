@@ -59,7 +59,8 @@
 //  count; the label is "Artist – Album" from IntakeActionTable albumLabel):
 //     Propose             "Proposing 3 albums…"            "Proposing Album…"
 //                         (B12's chained propose: "Proposing 49 albums…", then
-//                         "Proposing 10/49: Artist – Album" once a chunk ended)
+//                         "Proposing 10/49: Artist – Album" once a chunk ended
+//                         or roots were skipped)
 //     Assign              "Assigning 3 albums…"
 //     AssignThenPropose   "Proposing 2 albums…" (the propose after an assign)
 //     Approve, Reject     "Approving 3 albums…", "Rejecting 3 albums…"
