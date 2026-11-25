@@ -13,7 +13,8 @@
 //  by event id (below, at and after the start and end ids, an end not yet
 //  known, passed mutes), open and closed files, and one report per income
 //  per callback. The income entries from a WatchSet. Presence: local (also
-//  through a local symlink), on a mounted share, missing (unmounted mount
+//  through a local symlink), on a mounted share (also at its mount point
+//  itself, or through a local symlink into it), missing (unmounted mount
 //  point, absent folder, no mount table), a loop, with a recording link
 //  reader proving nothing at or under the share is ever examined, and one
 //  real temp directory through posixLinkReader. The scheduler on a fake
@@ -411,6 +412,13 @@ void testPresence() {
     CHECK(c.presence == IncomePresence::Network && c.resolved == "/Volumes/music/fixture-income",
           "a local symlink into the share: on the share");
     CHECK(!fs.touchedUnder("/Volumes/music"), "the link was read, the share never examined");
+
+    // An income configured at the share's mount point itself: an lstat of
+    // the mount point would reach the server too.
+    fs.calls.clear();
+    c = classifyIncome("/Volumes/music", mounted, fs.fn());
+    CHECK(c.presence == IncomePresence::Network && c.resolved == "/Volumes/music", "the share's mount point: on the share");
+    CHECK(!fs.touchedUnder("/Volumes/music"), "the mount point itself was never examined");
 
     // Unmounted: /Volumes/music is an absent folder on the local disk.
     fs.missing.insert("/Volumes/music");

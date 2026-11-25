@@ -49,9 +49,12 @@ int main(void) {
         CHECK_EQ(inertOk, 3, "E_NO_CLI, E_NO_RULES, E_CLI_TIMEOUT on version/status: provider inert");
 
         // Income included: doc 03 v1.2 makes only version and status inert.
+        // B12's background scan too: its failure never makes the provider
+        // inert.
         const CliCommand others[] = {CliCommand::Collections, CliCommand::Income, CliCommand::Propose,
                                      CliCommand::Assign,      CliCommand::Approve, CliCommand::Reject,
-                                     CliCommand::Execute,     CliCommand::Resume,  CliCommand::Gc};
+                                     CliCommand::Execute,     CliCommand::Resume,  CliCommand::Gc,
+                                     CliCommand::Scan};
         int perCommand = 0, total = 0;
         for (CliCommand cmd : others) {
             for (const char *code : inert) {
