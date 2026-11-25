@@ -12,7 +12,8 @@
 //  Entries. begin() adds a running entry under a key and returns its id
 //  (stable while the entry exists). The key says who ends it:
 //   - activityLaneKey(token): a mutating call or the execute dry run, by its
-//     mutation lane token (an assign and the propose after it share one);
+//     mutation lane token (an assign and the propose after it share one;
+//     B12's background scan too);
 //   - activityRunKey(stem): an execute or resume run, by its run stem;
 //   - activitySwapKey(serial): one swap of playlist rows;
 //   - activityCensusKey(serial): the Delete flow's sidecar reads.
@@ -61,6 +62,8 @@
 //     Gc                  "Deleting local copies of 3 albums…"
 //     DeleteCensus        "Counting playlist rows for 3 albums…"
 //     Swap                "Swapping 12 playlist rows…" (a count of rows, never a label)
+//     Scan                "Scanning income local…" (B12: the label is the income's
+//                         name, never a count)
 //  The n/m form shows once progress() reported something (done > 0 or an
 //  album being worked on) on an entry of more than one; until then, and for
 //  one album, the plain form. Execute and Resume carry done/total from the
@@ -68,11 +71,14 @@
 //  Results: "Proposed 3 albums", "Assigned 3 albums", "Assigned and proposed
 //  2 albums", "Approved …", "Rejected …", "Checked placement of …", "Placed
 //  …", "Resumed placement of …", "Deleted local copies of …", "Counted
-//  playlist rows for …", "Swapped 12 playlist rows" (state succeeded, icon
-//  check); failed: "<Propose|Assign|Approve|Reject> failed: <reason>",
-//  "Placement check failed: …", "Execute failed: …", "Resume failed: …",
-//  "Delete failed: …", "Row count failed: …", "Swap failed: …" (state
-//  failed, icon cross). Results carry no done/total.
+//  playlist rows for …", "Swapped 12 playlist rows", "Scanned local" or
+//  "Scanned local: 3 new albums" (the count is end()'s: the roots the scan
+//  newly wrote, 0 when none or unknown) (state succeeded, icon check);
+//  failed: "<Propose|Assign|Approve|Reject> failed: <reason>", "Placement
+//  check failed: …", "Execute failed: …", "Resume failed: …", "Delete
+//  failed: …", "Row count failed: …", "Swap failed: …", "Scan failed: …"
+//  (state failed, icon cross). Results carry no done/total. A scan's list
+//  item has no album detail (its label is an income, not an album).
 //  Labels are cut to kActivityLabelMaxBytes and reasons to
 //  kActivityReasonMaxBytes with "…", never inside a character and never
 //  inside a composed character sequence (CoreFoundation's
@@ -142,6 +148,7 @@ enum class ActivityKind {
     Gc,
     DeleteCensus,
     Swap,
+    Scan,  // B12's background scan of one income folder (the label: its name)
 };
 
 enum class ActivityState {

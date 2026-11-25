@@ -46,6 +46,7 @@ Words wordsFor(ActivityKind kind) {
             return {"Counting playlist rows for", "Counting playlist rows", "Counted playlist rows for",
                     "Row count failed"};
         case ActivityKind::Swap: return {"Swapping", "Swapping playlist rows", "Swapped", "Swap failed"};
+        case ActivityKind::Scan: return {"Scanning income", "Scanning income", "Scanned", "Scan failed"};
     }
     return {"Working on", "Working on", "Done with", "Failed"};
 }
@@ -160,6 +161,7 @@ bool activityKindFor(CliCommand command, bool dryRun, ActivityKind &out) {
         case CliCommand::Execute: out = dryRun ? ActivityKind::ExecuteDryRun : ActivityKind::Execute; return true;
         case CliCommand::Resume: out = ActivityKind::Resume; return true;
         case CliCommand::Gc: out = ActivityKind::Gc; return true;
+        case CliCommand::Scan: out = ActivityKind::Scan; return true;
         case CliCommand::Version:
         case CliCommand::Status:
         case CliCommand::Collections:
@@ -358,16 +360,19 @@ bool ActivityModel::prune(int64_t now) {
 
 namespace {
 
-// The object of a text: the album's label for one, else the count.
+// The object of a text: the album's label for one, else the count. A
+// scan's is its income's name (its count is the new albums of its result).
 std::string objectText(ActivityKind kind, size_t count, const std::string &label) {
     if (kind == ActivityKind::Swap) return plural(count, "playlist row", "playlist rows");
+    if (kind == ActivityKind::Scan) return label;
     if (count == 1 && !label.empty()) return label;
     return plural(count, "album", "albums");
 }
 
-// "<first album> and N more" for more than one album; empty otherwise.
+// "<first album> and N more" for more than one album; empty otherwise (and
+// for a scan, whose label is an income).
 std::string albumDetail(ActivityKind kind, size_t count, const std::string &label) {
-    if (kind == ActivityKind::Swap || count < 2 || label.empty()) return std::string();
+    if (kind == ActivityKind::Swap || kind == ActivityKind::Scan || count < 2 || label.empty()) return std::string();
     return label + " and " + std::to_string(count - 1) + " more";
 }
 
@@ -384,8 +389,12 @@ std::string ActivityModel::lineText(const Entry &e) {
                 return text;
             }
             return std::string(w.running) + " " + objectText(e.kind, e.count, e.label) + kEllipsis;
-        case ActivityState::Succeeded:
-            return std::string(w.done) + " " + objectText(e.kind, e.count, e.label);
+        case ActivityState::Succeeded: {
+            std::string text = std::string(w.done) + " " + objectText(e.kind, e.count, e.label);
+            // A scan names what it found only when it found something.
+            if (e.kind == ActivityKind::Scan && e.count > 0) text += ": " + plural(e.count, "new album", "new albums");
+            return text;
+        }
         case ActivityState::Failed:
             return e.reason.empty() ? std::string(w.failed) : std::string(w.failed) + ": " + e.reason;
     }

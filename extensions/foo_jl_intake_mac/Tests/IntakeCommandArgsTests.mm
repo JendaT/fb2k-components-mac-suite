@@ -334,8 +334,12 @@ int main(void) {
             r.incomePath = "/Users/x/Music/fixture-income";
             CliInvocation i = intake::buildInvocation(plainConfig(), r);
             if (args(i) != v({"/opt/intake/bin/intake", "scan", "/Users/x/Music/fixture-income", "--json"})) byPath = false;
-            for (const std::string &a : i.arguments) {
-                if (a == dash || a == "--all") noFlag = false;
+            for (size_t k = 0; k < i.arguments.size(); k++) {
+                const std::string &a = i.arguments[k];
+                // The last argument is the module's own --json, which equals
+                // the name "--json" and is no leak of it.
+                const bool ownJson = k + 1 == i.arguments.size() && a == "--json";
+                if (a == "--all" || (a == dash && !ownJson)) noFlag = false;
             }
         }
         CHECK(byPath, "a name starting with '-' is sent as the income's absolute path");

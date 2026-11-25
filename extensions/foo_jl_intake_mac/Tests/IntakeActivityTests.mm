@@ -10,7 +10,9 @@
 //  (n/m), rename, keys (begin and end by lane token, run stem, swap serial;
 //  unknown and double ends), clear, activityResultFor over hand-built
 //  outcomes, deadlines (the execute dry run's 15 minutes),
-//  activityAfterAssign and activityReadsResult.
+//  activityAfterAssign and activityReadsResult. B12: the scan kind (the
+//  income's name as its label, "N new albums" only in a result that found
+//  some, no album detail).
 //
 
 #import <Foundation/Foundation.h>
@@ -76,6 +78,7 @@ static void testKeys() {
     CHECK(activityKindFor(CliCommand::Execute, false, k) && k == ActivityKind::Execute, "execute");
     CHECK(activityKindFor(CliCommand::Resume, false, k) && k == ActivityKind::Resume, "resume");
     CHECK(activityKindFor(CliCommand::Gc, false, k) && k == ActivityKind::Gc, "gc");
+    CHECK(activityKindFor(CliCommand::Scan, false, k) && k == ActivityKind::Scan, "scan (B12)");
     CHECK(!activityKindFor(CliCommand::Status, false, k) && !activityKindFor(CliCommand::Version, false, k) &&
               !activityKindFor(CliCommand::Collections, false, k) && !activityKindFor(CliCommand::Income, false, k),
           "read-only commands are no entries");
@@ -103,6 +106,9 @@ static void testRunningTexts() {
     CHECK(runningText(ActivityKind::Swap, 12, "") == "Swapping 12 playlist rows" + kDots, "swap counts rows");
     CHECK(runningText(ActivityKind::Swap, 1, album) == "Swapping 1 playlist row" + kDots,
           "swap of one row: never a label");
+    CHECK(runningText(ActivityKind::Scan, 0, "local") == "Scanning income local" + kDots, "scan: the income's name");
+    CHECK(runningText(ActivityKind::Scan, 3, "local") == "Scanning income local" + kDots,
+          "scan: never a count while running");
 
     ActivityModel m;
     m.begin("k", ActivityKind::Propose, 3, album, 100);
@@ -131,6 +137,7 @@ static void testResultTexts() {
     CHECK(resultText(ActivityKind::Gc, 3, album, ok) == "Deleted local copies of 3 albums", "deleted");
     CHECK(resultText(ActivityKind::DeleteCensus, 3, album, ok) == "Counted playlist rows for 3 albums", "counted");
     CHECK(resultText(ActivityKind::Swap, 12, "", ok) == "Swapped 12 playlist rows", "swapped");
+    CHECK(resultText(ActivityKind::Scan, 0, "local", ok) == "Scanned local", "scanned, nothing new (or unknown)");
 
     CHECK(resultText(ActivityKind::Execute, 5, album, failed("target path already exists")) ==
               "Execute failed: target path already exists",
@@ -145,6 +152,9 @@ static void testResultTexts() {
     CHECK(resultText(ActivityKind::Gc, 2, album, failed("x")) == "Delete failed: x", "delete failed");
     CHECK(resultText(ActivityKind::DeleteCensus, 2, album, failed("x")) == "Row count failed: x", "count failed");
     CHECK(resultText(ActivityKind::Swap, 2, "", failed("")) == "Swap failed", "failed without a reason");
+    CHECK(resultText(ActivityKind::Scan, 0, "local", failed("E_NOT_FOUND: income path missing: local")) ==
+              "Scan failed: E_NOT_FOUND: income path missing: local",
+          "scan failed");
 
     ActivityModel m;
     m.begin("a", ActivityKind::Propose, 3, album, 0);
@@ -163,6 +173,18 @@ static void testResultTexts() {
     s.begin("s", ActivityKind::Swap, 12, "", 0);
     s.end("s", ok, 1, 10);
     CHECK(lineText(s, 1) == "Swapped 10 playlist rows", "end's count replaces the running count");
+
+    // A scan's result count is the albums it found (end()'s count).
+    ActivityModel sc;
+    sc.begin("a", ActivityKind::Scan, 0, "local", 0);
+    sc.end("a", ok, 1, 3);
+    CHECK(lineText(sc, 1) == "Scanned local: 3 new albums", "scanned, 3 new");
+    sc.begin("b", ActivityKind::Scan, 0, "p2p", 2);
+    sc.end("b", ok, 3, 1);
+    CHECK(lineText(sc, 3) == "Scanned p2p: 1 new album", "scanned, one new");
+    sc.begin("c", ActivityKind::Scan, 0, "share", 4);
+    sc.end("c", failed("x"), 5, 2);
+    CHECK(lineText(sc, 5) == "Scan failed: x", "a failed scan names no count");
 }
 
 static void testUtf8() {
@@ -457,6 +479,17 @@ static void testItemDetails() {
           "failed: the detail (one line)");
     CHECK(items.size() == 3 && items[1].title == "Proposed " + first && items[1].detail.empty(),
           "succeeded: the result text");
+
+    // A scan: its label is an income, never an album detail.
+    ActivityModel sc;
+    sc.begin("s", ActivityKind::Scan, 4, "local", 0);
+    items = sc.items(0);
+    CHECK(items.size() == 1 && items[0].title == "Scanning income local" + kDots && items[0].detail.empty(),
+          "scan running: no album detail");
+    sc.end("s", ActivityResult(), 1, 4);
+    items = sc.items(1);
+    CHECK(items.size() == 1 && items[0].title == "Scanned local: 4 new albums" && items[0].detail.empty(),
+          "scan succeeded: no album detail");
 }
 
 // --- activityResultFor ---
