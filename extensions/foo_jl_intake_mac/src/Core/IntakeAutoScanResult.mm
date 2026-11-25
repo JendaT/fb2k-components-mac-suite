@@ -6,6 +6,9 @@
 #include "IntakeAutoScanResult.h"
 
 #include <cstdio>
+#include <unordered_set>
+
+#include "IntakePath.h"
 
 namespace intake {
 
@@ -86,6 +89,52 @@ std::string autoScanErrorsText(const std::vector<CliError> &errors) {
     }
     if (errors.size() > kShown) out += " (+" + std::to_string(errors.size() - kShown) + " more)";
     return out;
+}
+
+ScanFollowUp proposeAfterScan(const std::string &income, const std::string &incomePath, CliOutcome scanOutcome,
+                              const ScanReply &reply) {
+    ScanFollowUp out;
+    if (scanOutcome != CliOutcome::Ok && scanOutcome != CliOutcome::Partial) return out;
+
+    std::string incomeKey;
+    const bool haveIncomeKey = normalizePath(incomePath, incomeKey) == PathStatus::Ok;
+    std::string rootKey;
+    std::unordered_set<std::string> seen;
+    for (const ScanWrittenRoot &w : reply.written) {
+        if (!seen.insert(w.id).second) continue;
+        if (w.status != "resolved") {
+            out.skipped.push_back(w.id + " (" + (w.status.empty() ? std::string("no status") : w.status) + ")");
+            continue;
+        }
+        if (haveIncomeKey && normalizePath(w.rootPath, rootKey) == PathStatus::Ok && rootKey == incomeKey) {
+            out.skipped.push_back(w.id + " (the income folder itself)");
+            continue;
+        }
+        out.propose.push_back(w.id);
+        out.roots.push_back(MutationRoot{w.id, w.rootPath, IntakeStatus::Resolved, std::string()});
+    }
+
+    if (!out.skipped.empty()) {
+        out.skippedLine = "auto-scan: " + income + ": no propose for " + plural(out.skipped.size(), "root", "roots") +
+                          ": ";
+        for (size_t i = 0; i < out.skipped.size(); i++) {
+            if (i) out.skippedLine += ", ";
+            out.skippedLine += out.skipped[i];
+        }
+    }
+    return out;
+}
+
+std::string autoScanProposeStartLine(const std::string &income, const std::vector<std::string> &ids) {
+    std::string out = "propose: starting after auto-scan of " + income + " for " + plural(ids.size(), "root", "roots") +
+                      ":";
+    for (const std::string &id : ids) out += " " + id;
+    return out;
+}
+
+std::string autoScanProposeBudgetLine(const std::string &income) {
+    return "propose: still running after auto-scan of " + income +
+           " (E_CLI_TIMEOUT: no reply after 10 s; the propose continues)";
 }
 
 std::string autoScanStartLine(const std::string &income, bool startup) {

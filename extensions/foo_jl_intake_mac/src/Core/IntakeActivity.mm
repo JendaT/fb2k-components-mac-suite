@@ -47,6 +47,8 @@ Words wordsFor(ActivityKind kind) {
                     "Row count failed"};
         case ActivityKind::Swap: return {"Swapping", "Swapping playlist rows", "Swapped", "Swap failed"};
         case ActivityKind::Scan: return {"Scanning income", "Scanning income", "Scanned", "Scan failed"};
+        // Its result has a text of its own (lineText).
+        case ActivityKind::ScanThenPropose: return {"Proposing", "Proposing", "Scanned", "Propose failed"};
     }
     return {"Working on", "Working on", "Done with", "Failed"};
 }
@@ -234,6 +236,19 @@ ActivityResult activityAfterAssign(const ActivityResult &assign, const ActivityR
     return r;
 }
 
+ActivityResult activityAfterScan(const ActivityResult &scan, const ActivityResult &propose) {
+    // The propose's kind stays when it names one (a propose that could not
+    // start before the entry became ScanThenPropose).
+    if (scan.succeeded) return propose;
+    ActivityResult r = scan;
+    r.kind = ActivityKind::Scan;
+    if (!propose.succeeded) {
+        const std::string &more = propose.detail.empty() ? propose.reason : propose.detail;
+        if (!more.empty()) r.detail = r.detail.empty() ? more : r.detail + "; " + more;
+    }
+    return r;
+}
+
 ActivityResult activityReadsResult(size_t named, const std::vector<std::string> &unread) {
     ActivityResult r;
     if (unread.empty()) return r;
@@ -361,18 +376,23 @@ bool ActivityModel::prune(int64_t now) {
 namespace {
 
 // The object of a text: the album's label for one, else the count. A
-// scan's is its income's name (its count is the new albums of its result).
+// scan's is its income's name (its count is the new albums of its result);
+// the propose after it keeps that name as its label, so always the count.
 std::string objectText(ActivityKind kind, size_t count, const std::string &label) {
     if (kind == ActivityKind::Swap) return plural(count, "playlist row", "playlist rows");
     if (kind == ActivityKind::Scan) return label;
+    if (kind == ActivityKind::ScanThenPropose) return plural(count, "album", "albums");
     if (count == 1 && !label.empty()) return label;
     return plural(count, "album", "albums");
 }
 
 // "<first album> and N more" for more than one album; empty otherwise (and
-// for a scan, whose label is an income).
+// for a scan and the propose after it, whose label is an income).
 std::string albumDetail(ActivityKind kind, size_t count, const std::string &label) {
-    if (kind == ActivityKind::Swap || kind == ActivityKind::Scan || count < 2 || label.empty()) return std::string();
+    if (kind == ActivityKind::Swap || kind == ActivityKind::Scan || kind == ActivityKind::ScanThenPropose ||
+        count < 2 || label.empty()) {
+        return std::string();
+    }
     return label + " and " + std::to_string(count - 1) + " more";
 }
 
@@ -390,6 +410,10 @@ std::string ActivityModel::lineText(const Entry &e) {
             }
             return std::string(w.running) + " " + objectText(e.kind, e.count, e.label) + kEllipsis;
         case ActivityState::Succeeded: {
+            // "Scanned local, proposed 2 albums": the income, then the count.
+            if (e.kind == ActivityKind::ScanThenPropose) {
+                return std::string(w.done) + " " + e.label + ", proposed " + plural(e.count, "album", "albums");
+            }
             std::string text = std::string(w.done) + " " + objectText(e.kind, e.count, e.label);
             // A scan names what it found only when it found something.
             if (e.kind == ActivityKind::Scan && e.count > 0) text += ": " + plural(e.count, "new album", "new albums");

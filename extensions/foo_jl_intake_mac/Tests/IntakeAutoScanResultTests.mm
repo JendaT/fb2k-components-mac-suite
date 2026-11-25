@@ -9,10 +9,14 @@
 //  failed, E_NO_CLI, the cap kill, cancelled): the scheduler exit, the Info
 //  line, the status bar's result and count (also through ActivityModel's
 //  texts). The start and 10 s lines, and the errors text (none, a path, an
-//  empty msg, more than three). Envelopes from CLI-shaped JSON through
-//  parseEnvelope. Synthetic names only.
+//  empty msg, more than three). The auto-propose after a scan
+//  (proposeAfterScan, PLAN-B12 scope addition 1): only resolved written
+//  roots (new, other and missing statuses skipped with one line), never a
+//  kept root, never the income folder itself, per scan outcome, order and
+//  repeats, the roots it hands on, and its start and 10 s lines. Envelopes
+//  from CLI-shaped JSON through parseEnvelope. Synthetic names only.
 //
-// TEST_DEPS: src/Core/IntakeEnvelope.mm src/Core/IntakeActivity.mm
+// TEST_DEPS: src/Core/IntakeEnvelope.mm src/Core/IntakeActivity.mm src/Core/IntakePath.mm
 //
 
 #import <Foundation/Foundation.h>
@@ -20,6 +24,7 @@
 #include "../src/Core/IntakeAutoScanResult.h"
 #include "TestHarness.h"
 
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -79,6 +84,27 @@ std::string resultLine(const AutoScanOutcome &outcome) {
     m.end("k", outcome.activity, 1, outcome.newRoots);
     const std::optional<ActivityLine> line = m.line(1);
     return line ? line->text : std::string();
+}
+
+bool idsAre(const std::vector<std::string> &got, std::initializer_list<const char *> want) {
+    if (got.size() != want.size()) return false;
+    size_t i = 0;
+    for (const char *w : want) {
+        if (got[i++] != w) return false;
+    }
+    return true;
+}
+
+ScanWrittenRoot written(const char *id, const char *status, const std::string &rootPath = std::string()) {
+    return ScanWrittenRoot{id, rootPath.empty() ? std::string(kIncome) + "/" + id : rootPath, status};
+}
+
+ScanReply replyOf(std::vector<ScanWrittenRoot> rows) {
+    ScanReply r;
+    r.counted = true;
+    r.writtenCount = rows.size();
+    r.written = std::move(rows);
+    return r;
 }
 
 // --- the reply ---
@@ -248,6 +274,152 @@ void testTexts() {
           "five: three shown, then the rest counted");
 }
 
+// --- the auto-propose (scope addition 1) ---
+
+void testProposeStatuses() {
+    g_context = "propose-statuses";
+    const ScanReply reply = replyOf({written("itk_00000001", "resolved"), written("itk_00000002", "new"),
+                                     written("itk_00000003", "resolved"), written("itk_00000004", ""),
+                                     written("itk_00000005", "proposed")});
+    const ScanFollowUp next = proposeAfterScan("local", kIncome, CliOutcome::Ok, reply);
+    CHECK(idsAre(next.propose, {"itk_00000001", "itk_00000003"}), "only the resolved roots, in the scan's order");
+    CHECK(next.roots.size() == 2 && next.roots[0].id == "itk_00000001" &&
+              next.roots[0].rootPath == std::string(kIncome) + "/itk_00000001" &&
+              next.roots[0].status == IntakeStatus::Resolved && next.roots[0].targetPath.empty() &&
+              next.roots[1].id == "itk_00000003",
+          "their roots: root_path as the CLI wrote it, status resolved (the error baseline), no target");
+    CHECK(idsAre(next.skipped, {"itk_00000002 (new)", "itk_00000004 (no status)", "itk_00000005 (proposed)"}),
+          "new, no status and any other status are skipped");
+    CHECK(next.skippedLine == "auto-scan: local: no propose for 3 roots: itk_00000002 (new), itk_00000004 (no "
+                              "status), itk_00000005 (proposed)",
+          "one Debug line for the skipped");
+
+    const ScanFollowUp one = proposeAfterScan("p2p", kIncome, CliOutcome::Ok, replyOf({written("itk_00000002", "new")}));
+    CHECK(one.propose.empty() && one.roots.empty() &&
+              one.skippedLine == "auto-scan: p2p: no propose for 1 root: itk_00000002 (new)",
+          "only a new root: nothing to propose, singular");
+
+    const ScanFollowUp clean =
+        proposeAfterScan("local", kIncome, CliOutcome::Ok, replyOf({written("itk_00000001", "resolved")}));
+    CHECK(idsAre(clean.propose, {"itk_00000001"}) && clean.skipped.empty() && clean.skippedLine.empty(),
+          "nothing skipped: no line");
+    CHECK(proposeAfterScan("local", kIncome, CliOutcome::Ok, replyOf({written("itk_00000001", "Resolved")}))
+              .propose.empty(),
+          "the status must be exactly \"resolved\"");
+    CHECK(proposeAfterScan("local", kIncome, CliOutcome::Ok, ScanReply()).propose.empty() &&
+              proposeAfterScan("local", kIncome, CliOutcome::Ok, ScanReply()).skippedLine.empty(),
+          "nothing written: nothing, no line");
+}
+
+void testProposeOutcomes() {
+    g_context = "propose-outcomes";
+    const ScanReply reply = replyOf({written("itk_00000001", "resolved"), written("itk_00000002", "resolved")});
+    CHECK(proposeAfterScan("local", kIncome, CliOutcome::Ok, reply).propose.size() == 2, "exit 0: both");
+    CHECK(proposeAfterScan("local", kIncome, CliOutcome::Partial, reply).propose.size() == 2,
+          "exit 1: the roots it wrote are real (its errors name archives, not roots)");
+    const CliOutcome nothing[] = {CliOutcome::Failed, CliOutcome::NoCli, CliOutcome::Timeout, CliOutcome::Cancelled};
+    int none = 0;
+    for (CliOutcome o : nothing) {
+        // Even with a reply (it cannot happen: autoScanOutcome reads none),
+        // the outcome decides first.
+        const ScanFollowUp next = proposeAfterScan("local", kIncome, o, reply);
+        if (next.propose.empty() && next.skipped.empty() && next.skippedLine.empty()) none++;
+    }
+    CHECK_EQ(none, 4, "exit 2, E_NO_CLI, E_CLI_TIMEOUT and cancelled propose nothing");
+}
+
+void testProposeIncomeFolder() {
+    g_context = "propose-income-folder";
+    const ScanReply reply = replyOf({written("itk_00000001", "resolved", kIncome),
+                                     written("itk_00000002", "resolved", std::string(kIncome) + "/"),
+                                     written("itk_00000003", "resolved", std::string(kIncome) + "/Fixture Album"),
+                                     written("itk_00000004", "new", kIncome)});
+    const ScanFollowUp next = proposeAfterScan("local", kIncome, CliOutcome::Ok, reply);
+    CHECK(idsAre(next.propose, {"itk_00000003"}), "a root in a subfolder is proposed");
+    CHECK(idsAre(next.skipped, {"itk_00000001 (the income folder itself)", "itk_00000002 (the income folder itself)",
+                                "itk_00000004 (new)"}),
+          "a root that is the income folder (also with a trailing slash) is skipped; a new one there says new");
+    CHECK(idsAre(proposeAfterScan("local", std::string(kIncome) + "/", CliOutcome::Ok,
+                                  replyOf({written("itk_00000001", "resolved", kIncome)}))
+                     .propose,
+                 {}),
+          "the income path with a trailing slash matches too");
+    CHECK(idsAre(proposeAfterScan("local", "", CliOutcome::Ok, replyOf({written("itk_00000001", "resolved", kIncome)}))
+                     .propose,
+                 {"itk_00000001"}),
+          "no income path known: no guard");
+    CHECK(idsAre(proposeAfterScan("share", "/Volumes/music/fixture-income", CliOutcome::Ok,
+                                  replyOf({written("itk_00000005", "resolved", "/Volumes/music/fixture-income"),
+                                           written("itk_00000006", "resolved",
+                                                   "/Volumes/music/fixture-income.other")}))
+                     .propose,
+                 {"itk_00000006"}),
+          "on a share too, and a sibling folder that shares the prefix is not the income");
+}
+
+void testProposeOrder() {
+    g_context = "propose-order";
+    const ScanReply reply = replyOf({written("itk_00000009", "resolved"), written("itk_00000002", "resolved"),
+                                     written("itk_00000009", "resolved"), written("itk_00000002", "new")});
+    const ScanFollowUp next = proposeAfterScan("local", kIncome, CliOutcome::Ok, reply);
+    CHECK(idsAre(next.propose, {"itk_00000009", "itk_00000002"}) && next.roots.size() == 2 && next.skipped.empty(),
+          "the scan's order, a repeated id counted once (its first row decides)");
+}
+
+// As Integration calls it: autoScanOutcome on the scan's envelope first.
+void testProposeThroughOutcome() {
+    g_context = "propose-through-outcome";
+    const std::string reviewRow =
+        "{\"id\":\"itk_00000003\",\"root_path\":\"" + std::string(kIncome) +
+        "/Review\",\"status\":\"resolved\",\"needs_review\":true,\"confidence\":0.6}";
+    const std::string json = "{\"ok\":true,\"data\":[" +
+                             block("[" + row("itk_00000001", "resolved", "Fixture Artist - Fixture Album") + "," +
+                                       row("itk_00000002", "new", "Fixture Artist - Second Album") + "," + reviewRow +
+                                       ",{\"status\":\"resolved\"}]",
+                                   "[\"" + std::string(kIncome) + "/Fixture Artist - Old Album\"]") +
+                             "],\"errors\":[]}";
+    const CliResult r = result(json, 0);
+    const AutoScanOutcome o = autoScanOutcome("local", r);
+    const ScanFollowUp next = proposeAfterScan("local", kIncome, r.envelope.outcome, o.reply);
+    CHECK(idsAre(next.propose, {"itk_00000001", "itk_00000003"}),
+          "the resolved roots written, one that needs review included");
+    CHECK(next.roots.size() == 2 && next.roots[0].rootPath == std::string(kIncome) + "/Fixture Artist - Fixture Album",
+          "root_path from the reply");
+    CHECK(idsAre(next.skipped, {"itk_00000002 (new)"}), "the new one skipped");
+    for (const MutationRoot &m : next.roots) {
+        CHECK(m.rootPath.find("Old Album") == std::string::npos, "a kept root is never proposed");
+    }
+    CHECK(o.newRoots == 4 && next.propose.size() == 2, "a row without an id counts as written but cannot be named");
+
+    const std::string partial =
+        "{\"ok\":false,\"data\":[" + block("[" + row("itk_00000001", "resolved", "A") + "]", "[]") +
+        "],\"errors\":[{\"code\":\"E_ARCHIVE\",\"msg\":\"unpack failed\",\"path\":\"" + std::string(kIncome) +
+        "/A\"}]}";
+    const CliResult p = result(partial, 1);
+    CHECK(idsAre(proposeAfterScan("local", kIncome, p.envelope.outcome, autoScanOutcome("local", p).reply).propose,
+                 {"itk_00000001"}),
+          "exit 1: proposed, even when an error's path is the root's folder");
+
+    const std::string failed = "{\"ok\":false,\"data\":null,\"errors\":[{\"code\":\"E_NO_RULES\",\"msg\":\"no income "
+                               "folders configured\",\"path\":null}]}";
+    const CliResult f = result(failed, 2);
+    CHECK(proposeAfterScan("local", kIncome, f.envelope.outcome, autoScanOutcome("local", f).reply).propose.empty(),
+          "exit 2: nothing");
+}
+
+void testProposeTexts() {
+    g_context = "propose-texts";
+    CHECK(autoScanProposeStartLine("local", {"itk_00000001", "itk_00000003"}) ==
+              "propose: starting after auto-scan of local for 2 roots: itk_00000001 itk_00000003",
+          "the start line");
+    CHECK(autoScanProposeStartLine("p2p", {"itk_00000001"}) ==
+              "propose: starting after auto-scan of p2p for 1 root: itk_00000001",
+          "one root");
+    CHECK(autoScanProposeBudgetLine("share") == "propose: still running after auto-scan of share (E_CLI_TIMEOUT: no "
+                                                "reply after 10 s; the propose continues)",
+          "the 10 s line");
+}
+
 } // anonymous namespace
 
 int main(void) {
@@ -257,6 +429,12 @@ int main(void) {
         testPartial();
         testFailures();
         testTexts();
+        testProposeStatuses();
+        testProposeOutcomes();
+        testProposeIncomeFolder();
+        testProposeOrder();
+        testProposeThroughOutcome();
+        testProposeTexts();
     }
     TEST_MAIN_END();
 }

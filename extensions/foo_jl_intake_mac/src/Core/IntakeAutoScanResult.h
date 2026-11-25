@@ -4,7 +4,8 @@
 //
 //  B12: what one automatic `scan <income>` call ended with, as the mutation
 //  lane needs it (IntakeActions runs the scan; IntakeAutoScanDriver feeds
-//  the exit to the scheduler). Pure: no I/O.
+//  the exit to the scheduler), and which roots the propose after it names.
+//  Pure: no I/O.
 //
 //  The reply (readScanReply). Doc 03 does not pin scan's `data`, so it is
 //  read leniently: an array of blocks, one per income scanned, each an
@@ -38,6 +39,32 @@
 //     reason is the first error as "CODE: msg" ("stopped at the 15-minute
 //     cap" for the timeout, "cancelled"), its detail the line.
 //
+//  The auto-propose (proposeAfterScan; PLAN-B12 scope addition 1): after a
+//  scan that exited 0 or 1, Integration runs `propose <ids>` in the same
+//  lane run for the roots this function picks, then reloads once.
+//  Picked: the rows of `written` with a string id whose `status` is exactly
+//  "resolved". `written` holds only the roots this scan wrote: without
+//  --force the CLI never rewrites a folder that already has a sidecar, it
+//  lists it in `kept` (resolver.ts resolveTree keepDir), so a root the scan
+//  kept is never proposed. Its `status` is the one the resolver just gave
+//  (resolver.ts buildSidecar: "resolved" at or above the review threshold,
+//  else "new"), so no `status` call is needed. Skipped, with one Debug
+//  line: a new root (doc 03: propose only from resolved; doc 01: new is
+//  never auto-proposed), a row with any other or no status, and a root that
+//  is the income folder itself (loose files at its top: the loader ignores
+//  such a root, IntakeLoadPolicy dropIncomeFolderRoots, so nothing acts on
+//  it; compared as IntakePath keys, as both paths are the CLI's spelling of
+//  one income). Any other outcome (exit 2, E_NO_CLI, E_CLI_TIMEOUT,
+//  cancelled) proposes nothing. The scan's errors do not filter: they name
+//  an archive that failed to unpack or an income path that is missing,
+//  never a root it wrote. Ids keep the scan's order; a repeated id counts
+//  once. A resolved root that needs review is proposed too (`propose <id>`
+//  by id proposes it; the flag stays).
+//  No user choice is at stake: a root the scan just wrote has no assignment
+//  and no proposal yet, so propose runs identify and the assign engine for
+//  it (tools/intake commands-p3.ts cmdPropose). A root left with no target
+//  (E_NO_TARGET) stays resolved.
+//
 //  Thread-safety: pure functions; readScanReply reads Foundation objects
 //  (call it inside an autorelease pool, as GCD and the main thread give).
 //
@@ -50,10 +77,11 @@
 #include <string>
 #include <vector>
 
-#include "IntakeActivity.h"     // ActivityResult
-#include "IntakeAutoScan.h"     // AutoScanExit
-#include "IntakeCliRunner.h"    // CliResult
-#include "IntakeEnvelope.h"     // CliError
+#include "IntakeActivity.h"         // ActivityResult
+#include "IntakeAutoScan.h"         // AutoScanExit
+#include "IntakeCliRunner.h"        // CliResult
+#include "IntakeEnvelope.h"         // CliError, CliOutcome
+#include "IntakeMutationResult.h"   // MutationRoot
 
 namespace intake {
 
@@ -97,5 +125,32 @@ std::string autoScanBudgetLine(const std::string &income);
 // "CODE: msg (path)" for up to three errors, joined with "; ", then
 // "(+N more)"; "" for none.
 std::string autoScanErrorsText(const std::vector<CliError> &errors);
+
+// What the auto-propose after a scan names (see the top of this file).
+struct ScanFollowUp {
+    std::vector<std::string> propose;  // ids for `propose`, the scan's order
+    std::vector<MutationRoot> roots;   // the same roots: root_path, status Resolved, no target
+    // Written but not proposed, in order: "itk_... (new)", "itk_... (no
+    // status)", "itk_... (the income folder itself)".
+    std::vector<std::string> skipped;
+    // "auto-scan: local: no propose for 2 roots: itk_a (new), itk_b (new)";
+    // empty when nothing was skipped.
+    std::string skippedLine;
+};
+
+// `income`: its name, for the line; `incomePath`: its path from `income
+// --json`; `scanOutcome`: the scan's envelope outcome; `reply`: its reply
+// (AutoScanOutcome::reply).
+ScanFollowUp proposeAfterScan(const std::string &income, const std::string &incomePath, CliOutcome scanOutcome,
+                              const ScanReply &reply);
+
+// "propose: starting after auto-scan of local for 2 roots: itk_a itk_b".
+std::string autoScanProposeStartLine(const std::string &income, const std::vector<std::string> &ids);
+
+// The propose's 10 s report, like the scan's (one Info line, no tooltip,
+// no refresh: the run reloads once, at its end): "propose: still running
+// after auto-scan of local (E_CLI_TIMEOUT: no reply after 10 s; the
+// propose continues)".
+std::string autoScanProposeBudgetLine(const std::string &income);
 
 } // namespace intake

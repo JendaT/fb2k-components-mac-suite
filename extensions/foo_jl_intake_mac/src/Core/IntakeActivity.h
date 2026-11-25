@@ -13,18 +13,19 @@
 //  (stable while the entry exists). The key says who ends it:
 //   - activityLaneKey(token): a mutating call or the execute dry run, by its
 //     mutation lane token (an assign and the propose after it share one;
-//     B12's background scan too);
+//     B12's background scan and the propose after it too);
 //   - activityRunKey(stem): an execute or resume run, by its run stem;
 //   - activitySwapKey(serial): one swap of playlist rows;
 //   - activityCensusKey(serial): the Delete flow's sidecar reads.
 //  progress() sets done/total and the album being worked on; rename()
-//  changes the kind and the count (the propose after an assign); end() makes
-//  the entry a result, succeeded or failed with a short reason (a result
-//  may name another kind for its text: the assign that failed before the
-//  propose after it); deadline() sets the time and the result at which the
-//  entry ends unless something ended it before (the execute dry run, which
-//  the runner never kills: its answer may never come); clear() (quit) drops
-//  everything. All of them work on the RUNNING entry of a key:
+//  changes the kind and the count (the propose after an assign or a scan);
+//  end() makes the entry a result, succeeded or failed with a short reason
+//  (a result may name another kind for its text: the assign or scan that
+//  failed before the propose after it); deadline() sets the time and the
+//  result at which the entry ends unless something ended it before (the
+//  execute dry run, which the runner never kills: its answer may never
+//  come); clear() (quit) drops everything. All of them work on the RUNNING
+//  entry of a key:
 //  a key with no running entry (never begun, already ended, cleared) is
 //  ignored and they return false, so a double end, or an end after quit, is
 //  harmless. begin() on a key that still has a running entry drops that
@@ -64,6 +65,8 @@
 //     Swap                "Swapping 12 playlist rows…" (a count of rows, never a label)
 //     Scan                "Scanning income local…" (B12: the label is the income's
 //                         name, never a count)
+//     ScanThenPropose     "Proposing 2 albums…" (the propose after a scan; the label
+//                         stays the income's name, so always the count)
 //  The n/m form shows once progress() reported something (done > 0 or an
 //  album being worked on) on an entry of more than one; until then, and for
 //  one album, the plain form. Execute and Resume carry done/total from the
@@ -73,12 +76,15 @@
 //  …", "Resumed placement of …", "Deleted local copies of …", "Counted
 //  playlist rows for …", "Swapped 12 playlist rows", "Scanned local" or
 //  "Scanned local: 3 new albums" (the count is end()'s: the roots the scan
-//  newly wrote, 0 when none or unknown) (state succeeded, icon check);
+//  newly wrote, 0 when none or unknown), "Scanned local, proposed 2 albums"
+//  (state succeeded, icon check);
 //  failed: "<Propose|Assign|Approve|Reject> failed: <reason>", "Placement
 //  check failed: …", "Execute failed: …", "Resume failed: …", "Delete
 //  failed: …", "Row count failed: …", "Swap failed: …", "Scan failed: …"
-//  (state failed, icon cross). Results carry no done/total. A scan's list
-//  item has no album detail (its label is an income, not an album).
+//  (state failed, icon cross); the propose after a scan fails as "Propose
+//  failed: …". Results carry no done/total. A scan's list item, and that of
+//  the propose after it, has no album detail (its label is an income, not
+//  an album).
 //  Labels are cut to kActivityLabelMaxBytes and reasons to
 //  kActivityReasonMaxBytes with "…", never inside a character and never
 //  inside a composed character sequence (CoreFoundation's
@@ -112,6 +118,14 @@
 //  propose did (its failure, if any, follows in the detail); otherwise the
 //  propose's own result ("Assigned and proposed 2 albums", "Propose failed:
 //  …"). So a partial failure never shows the check icon.
+//
+//  activityAfterScan does the same for B12's auto-scan and the propose after
+//  it (PLAN-B12 scope addition 1): a scan that ended with errors (exit 1)
+//  ends the entry failed as the scan ("Scan failed: E_ARCHIVE: …", kind
+//  Scan), the propose's failure in the detail; otherwise the propose's own
+//  result ("Scanned local, proposed 2 albums", "Propose failed: …"), with
+//  the kind the propose's result names, if any (a propose that could not
+//  start before the rename: kind Propose).
 //
 //  activityReadsResult ends the Delete flow's census (its sidecar reads):
 //  succeeded when every root's file list was read; else failed with the
@@ -149,6 +163,7 @@ enum class ActivityKind {
     DeleteCensus,
     Swap,
     Scan,  // B12's background scan of one income folder (the label: its name)
+    ScanThenPropose,  // the propose after a scan (rename() from Scan; the label stays the income)
 };
 
 enum class ActivityState {
@@ -221,6 +236,11 @@ ActivityResult activityResultFor(const MutationOutcome &outcome, size_t named, c
 // file): `assign` the assign's result, `propose` the propose's (or its
 // refusal's).
 ActivityResult activityAfterAssign(const ActivityResult &assign, const ActivityResult &propose);
+
+// The end of B12's auto-scan and the propose after it (see the top of this
+// file): `scan` the scan's result, `propose` the propose's (or its
+// refusal's).
+ActivityResult activityAfterScan(const ActivityResult &scan, const ActivityResult &propose);
 
 // The end of reading `named` roots' file lists; `unread` holds the error of
 // each root that has none, in order (see the top of this file).

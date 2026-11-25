@@ -12,7 +12,9 @@
 //  outcomes, deadlines (the execute dry run's 15 minutes),
 //  activityAfterAssign and activityReadsResult. B12: the scan kind (the
 //  income's name as its label, "N new albums" only in a result that found
-//  some, no album detail).
+//  some, no album detail); the propose after a scan (ScanThenPropose: the
+//  count while running, "Scanned <income>, proposed N albums", no album
+//  detail) and activityAfterScan.
 //
 
 #import <Foundation/Foundation.h>
@@ -109,6 +111,10 @@ static void testRunningTexts() {
     CHECK(runningText(ActivityKind::Scan, 0, "local") == "Scanning income local" + kDots, "scan: the income's name");
     CHECK(runningText(ActivityKind::Scan, 3, "local") == "Scanning income local" + kDots,
           "scan: never a count while running");
+    CHECK(runningText(ActivityKind::ScanThenPropose, 2, "local") == "Proposing 2 albums" + kDots,
+          "the propose after a scan");
+    CHECK(runningText(ActivityKind::ScanThenPropose, 1, "local") == "Proposing 1 album" + kDots,
+          "the propose after a scan, one: the count (its label is the income)");
 
     ActivityModel m;
     m.begin("k", ActivityKind::Propose, 3, album, 100);
@@ -138,6 +144,10 @@ static void testResultTexts() {
     CHECK(resultText(ActivityKind::DeleteCensus, 3, album, ok) == "Counted playlist rows for 3 albums", "counted");
     CHECK(resultText(ActivityKind::Swap, 12, "", ok) == "Swapped 12 playlist rows", "swapped");
     CHECK(resultText(ActivityKind::Scan, 0, "local", ok) == "Scanned local", "scanned, nothing new (or unknown)");
+    CHECK(resultText(ActivityKind::ScanThenPropose, 2, "local", ok) == "Scanned local, proposed 2 albums",
+          "scanned and proposed");
+    CHECK(resultText(ActivityKind::ScanThenPropose, 1, "p2p", ok) == "Scanned p2p, proposed 1 album",
+          "scanned and proposed one");
 
     CHECK(resultText(ActivityKind::Execute, 5, album, failed("target path already exists")) ==
               "Execute failed: target path already exists",
@@ -155,6 +165,9 @@ static void testResultTexts() {
     CHECK(resultText(ActivityKind::Scan, 0, "local", failed("E_NOT_FOUND: income path missing: local")) ==
               "Scan failed: E_NOT_FOUND: income path missing: local",
           "scan failed");
+    CHECK(resultText(ActivityKind::ScanThenPropose, 2, "local", failed("1 of 2 albums")) ==
+              "Propose failed: 1 of 2 albums",
+          "the propose after a scan failed");
 
     ActivityModel m;
     m.begin("a", ActivityKind::Propose, 3, album, 0);
@@ -490,6 +503,18 @@ static void testItemDetails() {
     items = sc.items(1);
     CHECK(items.size() == 1 && items[0].title == "Scanned local: 4 new albums" && items[0].detail.empty(),
           "scan succeeded: no album detail");
+
+    // The propose after a scan: its label is still the income.
+    ActivityModel sp;
+    sp.begin("s", ActivityKind::Scan, 0, "local", 0);
+    sp.rename("s", ActivityKind::ScanThenPropose, 3, "local");
+    items = sp.items(0);
+    CHECK(items.size() == 1 && items[0].title == "Proposing 3 albums" + kDots && items[0].detail.empty(),
+          "its propose running: no album detail");
+    sp.end("s", ActivityResult(), 1);
+    items = sp.items(1);
+    CHECK(items.size() == 1 && items[0].title == "Scanned local, proposed 3 albums" && items[0].detail.empty(),
+          "its propose succeeded: no album detail");
 }
 
 // --- activityResultFor ---
@@ -662,6 +687,65 @@ static void testAfterAssign() {
     CHECK(lineText(m, 10) == "Propose failed: unreadable sidecar", "a failed propose");
 }
 
+// The end of an auto-scan and the propose after it (B12 scope addition 1;
+// like activityAfterAssign: a scan with errors never ends with the check).
+static void testAfterScan() {
+    g_context = "after-scan";
+    const ActivityResult ok;
+    const ActivityResult scanPart =
+        failed("E_ARCHIVE: unpack failed", "auto-scan: local done in 1.0 s with errors: 2 new roots, 0 kept; "
+                                           "E_ARCHIVE: unpack failed (/Users/x/Music/fixture-income/a.zip)");
+    const ActivityResult proposeFail = failed("1 of 2 albums", "propose: done for 1 of 2 roots; No target collection");
+
+    ActivityResult r = activityAfterScan(ok, ok);
+    CHECK(r.succeeded && !r.kind.has_value(), "both succeeded: the propose's success");
+    r = activityAfterScan(ok, proposeFail);
+    CHECK(!r.succeeded && r.reason == "1 of 2 albums" && !r.kind.has_value(), "only the propose failed");
+    r = activityAfterScan(scanPart, ok);
+    CHECK(!r.succeeded && r.reason == scanPart.reason && r.kind == std::optional<ActivityKind>(ActivityKind::Scan),
+          "the scan had errors: failed, as the scan");
+    CHECK(r.detail == scanPart.detail, "its line");
+    r = activityAfterScan(scanPart, proposeFail);
+    CHECK(!r.succeeded && r.reason == scanPart.reason && r.kind == std::optional<ActivityKind>(ActivityKind::Scan),
+          "both failed: the scan's failure");
+    CHECK(r.detail == scanPart.detail + "; " + proposeFail.detail, "both lines");
+    r = activityAfterScan(failed("x"), failed("not started"));
+    CHECK(r.detail == "not started", "the propose's reason when it has no detail");
+    ActivityResult notStarted = failed("not started", "propose: not run after auto-scan of local: no CLI path");
+    notStarted.kind = ActivityKind::Propose;
+    r = activityAfterScan(ok, notStarted);
+    CHECK(!r.succeeded && r.kind == std::optional<ActivityKind>(ActivityKind::Propose),
+          "a propose that names its kind keeps it (it could not start before the rename)");
+
+    // Through the model: the scan's entry renamed for the propose, then ended.
+    auto ended = [](const ActivityResult &scan, const ActivityResult &propose) {
+        ActivityModel m;
+        m.begin("lane:1", ActivityKind::Scan, 0, "local", 0);
+        m.rename("lane:1", ActivityKind::ScanThenPropose, 2, "local");
+        m.end("lane:1", activityAfterScan(scan, propose), 10);
+        return m;
+    };
+    ActivityModel m = ended(ok, ok);
+    CHECK(lineText(m, 10) == "Scanned local, proposed 2 albums", "succeeded: scanned and proposed");
+    CHECK(m.line(10)->icon == ActivityIcon::Check, "with the check");
+    m = ended(scanPart, ok);
+    CHECK(lineText(m, 10) == "Scan failed: E_ARCHIVE: unpack failed", "the scan's errors show");
+    CHECK(m.line(10)->icon == ActivityIcon::Cross && m.line(10)->state == ActivityState::Failed, "with the cross");
+    CHECK(m.items(10).size() == 1 && m.items(10)[0].title == "Scan failed: E_ARCHIVE: unpack failed" &&
+              m.items(10)[0].detail == scanPart.detail,
+          "the list says so too, with the scan's line");
+    m = ended(ok, proposeFail);
+    CHECK(lineText(m, 10) == "Propose failed: 1 of 2 albums", "a failed propose");
+    CHECK(m.line(10)->icon == ActivityIcon::Cross, "with the cross");
+
+    // The propose could not start (no CLI configuration): the entry was
+    // never renamed.
+    ActivityModel n;
+    n.begin("lane:2", ActivityKind::Scan, 0, "local", 0);
+    n.end("lane:2", activityAfterScan(ok, notStarted), 10, 2);
+    CHECK(lineText(n, 10) == "Propose failed: not started", "the propose's words, not the scan's");
+}
+
 // The Delete flow's census (review finding: it always ended succeeded).
 static void testReadsResult() {
     g_context = "reads-result";
@@ -705,6 +789,7 @@ int main() {
         testResultFor();
         testDeadline();
         testAfterAssign();
+        testAfterScan();
         testReadsResult();
     }
     TEST_MAIN_END();
