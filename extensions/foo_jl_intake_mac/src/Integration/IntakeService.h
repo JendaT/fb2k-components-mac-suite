@@ -61,9 +61,6 @@
 //  before the snapshot is built; a CLI settings change forgets them. The
 //  menu reads serviceActionInfo() and a mutating call takes its
 //  configuration from serviceMutationConfig(), both on the main thread.
-//  When foo_jl_intake.test_actions holds steps at start, the temporary
-//  test_actions aid gets a look after every successful load (it runs once,
-//  after the leftover-run scan); otherwise nothing is installed.
 //
 //  Execute runs (B8): right after the service starts, on_init has
 //  IntakeActions scan the cache folder for runs an earlier session left
