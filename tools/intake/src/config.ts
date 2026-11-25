@@ -30,7 +30,8 @@ export function rulesDir(): string | null {
 
 /**
  * A rules file the CLI cannot use: a YAML syntax error, or a value the CLI
- * checks and refuses (income.yaml `archive_code_pages`). The message names
+ * checks and refuses (income.yaml `archive_code_pages`, structure.yaml
+ * `assign.shim_timeout_s`, the maps' entries). The message names
  * the file and, when known, the key. cli.ts reports it as `E_BAD_RULES`
  * (exit 2, `path` = the file) for the command that loaded the file.
  */
@@ -43,6 +44,14 @@ export class RulesError extends Error {
     super(`${file}: ${key === null ? "" : `${key}: `}${detail}`);
     this.name = "RulesError";
   }
+}
+
+/** A value as an error message shows it. */
+export function shown(v: unknown): string {
+  if (v === null || v === undefined) return "null";
+  if (Array.isArray(v)) return "a list";
+  if (typeof v === "object") return "a mapping";
+  return typeof v === "string" ? JSON.stringify(v) : String(v);
 }
 
 /**
@@ -87,6 +96,7 @@ export const DEFAULT_ASSIGN_CONFIG: AssignConfig = {
   short_circuit: { min_releases: 2, confidence: 0.95 },
   needs_review: { confidence: 0.6, margin: 0.2 },
   shim_accept_distance: 0.15,
+  shim_timeout_s: 180,
   naming: {
     release: "{artist} [{year}] {album} ({label}; {catno})",
     release_no_label: "{artist} [{year}] {album}",
@@ -94,11 +104,16 @@ export const DEFAULT_ASSIGN_CONFIG: AssignConfig = {
   tiers: {},
 };
 
-/** Load assign config: structure.yaml `assign:`/`naming:`/`tiers:` over defaults. */
+/**
+ * Load assign config: structure.yaml `assign:`/`naming:`/`tiers:` over
+ * defaults. `assign.shim_timeout_s` is checked: anything but a finite number
+ * above 0 throws a RulesError (E_BAD_RULES).
+ */
 export function loadAssignConfig(dir: string | null = rulesDir()): AssignConfig {
   const cfg: AssignConfig = structuredClone(DEFAULT_ASSIGN_CONFIG);
   if (!dir) return cfg;
-  const doc = readYaml(join(dir, "structure.yaml"));
+  const file = join(dir, "structure.yaml");
+  const doc = readYaml(file);
   if (!doc) return cfg;
   const a = doc["assign"] as Record<string, unknown> | undefined;
   if (a) {
@@ -109,6 +124,12 @@ export function loadAssignConfig(dir: string | null = rulesDir()): AssignConfig 
     const nr = a["needs_review"] as Partial<AssignConfig["needs_review"]> | undefined;
     if (nr) Object.assign(cfg.needs_review, nr);
     if (typeof a["shim_accept_distance"] === "number") cfg.shim_accept_distance = a["shim_accept_distance"];
+    const timeout = a["shim_timeout_s"];
+    if (timeout !== undefined) {
+      if (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout <= 0)
+        throw new RulesError(file, "assign.shim_timeout_s", `must be a number of seconds above 0, got ${shown(timeout)}`);
+      cfg.shim_timeout_s = timeout;
+    }
   }
   const naming = doc["naming"] as Partial<AssignConfig["naming"]> | undefined;
   if (naming) Object.assign(cfg.naming, naming);

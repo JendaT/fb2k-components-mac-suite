@@ -8,6 +8,8 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import { CLI_VERSION, type IdentCandidate } from "./types.ts";
 import type { SimilarArtist } from "./assign.ts";
+import { DEFAULT_ASSIGN_CONFIG } from "./config.ts";
+import { runTool, type ToolRun } from "./proc.ts";
 import { sha1Hex } from "./util.ts";
 
 // The tool name and version only: no URL, no account handle, nothing that
@@ -231,23 +233,32 @@ export function shimCommand(
   return [(beet ? shebangPython(readLine(beet)) : null) ?? "python3", SHIM_SCRIPT];
 }
 
-export function subprocessShim(cmd: string[] = shimCommand()): ShimProvider {
+/**
+ * The beets shim as a provider, one run per root under a time limit
+ * (`timeoutMs`, structure.yaml `assign.shim_timeout_s`): the shim's network
+ * lookups have no overall bound of their own (musicbrainzngs retries a
+ * failing request 8 times). A run past the limit is killed with its process
+ * group and gives `shim_timeout`; the root is then identified without it, as
+ * after any shim error. See runTool for the process group and stop signals.
+ */
+export function subprocessShim(
+  cmd: string[] = shimCommand(),
+  timeoutMs: number = DEFAULT_ASSIGN_CONFIG.shim_timeout_s * 1000,
+): ShimProvider {
   return {
     async identify(dir, files) {
-      let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
+      let run: ToolRun;
       try {
         // Files as arguments, not stdin: the shim gives beets no stdin.
-        proc = Bun.spawn([...cmd, dir, ...files, "--json"], {
-          stdin: "ignore",
-          stdout: "pipe",
-          stderr: "pipe",
+        run = await runTool([...cmd, dir, ...files, "--json"], timeoutMs, {
+          captureStdout: true,
           env: { ...process.env },
         });
       } catch {
         return { error: "shim_unavailable" };
       }
-      const code = await proc.exited;
-      const out = await new Response(proc.stdout).text();
+      if (run.timedOut) return { error: "shim_timeout" };
+      const { code, stdout: out } = run;
       if (code !== 0) {
         try {
           const doc = JSON.parse(out);
@@ -276,12 +287,17 @@ export interface Providers {
   shim: ShimProvider | null;
 }
 
-export function buildProviders(): Providers {
+export interface ProviderOptions {
+  /** Time limit on one beets shim run; default: `assign.shim_timeout_s`'s default. */
+  shimTimeoutMs?: number;
+}
+
+export function buildProviders(opts: ProviderOptions = {}): Providers {
   const discogsToken = process.env.DISCOGS_TOKEN;
   const lastfmKey = process.env.LASTFM_API_KEY;
   return {
     discogs: discogsToken ? httpDiscogs(discogsToken) : null,
     similar: lastfmKey ? cachedSimilar(httpLastfm(lastfmKey)) : null,
-    shim: subprocessShim(),
+    shim: subprocessShim(shimCommand(), opts.shimTimeoutMs),
   };
 }

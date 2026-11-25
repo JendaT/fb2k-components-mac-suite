@@ -8,7 +8,7 @@
 
 import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { parseRulesYaml, RulesError } from "./config.ts";
+import { parseRulesYaml, RulesError, shown } from "./config.ts";
 import { normKey } from "./util.ts";
 
 export type FolderCounts = Record<string, number>; // collection -> count
@@ -71,14 +71,6 @@ const loadedDocs = new WeakMap<object, Record<string, unknown>>();
 
 function isMapping(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-
-/** A value as an error message shows it. */
-function shown(v: unknown): string {
-  if (v === null || v === undefined) return "null";
-  if (Array.isArray(v)) return "a list";
-  if (typeof v === "object") return "a mapping";
-  return typeof v === "string" ? JSON.stringify(v) : String(v);
 }
 
 /** `artists."Some Artist"."[Coll]"`: a section name, then quoted keys. */
