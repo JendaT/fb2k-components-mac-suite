@@ -168,6 +168,12 @@ void activityRename(const std::string &key, ActivityKind kind, size_t count, con
     if (h.model.rename(key, kind, count, firstLabel)) notifyChanged();
 }
 
+void activityProgress(const std::string &key, uint32_t done, uint32_t total, const std::string &currentLabel) {
+    HubState &h = hub();
+    if (h.stopped) return;
+    if (h.model.progress(key, done, total, currentLabel)) notifyChanged();
+}
+
 void activityEnd(const std::string &key, const ActivityResult &result, std::optional<size_t> count) {
     HubState &h = hub();
     if (h.stopped) return;

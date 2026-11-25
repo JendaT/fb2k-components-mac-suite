@@ -33,6 +33,13 @@
 //     through endAutoScanRun with the scan's result folded in
 //     (activityAfterScan: a scan with errors ends the entry failed). The
 //     10 s reports do not end it.
+//   - chain serial, B12's chunked propose (IntakeProposeChain): the chain's
+//     start begins it ("Proposing 49 albums…"); roots that join rename it
+//     with the new total; each chunk's end reports activityProgress (done of
+//     total) and the next chunk's start the album it begins with
+//     ("Proposing 10/49: Artist – Album"); the chain's end (its aggregate
+//     result) or stop (failed with the stop's reason) ends it. The chunks'
+//     own lane tokens have no entries.
 //   - run stem: startDetachedRun and onRunScan's adopted runs begin
 //     (activityBeginRun); finishRun (at tracker.remove) and onRunRefused end.
 //   - swap serial: swapStart begins, its finish ends.
@@ -99,6 +106,11 @@ void activityBeginRun(const std::string &stem, CliCommand command, const std::ve
 void activityDeadline(const std::string &key, int64_t afterMs, const ActivityResult &result);
 
 void activityRename(const std::string &key, ActivityKind kind, size_t count, const std::string &firstLabel);
+
+// The running entry's progress (ActivityModel::progress): `done` of
+// `total`, `currentLabel` the album worked on now (may be empty). Fires the
+// change handler when it changed. B12's chunked propose.
+void activityProgress(const std::string &key, uint32_t done, uint32_t total, const std::string &currentLabel);
 
 // The one end helper: every path that lets go of what a begin took calls
 // it. An unknown or already ended key does nothing.

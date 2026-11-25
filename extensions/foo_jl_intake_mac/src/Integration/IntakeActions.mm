@@ -37,6 +37,7 @@
 #include "../Core/IntakeLog.h"
 #include "../Core/IntakeMutationLane.h"
 #include "../Core/IntakeMutationResult.h"
+#include "../Core/IntakeProposeChain.h"
 #include "../Core/IntakeRejectReason.h"
 #include "../Core/IntakeSlowVolumeGuard.h"
 #include "../Core/IntakeView.h"
@@ -485,6 +486,20 @@ struct ActionsState {
     // reload failed (queueFollowUp). Their run files are already gone, so
     // actionsShutdown logs one Info line for each.
     std::vector<std::shared_ptr<FollowUpJob>> followUpsUnfinished;
+    // B12: the chunked propose (see "chunked propose" below): one chain at
+    // a time, chainSerial 0 for none; its model; the lane token of the chunk
+    // running (0: none); the refresh whose end runs the next chunk (0: none
+    // on its way); whether this wait for the lane has been logged; and the
+    // 2 s retry on its way (never two; it clears the flag when it fires,
+    // whichever chain is current then).
+    uint64_t chainSerial = 0;
+    uint64_t chainSerialNext = 0;
+    ProposeChain chain;
+    uint64_t chainToken = 0;
+    uint64_t chainRefresh = 0;
+    uint64_t chainRefreshNext = 0;
+    bool chainWaitLogged = false;
+    bool chainRetryArmed = false;
 
     // Set once above, then read on the queue.
     dispatch_queue_t queue = nil;
@@ -560,16 +575,26 @@ std::string whyNotStartable() {
 // B12: an auto-scan is followed the same way by `propose` for the resolved
 // roots it wrote (IntakeAutoScanResult proposeAfterScan); the scan itself
 // runs outside startOnQueue (startAutoScanOnQueue), so only its propose is
-// a LaneRun here.
+// a LaneRun here. A propose of more than kProposeChunkSize roots (any of
+// the three) runs as a chain of chunks instead, each its own lane run
+// (ProposeChunk; see "chunked propose" below).
 enum class LaneRun {
     Single,             // one call: its finish releases the lane and refreshes
     AssignThenPropose,  // an assign; its finish may start the propose
     ProposeAfterAssign, // that propose; its finish (or refusal) ends the run
     ProposeAfterScan,   // B12: the propose after an auto-scan; its finish (or refusal) ends the run (endAutoScanRun)
+    ProposeChunk,       // B12: one chunk of the chunked propose; its finish (or refusal) releases the lane
 };
 
 void startOnQueue(uint64_t token, std::shared_ptr<const CliConfig> config, std::shared_ptr<const CliRequest> request,
                   std::shared_ptr<const std::vector<MutationRoot>> roots, LaneRun run = LaneRun::Single);
+
+// B12, the chunked propose (defined below): starts the chain for `roots`
+// or adds them to the one running; the chunk handlers.
+std::string chainJoin(const std::vector<MutationRoot> &roots, const std::string &origin);
+void onChunkBudget(uint64_t token);
+void onChunkFinished(uint64_t token, const std::vector<MutationRoot> &roots, const CliResult &result);
+void onChunkRefused(uint64_t token, const std::string &refusal);
 
 // The Execute follow-up's gc on `token` has ended (or never started): its
 // chain ends (see the Execute follow-ups below).
@@ -623,6 +648,16 @@ void proposeAfterAssignOrEnd(uint64_t token, const std::vector<MutationRoot> &as
         endRun(assignResult);
         return;
     }
+    if (next.propose.size() > kProposeChunkSize) {
+        // B12: many roots go to the chunked propose. The assign's run ends
+        // here as when nothing is proposed; the chain's refresh (no chunk
+        // runs: the assign held the lane) shows what the assign changed, and
+        // its end starts the first chunk.
+        st.lane.finish(token);
+        activityEnd(activityLaneKey(token), assignResult);
+        chainJoin(next.roots, " after assign");
+        return;
+    }
     CliConfig config;
     if (!serviceMutationConfig(config)) {
         logError("propose: not run after assign: intake is not running or has no CLI path");
@@ -665,6 +700,10 @@ void onBudget(uint64_t token, CliCommand command, const std::vector<MutationRoot
               LaneRun run = LaneRun::Single) {
     ActionsState &st = actionsState();
     if (st.stopped) return;
+    if (run == LaneRun::ProposeChunk) {
+        onChunkBudget(token);
+        return;
+    }
     if (run == LaneRun::ProposeAfterScan) {
         // B12: like the scan's own 10 s report: one Info line, no tooltip
         // and no refresh (the auto-scan's run reloads once, at its end);
@@ -697,6 +736,10 @@ void onBudget(uint64_t token, CliCommand command, const std::vector<MutationRoot
 
 void onFinished(uint64_t token, CliCommand command, const std::vector<MutationRoot> &roots, const CliResult &result,
                 LaneRun run = LaneRun::Single) {
+    if (run == LaneRun::ProposeChunk) {
+        onChunkFinished(token, roots, result);
+        return;
+    }
     ActionsState &st = actionsState();
     endGcMute(token);
     if (st.stopped) {
@@ -768,6 +811,10 @@ void onFinished(uint64_t token, CliCommand command, const std::vector<MutationRo
 }
 
 void onRefused(uint64_t token, CliCommand command, const std::string &refusal, LaneRun run = LaneRun::Single) {
+    if (run == LaneRun::ProposeChunk) {
+        onChunkRefused(token, refusal);
+        return;
+    }
     ActionsState &st = actionsState();
     if (run == LaneRun::ProposeAfterScan) {
         // B12: Info, like the rest of the auto-scan's run (a caller bug, so
@@ -822,6 +869,272 @@ void startOnQueue(uint64_t token, std::shared_ptr<const CliConfig> config, std::
             onRefused(token, command, refusal, run);
         });
     }
+}
+
+// --- chunked propose (B12, main) ---
+//
+// A propose of more than kProposeChunkSize roots (the user's Propose, the
+// propose after an assign, the auto-propose after a scan) runs as a chain
+// of `propose` calls of up to 5 roots (IntakeProposeChain), each its own
+// lane run (LaneRun::ProposeChunk, LaneHolder::Mutating): the lane is free
+// between chunks, and a chunk killed at the hard cap stops the chain having
+// lost only that chunk. One chain at a time; roots asked for while it runs
+// join it (chainJoin). Each chunk starts after a refresh: the one after the
+// chunk before, or the one chainJoin asks for when roots join while no
+// chunk runs (a new chain included), so the status re-check sees what the
+// last call, the scan or the assign wrote. A busy lane is waited for with a
+// 2 s retry (one timer at most, one Info line per wait), never a queued
+// call. The status bar has one entry for the whole chain
+// (activityChainKey).
+
+// Who holds the lane, for the waiting line.
+std::string chainLaneHolderText() {
+    ActionsState &st = actionsState();
+    if (!st.runScanDone) return "the check for an execute run left by an earlier session";
+    switch (st.lane.holder()) {
+        case LaneHolder::Execute: return "execute running";
+        case LaneHolder::Scan: return "a background scan";
+        case LaneHolder::DryRun: return "a dry run";
+        case LaneHolder::Mutating: return "another intake command";
+        case LaneHolder::None: break;
+    }
+    return "busy";
+}
+
+// "chunk 2 of 10" (the count is the model's estimate now).
+std::string chainChunkText(size_t number) {
+    return "chunk " + std::to_string(number) + " of " + std::to_string(actionsState().chain.chunkCount());
+}
+
+// The status bar's n/m, with the album the chunk running starts with once
+// something was handled.
+void chainShowProgress() {
+    ActionsState &st = actionsState();
+    const ProposeChainProgress p = st.chain.progress();
+    const std::string label =
+        p.current.id.empty() ? std::string() : activityLabelFor(p.current.id, p.current.rootPath);
+    activityProgress(activityChainKey(st.chainSerial), p.done, p.total, label);
+}
+
+void clearChain() {
+    ActionsState &st = actionsState();
+    st.chainSerial = 0;
+    st.chain = ProposeChain();
+    st.chainToken = 0;
+    st.chainRefresh = 0;  // a refresh still on its way does nothing
+    st.chainWaitLogged = false;
+    // chainRetryArmed stays: the timer on its way clears it.
+}
+
+// Stops the chain: one Info line, the status bar entry ends failed.
+void stopChain(const std::string &reason) {
+    ActionsState &st = actionsState();
+    if (st.chainSerial == 0) return;
+    const std::vector<std::string> left = st.chain.notProposed();
+    std::string line = "propose: stopped after chunk " + std::to_string(st.chain.chunksRecorded()) + " of " +
+                       std::to_string(st.chain.chunkCount()) + " (" + reason + ")";
+    if (!left.empty()) line += "; " + rootCountText(left.size()) + " not proposed: " + idList(left);
+    logInfo(line);
+    ActivityResult stopped;
+    stopped.succeeded = false;
+    stopped.reason = reason;
+    stopped.detail = line;
+    activityEnd(activityChainKey(st.chainSerial), stopped);
+    clearChain();
+}
+
+// Every root handled: the summary line and the aggregate result.
+void finishChain() {
+    ActionsState &st = actionsState();
+    logInfo(st.chain.summaryLine());
+    activityEnd(activityChainKey(st.chainSerial), st.chain.result(), st.chain.named());
+    clearChain();
+}
+
+void runNextChunk();
+
+// The lane is busy: the next chunk is tried again in 2 s.
+void chainRetryLater() {
+    ActionsState &st = actionsState();
+    if (!st.chainWaitLogged) {
+        logInfo("propose: waiting for the lane (" + chainLaneHolderText() + ") before the next chunk");
+        st.chainWaitLogged = true;
+    }
+    if (st.chainRetryArmed) return;
+    st.chainRetryArmed = true;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * static_cast<int64_t>(NSEC_PER_SEC)), dispatch_get_main_queue(),
+                   ^{
+                       ActionsState &now = actionsState();
+                       now.chainRetryArmed = false;
+                       // A refresh on its way runs the next chunk itself.
+                       if (now.stopped || now.chainSerial == 0 || now.chainRefresh != 0) return;
+                       runNextChunk();
+                   });
+}
+
+// A refresh, whose end runs the next chunk (unless the chain moved on).
+void chainRefreshThenNext() {
+    ActionsState &st = actionsState();
+    const uint64_t serial = st.chainSerial;
+    const uint64_t refresh = ++st.chainRefreshNext;
+    st.chainRefresh = refresh;
+    serviceRefreshAfterCommand([serial, refresh](const LoaderStatus &) {
+        ActionsState &now = actionsState();
+        if (now.stopped || now.chainSerial != serial || now.chainRefresh != refresh) return;
+        now.chainRefresh = 0;
+        if (now.chainRetryArmed) return;  // the retry on its way runs it
+        runNextChunk();
+    });
+}
+
+// The next chunk, on the statuses of the current view; finishes the chain
+// when nothing resolved is left, waits when the lane is busy.
+void runNextChunk() {
+    ActionsState &st = actionsState();
+    if (st.stopped || st.chainSerial == 0 || st.chainToken != 0 || st.chainRefresh != 0) return;
+    const std::shared_ptr<const IntakeView> view = providerCurrentView();
+    if (!view) {
+        stopChain("no intake data");
+        return;
+    }
+    if (view->isInert()) {
+        stopChain("intake is inert: " + view->inertReason());
+        return;
+    }
+    CliConfig config;
+    if (!serviceMutationConfig(config)) {
+        stopChain("intake is not running or has no CLI path");
+        return;
+    }
+    const uint64_t token = st.runScanDone ? st.lane.acquire(LaneHolder::Mutating) : 0;
+    if (token == 0) {
+        chainRetryLater();
+        return;
+    }
+    const ProposeChunk chunk = st.chain.nextChunk([&view](const std::string &id) -> std::optional<IntakeStatus> {
+        const IntakeRecord *record = view->snapshot().recordForId(id);
+        if (record == nullptr) return std::nullopt;
+        return record->status;
+    });
+    if (!chunk.skippedLine.empty()) logDebug(chunk.skippedLine);
+    if (chunk.roots.empty()) {
+        // Nothing resolved is pending (nextChunk took every pending root).
+        st.lane.finish(token);
+        finishChain();
+        return;
+    }
+    st.chainToken = token;
+    st.chainWaitLogged = false;
+    CliRequest request;
+    request.command = CliCommand::Propose;
+    request.ids = chunk.ids();
+    logInfo("propose: " + chainChunkText(chunk.number) + " starting for " + rootCountText(request.ids.size()) + ": " +
+            idList(request.ids));
+    chainShowProgress();
+    auto sharedConfig = std::make_shared<const CliConfig>(std::move(config));
+    auto sharedRequest = std::make_shared<const CliRequest>(std::move(request));
+    auto sharedRoots = std::make_shared<const std::vector<MutationRoot>>(chunk.roots);
+    dispatch_async(st.queue, ^{
+        startOnQueue(token, sharedConfig, sharedRequest, sharedRoots, LaneRun::ProposeChunk);
+    });
+}
+
+// `origin`: "" (the user's Propose), " after assign", " after auto-scan of
+// <income>". Returns a short line for the log.
+std::string chainJoin(const std::vector<MutationRoot> &roots, const std::string &origin) {
+    ActionsState &st = actionsState();
+    if (st.stopped) return "not run: intake is not running";
+    const std::string chunks = ", in chunks of " + std::to_string(kProposeChunkSize);
+    if (st.chainSerial == 0) {
+        st.chain = ProposeChain();
+        const size_t added = st.chain.add(roots);
+        if (added == 0) return "nothing to propose";
+        st.chainSerial = ++st.chainSerialNext;
+        st.chainWaitLogged = false;
+        logInfo("propose: starting" + origin + " for " + rootCountText(added) + chunks + ": " +
+                idList(st.chain.pendingIds()));
+        const MutationRoot *first = st.chain.firstRoot();
+        activityBegin(activityChainKey(st.chainSerial), ActivityKind::Propose, st.chain.total(),
+                      activityLabelFor(first->id, first->rootPath));
+        chainRefreshThenNext();
+        return "propose: " + rootCountText(added) + chunks;
+    }
+    const size_t added = st.chain.add(roots);
+    std::string what;
+    if (added == 0) {
+        what = "propose: " + rootCountText(roots.size()) + origin + ": already in the running propose";
+        logInfo(what);
+    } else {
+        // The roots added are the last pending ones.
+        const std::vector<std::string> pending = st.chain.pendingIds();
+        const std::vector<std::string> joined(pending.end() - static_cast<std::ptrdiff_t>(added), pending.end());
+        what = "propose: " + rootCountText(added) + origin + " join the running propose (" +
+               std::to_string(st.chain.total()) + " in all)";
+        logInfo(what + ": " + idList(joined));
+        const MutationRoot *first = st.chain.firstRoot();
+        activityRename(activityChainKey(st.chainSerial), ActivityKind::Propose, st.chain.total(),
+                       activityLabelFor(first->id, first->rootPath));
+        chainShowProgress();
+    }
+    // No chunk runs: refresh first (the scan's or the assign's writes), then
+    // the next chunk. A chunk running refreshes when it ends.
+    if (st.chainToken == 0) chainRefreshThenNext();
+    return what;
+}
+
+void onChunkBudget(uint64_t token) {
+    ActionsState &st = actionsState();
+    if (st.stopped || token == 0 || token != st.chainToken) return;
+    // Like the propose after an auto-scan: one Info line, no tooltip, no
+    // refresh; the lane stays held until the chunk exits.
+    logInfo("propose: " + chainChunkText(st.chain.chunksStarted()) + " still running after 10 s");
+}
+
+void onChunkFinished(uint64_t token, const std::vector<MutationRoot> &roots, const CliResult &result) {
+    ActionsState &st = actionsState();
+    st.lane.finish(token);
+    // After on_quit (the chain is dropped) only the lane is released.
+    if (st.stopped || token == 0 || token != st.chainToken) return;
+    st.chainToken = 0;
+    logCliResult(result);
+    const MutationOutcome outcome = summarizeMutation(CliCommand::Propose, roots, result.envelope);
+    // Errors and tooltips as for any propose: baseline Resolved (the
+    // chunk's roots were resolved when it started).
+    RootErrorStore &errors = actionsErrorStore();
+    std::unordered_map<std::string, IntakeStatus> baseline;
+    for (const MutationRoot &r : roots) baseline.emplace(r.id, r.status);
+    for (const std::string &id : outcome.succeeded) errors.clear(id);
+    for (const auto &entry : outcome.rootErrors) {
+        auto status = baseline.find(entry.first);
+        errors.set(entry.first, entry.second, status == baseline.end() ? IntakeStatus::Resolved : status->second);
+        logDebug("tooltip " + entry.first + " until its status changes: " + entry.second);
+    }
+    const std::string what =
+        outcome.consoleLine.empty() ? "propose: " + std::string(cliOutcomeName(result.envelope.outcome))
+                                    : outcome.consoleLine;
+    const std::string line = what + " (" + chainChunkText(st.chain.chunksStarted()) + ")";
+    if (outcome.isError && outcome.succeeded.empty()) {
+        logError(line);
+    } else {
+        logInfo(line);
+    }
+    st.chain.record(roots, outcome);
+    chainShowProgress();
+    const ProposeChainStop stop = proposeChainStopFor(result.envelope);
+    if (stop.stop) {
+        stopChain(stop.reason);
+        serviceRefreshAfterCommand();  // the chunk's tooltips and what it wrote
+        return;
+    }
+    chainRefreshThenNext();
+}
+
+void onChunkRefused(uint64_t token, const std::string &refusal) {
+    ActionsState &st = actionsState();
+    st.lane.finish(token);
+    if (st.stopped || token == 0 || token != st.chainToken) return;
+    st.chainToken = 0;
+    stopChain("not started: " + refusal);
 }
 
 // --- auto-scan (B12, main unless noted) ---
@@ -881,6 +1194,17 @@ void proposeAfterScanOrEnd(uint64_t token, const AutoScanOutcome &outcome, CliOu
         ActivityResult notStarted = activityNotStarted(line);
         notStarted.kind = ActivityKind::Propose;  // the entry is still the scan's
         endAutoScanRun(token, activityAfterScan(outcome.activity, notStarted), outcome.newRoots, outcome.exit, true);
+        return;
+    }
+    if (next.propose.size() > kProposeChunkSize) {
+        // B12: many roots go to the chunked propose. The auto-scan's run
+        // ends with the scan's own result, as when nothing is proposed (the
+        // driver's exit included), but without a refresh of its own: the
+        // chain's refresh is the run's one refresh, and its end starts the
+        // first chunk with the roots the scan wrote in the view.
+        const std::string origin = " after auto-scan of " + st.autoScanIncome;
+        endAutoScanRun(token, outcome.activity, outcome.newRoots, outcome.exit, false);
+        chainJoin(next.roots, origin);
         return;
     }
     st.autoScanResult = outcome.activity;
@@ -991,6 +1315,18 @@ std::string runMutation(const ActionEntry &entry, const std::string &reason, uin
     if (!serviceMutationConfig(config)) return refuse("intake is not running or has no CLI path");
     if (!st.runScanDone) {
         return refuse("intake is still checking for an execute run left by an earlier session");
+    }
+    if (request.command == CliCommand::Propose && heldToken == 0 && request.ids.size() > kProposeChunkSize) {
+        // B12: the chunked propose: starts the chain, or joins the one
+        // running (the lane is free between its chunks).
+        if (st.chainSerial == 0 && st.lane.busy()) return notRun(entry.action, whyNotStartable());
+        std::vector<MutationRoot> chained;
+        for (const std::string &id : request.ids) {
+            auto r = std::find_if(entry.roots.begin(), entry.roots.end(),
+                                  [&id](const ActionRoot &a) { return a.id == id; });
+            if (r != entry.roots.end()) chained.push_back({r->id, r->rootPath, r->status, r->targetPath});
+        }
+        return chainJoin(chained, std::string());
     }
     const std::string name = cliCommandName(request.command);
     const uint64_t token = heldToken != 0 ? heldToken : st.lane.acquire(laneHolderFor(request));
@@ -2815,6 +3151,14 @@ void actionsShutdown() {
     // A swap's result is dropped (the playlist stays as it is).
     swapShutdown();
     st.deleteFlow.reset();
+    // B12: the chunked propose is dropped. A chunk running goes on (a quit
+    // never stops a mutating call; its finish only releases the lane); the
+    // roots not handed out yet are not proposed in this session.
+    if (st.chainSerial != 0) {
+        const std::vector<std::string> left = st.chain.pendingIds();
+        if (!left.empty()) logInfo("propose: " + rootCountText(left.size()) + " not proposed (quit): " + idList(left));
+        clearChain();
+    }
     // Follow-ups not finished are dropped: those waiting for their reload,
     // queued, or swapping (nothing is deleted). Their run files are gone,
     // so the next start cannot do them: one Info line per run (the log
