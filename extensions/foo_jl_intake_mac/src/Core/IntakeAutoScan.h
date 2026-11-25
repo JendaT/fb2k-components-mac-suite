@@ -201,6 +201,15 @@ bool autoScanIgnoredName(std::string_view name);
 AutoScanHits autoScanHits(const std::vector<AutoScanEvent> &events, const std::vector<AutoScanIncome> &incomes,
                           const std::vector<AutoScanMute> &mutes);
 
+// gc's root folders (`rootPaths`, the CLI's spelling from `status`) in the
+// spelling FSEvents reports, for an AutoScanMute: each root under an
+// income's `path` (the longest one; IntakePath keys, ASCII case ignored)
+// becomes that income's fsKey plus the rest of the root's key. A root under
+// no income is left out (its events never count anyway), and so is a
+// repeat. Pure string work.
+std::vector<std::string> autoScanMutePaths(const std::vector<std::string> &rootPaths,
+                                           const std::vector<AutoScanIncome> &incomes);
+
 enum class IncomePresence {
     Local,   // on a local disk, every component examined; the caller lstat()s `resolved` for S_ISDIR
     Network, // on a mounted network filesystem: never examined

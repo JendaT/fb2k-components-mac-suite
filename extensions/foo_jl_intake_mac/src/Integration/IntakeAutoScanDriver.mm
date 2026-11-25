@@ -9,6 +9,8 @@
 
 #import <Foundation/Foundation.h>
 
+#include <CoreServices/CoreServices.h>  // FSEventsGetCurrentEventId
+
 #include "IntakeAutoScanDriver.h"
 
 #include "IntakeActions.h"
@@ -19,6 +21,7 @@
 
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -31,6 +34,9 @@ namespace {
 
 using Clock = AutoScanScheduler::Clock;
 using TimePoint = AutoScanScheduler::TimePoint;
+
+// How long an ended gc mute stays when no later event passes it.
+constexpr double kMuteLingerSeconds = 10 * 60;
 
 // What the sink matches one callback against. Immutable once published: a
 // sink call keeps the one it took, and its post hands that same one to
@@ -62,6 +68,7 @@ struct DriverState {
     bool startupConsidered = false;       // the session's first Ready load has come
     uint64_t wakeGeneration = 0;          // the armed wakeup; older ones do nothing
     std::optional<TimePoint> armedFor;    // when it fires; none: nothing armed
+    uint64_t nextMuteId = 1;              // the next gc mute's handle
 
     // Set once above, then used from main.
     dispatch_queue_t presenceQueue = nil;
@@ -116,16 +123,80 @@ IncomeCheck checkPresence(const AutoScanIncome &income, const std::vector<MountE
 
 void scheduleWakeup(DriverState &d);
 
-// PLAN-B12 step 5 fills this in. Main thread, from a wakeup that found an
-// income due with the lane free (stopped already checked). It is to take
-// next(now, actionsLaneFree()), run checkPresence on presenceQueue with a
-// fresh readMountTable(), then on the main thread re-check stopped and
-// wanted(token), take LaneHolder::Scan and start the scan on the mutation
-// lane (IntakeActions), and end every path with scheduler.exit(token, ...)
-// followed by scheduleWakeup(). A wakeup that calls this arms nothing
-// itself (the scheduler would still report the same income due), so until
-// it starts something a due income waits for the next change.
-void autoScanStartDue() {}
+// Main: the job on `token` has ended (`how`); the next wakeup follows.
+void endJob(DriverState &d, uint64_t token, const std::string &name, AutoScanExit how) {
+    const AutoScanResult result = d.scheduler.exit(token, how, Clock::now());
+    if (result == AutoScanResult::Disabled) {
+        logInfo("auto-scan: income " + name +
+                " is not scanned automatically again this session (its scan was stopped at the 15-minute cap)");
+    } else if (result == AutoScanResult::Pending && how != AutoScanExit::LaneTaken) {
+        logDebug("auto-scan: new files in income " + name + " during its scan; scanning it again once they "
+                 "stopped for 60 s");
+    }
+    scheduleWakeup(d);
+}
+
+// Main, from IntakeActions: the scan on `token` ended (its lane is free,
+// its line logged, its refresh asked for). Never after on_quit.
+void onScanExit(uint64_t token, const std::string &name, AutoScanExit how) {
+    DriverState &d = driver();
+    if (d.stopped) return;
+    endJob(d, token, name, how);
+}
+
+// Main: the presence check of `job` is back.
+void afterPresence(const AutoScanJob &job, IncomePresence presence) {
+    DriverState &d = driver();
+    if (d.stopped) return;
+    const uint64_t token = job.token;
+    const std::string name = job.income.name;
+    if (!d.scheduler.wanted(token)) {
+        // Turned off, or the income removed, during the check: exit()
+        // forgets it (whatever the exit), and nothing starts.
+        endJob(d, token, name, AutoScanExit::Missing);
+        return;
+    }
+    if (presence == IncomePresence::Missing) {
+        logDebug("auto-scan: income " + name + " is missing or not mounted; not scanned");
+        endJob(d, token, name, AutoScanExit::Missing);
+        return;
+    }
+    switch (actionsStartAutoScan(job, [token, name](AutoScanExit how) { onScanExit(token, name, how); })) {
+        case AutoScanStart::Started:
+            // Same main-queue turn as wanted() above, so this holds; the
+            // exit comes later, through onScanExit, which reschedules.
+            d.scheduler.started(token);
+            return;
+        case AutoScanStart::LaneTaken:
+            endJob(d, token, name, AutoScanExit::LaneTaken);  // retried 5 s after the lane is seen busy
+            return;
+        case AutoScanStart::Refused:
+            endJob(d, token, name, AutoScanExit::Refused);
+            return;
+    }
+}
+
+// Main thread, from a wakeup that found an income due with the lane free
+// (stopped already checked; the wakeup arms nothing after calling this).
+// The presence check runs on presenceQueue with a fresh mount table; its
+// result comes back to afterPresence, which starts the scan or ends the job.
+// Every path ends with the scheduler's exit and scheduleWakeup (endJob).
+void autoScanStartDue() {
+    DriverState &d = driver();
+    std::optional<AutoScanJob> next = d.scheduler.next(Clock::now(), actionsLaneFree());
+    if (!next) {
+        scheduleWakeup(d);  // not due after all: the next change, or the retry, arms one
+        return;
+    }
+    auto job = std::make_shared<const AutoScanJob>(std::move(*next));
+    dispatch_async(d.presenceQueue, ^{
+        const std::vector<MountEntry> mounts = readMountTable();
+        const IncomePresence presence = checkPresence(job->income, mounts).presence;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            afterPresence(*job, presence);
+        });
+    });
+}
 
 void onWakeup(uint64_t generation) {
     DriverState &d = driver();
@@ -166,7 +237,18 @@ void scheduleWakeup(DriverState &d) {
 void noteHits(const AutoScanHits &hits, const AutoScanSnapshot &snapshot) {
     DriverState &d = driver();
     if (d.stopped) return;
-    // hits.passedMutes: PLAN-B12 step 6 removes those mutes here.
+    // A mute an event of this callback is past: FSEvents delivers in id
+    // order, so nothing it mutes can follow.
+    if (!hits.passedMutes.empty()) {
+        const size_t before = d.mutes.size();
+        d.mutes.erase(std::remove_if(d.mutes.begin(), d.mutes.end(),
+                                     [&hits](const AutoScanMute &m) {
+                                         return std::find(hits.passedMutes.begin(), hits.passedMutes.end(),
+                                                          m.id) != hits.passedMutes.end();
+                                     }),
+                      d.mutes.end());
+        if (d.mutes.size() != before) publishSnapshot(d);
+    }
     if (hits.incomes.empty() && hits.paths.empty()) return;
     std::vector<std::string> fresh;  // incomes that were idle until now
     if (isLogEnabled(LogLevel::Debug)) {
@@ -211,6 +293,17 @@ void startupCheck() {
     });
 }
 
+// Main: the gc mute `id` goes (passed by a later event, or 10 min after
+// gc exited).
+void removeMute(uint64_t id) {
+    DriverState &d = driver();
+    if (d.stopped) return;
+    const size_t before = d.mutes.size();
+    d.mutes.erase(std::remove_if(d.mutes.begin(), d.mutes.end(), [id](const AutoScanMute &m) { return m.id == id; }),
+                  d.mutes.end());
+    if (d.mutes.size() != before) publishSnapshot(d);
+}
+
 } // anonymous namespace
 
 void autoScanSink(const std::vector<AutoScanEvent> &events) {
@@ -253,6 +346,38 @@ void autoScanSetEnabled(bool enabled) {
         logNotOffered(d);
         scheduleWakeup(d);
     }
+}
+
+uint64_t autoScanMuteGc(const std::vector<std::string> &rootPaths) {
+    DriverState &d = driver();
+    if (d.stopped) return 0;
+    AutoScanMute mute;
+    mute.paths = autoScanMutePaths(rootPaths, d.incomes);
+    if (mute.paths.empty()) return 0;
+    mute.id = d.nextMuteId++;
+    // Before gc is dispatched: every event of its renames has a later id.
+    mute.startId = FSEventsGetCurrentEventId();
+    d.mutes.push_back(mute);
+    publishSnapshot(d);
+    logDebug("auto-scan: gc on " + std::to_string(mute.paths.size()) +
+             " folder(s) in income folders: their events are no arrivals from event id " +
+             std::to_string(mute.startId) + " until gc exits");
+    return mute.id;
+}
+
+void autoScanUnmuteGc(uint64_t muteId) {
+    DriverState &d = driver();
+    if (d.stopped || muteId == 0) return;
+    auto it = std::find_if(d.mutes.begin(), d.mutes.end(), [muteId](const AutoScanMute &m) { return m.id == muteId; });
+    if (it == d.mutes.end() || it->endId != kWatchSinceNow) return;
+    // gc has exited: its events all have this id or an earlier one.
+    it->endId = FSEventsGetCurrentEventId();
+    publishSnapshot(d);
+    // The first later event removes it (noteHits); with none, this does.
+    dispatch_after(dispatch_walltime(nullptr, static_cast<int64_t>(kMuteLingerSeconds * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+                       removeMute(muteId);
+                   });
 }
 
 void autoScanShutdown() {

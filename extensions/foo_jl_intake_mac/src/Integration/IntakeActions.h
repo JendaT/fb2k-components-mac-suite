@@ -233,14 +233,40 @@
 //  (doc 03: mutating calls are not killed before the 15-minute cap, the
 //  runner enforces it).
 //
+//  Auto-scan (B12, actionsStartAutoScan; IntakeAutoScanDriver decides when
+//  and which income): `scan <income> --json` (the income's absolute path
+//  instead of a name starting with '-') holds the lane as LaneHolder::Scan
+//  from its start to its exit, like a real mutating call (class Mutating:
+//  reported at 10 s, killed at the 15-minute cap). Meanwhile the menu's
+//  mutating items are disabled and read " (scan running)", and a click
+//  that cannot start logs "a background scan is running". Lines, all Info,
+//  never an Error line, sheet or alert (IntakeAutoScanResult): "auto-scan:
+//  scanning income <name> (new files|startup)" at the start; at 10 s
+//  "auto-scan: <name> still running (E_CLI_TIMEOUT: ...)", with no tooltip
+//  and no refresh (a scan has no roots); at the end "done in 12.3 s: N new
+//  root(s), K kept" (counts read leniently from data[].written and kept),
+//  "done ... with errors", "failed: <errors>" or "not started (...)". No
+//  per-root error is set. Every path that releases the lane (finish,
+//  refusal, E_NO_CLI, cap kill) ends the status bar entry and hands the
+//  exit to the driver; one that ran a process refreshes first. After
+//  on_quit the result only releases the lane.
+//
+//  gc mute (B12): every gc (Delete local copy…, confirmed or not, and the
+//  Execute follow-up's delete on its held token) goes through runMutation,
+//  which asks the driver to mute the roots' folders (autoScanMuteGc) right
+//  before it dispatches gc and ends the mute (autoScanUnmuteGc) when gc
+//  exits or is refused.
+//
 //  Status bar (B14, IntakeActivityHub): every mutating call, the execute dry
-//  run, each detached run (own or adopted), each swap and the Delete flow's
-//  sidecar reads is an entry from the moment it holds its lane token, run
-//  stem or serial until every path that lets go of it (result, refusal,
-//  timeout) calls activityEnd; the propose after an assign renames the
-//  assign's entry and its end folds in the assign's result; the dry run's
-//  entry outlives its 10 s report until its answer, at most 15 minutes.
-//  actionsShutdown clears them. The list of pairs is in IntakeActivityHub.h.
+//  run, each detached run (own or adopted), each swap, the Delete flow's
+//  sidecar reads and the auto-scan (B12: "Scanning income <name>…") is an
+//  entry from the moment it holds its lane token, run stem or serial until
+//  every path that lets go of it (result, refusal, timeout) calls
+//  activityEnd; the propose after an assign renames the assign's entry and
+//  its end folds in the assign's result; the dry run's entry outlives its
+//  10 s report until its answer, at most 15 minutes, and the scan's its 10 s
+//  report until its exit. actionsShutdown clears them. The list of pairs is
+//  in IntakeActivityHub.h.
 //
 //  Nothing here is modal for an error, and no error makes the provider
 //  inert.
@@ -257,6 +283,7 @@
 #include "../../../../shared/jl_decorator_api.h"
 
 #include "../Core/IntakeActionTable.h"
+#include "../Core/IntakeAutoScan.h"
 #include "../Core/IntakeRootErrors.h"
 
 #include <functional>
@@ -332,6 +359,20 @@ bool actionsLaneBusy();
 // the lane now: on_quit has not run, the leftover-run scan is done and no
 // call holds the lane.
 bool actionsLaneFree();
+
+// B12: how actionsStartAutoScan went.
+enum class AutoScanStart {
+    Started,   // the scan is on its way; `done` runs once, later
+    LaneTaken, // the lane is not free (see actionsLaneFree): nothing started
+    Refused,   // no CLI configuration (intake not running, no CLI path): nothing started, one Info line
+};
+
+// Main thread (B12, IntakeAutoScanDriver): `scan <income> --json` for
+// `job` on the mutation lane (see "Auto-scan" at the top of this file).
+// `done` runs once on the main thread with the exit, after the lane is
+// released (and the refresh asked for when the scan ran), never after
+// on_quit; it never runs when this returns anything but Started.
+AutoScanStart actionsStartAutoScan(const AutoScanJob &job, std::function<void(AutoScanExit how)> done);
 
 // Main thread (on_quit): later results are dropped; nothing is killed
 // (detached runs and their files stay for the next session).

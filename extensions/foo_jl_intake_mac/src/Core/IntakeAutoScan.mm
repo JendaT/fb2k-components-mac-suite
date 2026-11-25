@@ -245,6 +245,33 @@ AutoScanHits autoScanHits(const std::vector<AutoScanEvent> &events, const std::v
     return hits;
 }
 
+std::vector<std::string> autoScanMutePaths(const std::vector<std::string> &rootPaths,
+                                           const std::vector<AutoScanIncome> &incomes) {
+    std::vector<std::string> pathKeys;  // each income's `path` as a key ("" when it has none)
+    pathKeys.reserve(incomes.size());
+    for (const AutoScanIncome &income : incomes) pathKeys.push_back(keyFor(income.path));
+    std::vector<std::string> out;
+    for (const std::string &root : rootPaths) {
+        const std::string key = keyFor(root);
+        if (key.empty()) continue;
+        long best = -1;
+        for (size_t i = 0; i < incomes.size(); i++) {
+            if (incomes[i].fsKey.empty() || !isUnderIgnoringCase(key, pathKeys[i])) continue;
+            if (best < 0 || pathKeys[i].size() > pathKeys[static_cast<size_t>(best)].size()) {
+                best = static_cast<long>(i);
+            }
+        }
+        if (best < 0) continue;
+        const std::string &base = pathKeys[static_cast<size_t>(best)];
+        const std::string &fsKey = incomes[static_cast<size_t>(best)].fsKey;
+        // `base` "/" keeps the root's whole key (its '/' boundary is the first byte).
+        const std::string rest = base == "/" ? key : key.substr(base.size());
+        const std::string muted = fsKey == "/" ? (rest.empty() ? fsKey : rest) : fsKey + rest;
+        if (std::find(out.begin(), out.end(), muted) == out.end()) out.push_back(muted);
+    }
+    return out;
+}
+
 IncomeCheck classifyIncome(const std::string &path, const std::vector<MountEntry> &mounts, const LinkReader &readLink) {
     IncomeCheck out;
     const std::string clean = lexicalAbsolutePath(path);

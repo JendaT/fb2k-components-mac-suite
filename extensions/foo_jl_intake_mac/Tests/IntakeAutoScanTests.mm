@@ -12,7 +12,9 @@
 //  and with no path, Mount/Unmount and HistoryDone never counting, mutes
 //  by event id (below, at and after the start and end ids, an end not yet
 //  known, passed mutes), open and closed files, and one report per income
-//  per callback. The income entries from a WatchSet. Presence: local (also
+//  per callback. gc's mute paths (autoScanMutePaths: the income entries'
+//  physical spelling, the longest income, ASCII case, NFC, outside every
+//  income, repeats). The income entries from a WatchSet. Presence: local (also
 //  through a local symlink), on a mounted share (also at its mount point
 //  itself, or through a local symlink into it), missing (unmounted mount
 //  point, absent folder, no mount table), a loop, with a recording link
@@ -286,6 +288,54 @@ void testMutes() {
     CHECK(autoScanHits(late, {}, mutes).passedMutes == std::vector<uint64_t>({7}), "also with no incomes");
     CHECK(hitsOf({ev("/Users/x/Music/fixture-income", fsevent::kHistoryDone, 500)}, mutes).passedMutes.empty(),
           "a marker's id passes nothing");
+}
+
+void testMutePaths() {
+    g_context = "mute-paths";
+    const std::vector<AutoScanIncome> in = incomes();
+    using Paths = std::vector<std::string>;
+    CHECK(autoScanMutePaths({"/Users/x/Music/fixture-income/Placed Album"}, in) ==
+              Paths({"/Users/x/Music/fixture-income/Placed Album"}),
+          "a root in a local income: the same spelling");
+    CHECK(autoScanMutePaths({"/var/folders/x/intake/Placed Album"}, in) ==
+              Paths({"/private/var/folders/x/intake/Placed Album"}),
+          "configured under /var: rewritten to the physical /private/var spelling");
+    // An income inside another, each with its own spelling on disk.
+    const std::vector<AutoScanIncome> nested = {inc("local", "/var/x/intake", "/private/var/x/intake"),
+                                                inc("p2p", "/var/x/intake/p2p", "/Volumes/p2p/intake")};
+    CHECK(autoScanMutePaths({"/var/x/intake/p2p/Disc Set/CD1"}, nested) == Paths({"/Volumes/p2p/intake/Disc Set/CD1"}),
+          "the longest income holds it, and gives its spelling");
+    CHECK(autoScanMutePaths({"/var/x/intake/p2p/Album"}, {nested[1], nested[0]}) ==
+              Paths({"/Volumes/p2p/intake/Album"}),
+          "whatever the order");
+    CHECK(autoScanMutePaths({"/var/x/intake/p2p2/Album"}, nested) == Paths({"/private/var/x/intake/p2p2/Album"}),
+          "a sibling with the same prefix belongs to the outer one");
+    CHECK(autoScanMutePaths({"/USERS/x/music/fixture-income/Placed Album"}, in) ==
+              Paths({"/Users/x/Music/fixture-income/Placed Album"}),
+          "the income part takes the income's spelling, ASCII case ignored");
+    CHECK(autoScanMutePaths({"/Volumes/music/Pr\xCC\x8Ci\xCC\x81jem/Album"}, in) ==
+              Paths({"/Volumes/music/P\xC5\x99\xC3\xADjem/Album"}),
+          "an NFD root on a share: NFC, as the income's key");
+    CHECK(autoScanMutePaths({"/Users/x/Music/fixture-income/./Placed Album/"}, in) ==
+              Paths({"/Users/x/Music/fixture-income/Placed Album"}),
+          "lexically clean");
+    CHECK(autoScanMutePaths({"/Users/x/Music/other/Album", "relative/Album", ""}, in).empty(),
+          "outside every income, relative or empty: left out");
+    CHECK(autoScanMutePaths({"/Users/x/Music/fixture-income/A", "/Users/x/Music/fixture-income/A/", "/Users/x/Music/fixture-income/B"}, in) ==
+              Paths({"/Users/x/Music/fixture-income/A", "/Users/x/Music/fixture-income/B"}),
+          "repeats once, in order");
+    CHECK(autoScanMutePaths({"/Users/x/Music/fixture-income/A"}, {}).empty(), "no incomes: nothing");
+
+    // The rewritten paths mute the physical events between the ids.
+    AutoScanMute gc;
+    gc.id = 3;
+    gc.paths = autoScanMutePaths({"/var/folders/x/intake/Placed Album"}, in);
+    gc.startId = 100;
+    gc.endId = 200;
+    CHECK(hitsOf({ev("/private/var/folders/x/intake/Placed Album/01.flac", R | F, 150)}, {gc}).incomes.empty(),
+          "a gc rename reported under /private/var: muted");
+    CHECK(hitsOf({ev("/private/var/folders/x/intake/Other/01.flac", C | M | F, 150)}, {gc}).incomes == idx({3}),
+          "another folder of that income still counts");
 }
 
 void testOpenClose() {
@@ -870,6 +920,7 @@ int main(void) {
         testMatch();
         testRescan();
         testMutes();
+        testMutePaths();
         testOpenClose();
         testDedupe();
         testIncomeEntries();

@@ -15,6 +15,7 @@
 #include "IntakeActions.h"
 
 #include "IntakeActivityHub.h"
+#include "IntakeAutoScanDriver.h"
 #include "IntakeConfig.h"
 #include "IntakeDecoratorProvider.h"
 #include "IntakeNativePath.h"
@@ -24,6 +25,7 @@
 #include "../Core/IntakeActionTable.h"
 #include "../Core/IntakeActivity.h"
 #include "../Core/IntakeAssignPropose.h"
+#include "../Core/IntakeAutoScanResult.h"
 #include "../Core/IntakeCliRunner.h"
 #include "../Core/IntakeCollectionSearch.h"
 #include "../Core/IntakeCollections.h"
@@ -44,6 +46,7 @@
 #include <cstdio>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -431,6 +434,17 @@ struct ActionsState {
     // check icon.
     uint64_t assignToken = 0;
     ActivityResult assignResult;
+    // B12: the auto-scan holding the lane on autoScanToken (0: none), its
+    // income's name for the lines, and the driver's `done`, called once
+    // when its run ends (endAutoScanRun).
+    uint64_t autoScanToken = 0;
+    std::string autoScanIncome;
+    std::function<void(AutoScanExit)> autoScanDone;
+    // B12: the auto-scan mute (IntakeAutoScanDriver autoScanMuteGc) of the
+    // gc holding the lane on gcMuteToken (0: none); gc's exit or refusal
+    // ends it (endGcMute).
+    uint64_t gcMuteToken = 0;
+    uint64_t gcMute = 0;
     // The picker flow in progress (`collections` running or the sheet
     // open), or null: at most one (B7).
     std::shared_ptr<PickerFlow> picker;
@@ -612,6 +626,17 @@ void proposeAfterAssignOrEnd(uint64_t token, const std::vector<MutationRoot> &as
     });
 }
 
+// B12: the gc on `token` has exited or was refused: its auto-scan mute
+// ends. Any other token does nothing.
+void endGcMute(uint64_t token) {
+    ActionsState &st = actionsState();
+    if (token == 0 || token != st.gcMuteToken) return;
+    const uint64_t mute = st.gcMute;
+    st.gcMuteToken = 0;
+    st.gcMute = 0;
+    autoScanUnmuteGc(mute);
+}
+
 void onBudget(uint64_t token, CliCommand command, const std::vector<MutationRoot> &roots, CliBudgetEvent event) {
     ActionsState &st = actionsState();
     if (st.stopped) return;
@@ -641,6 +666,7 @@ void onBudget(uint64_t token, CliCommand command, const std::vector<MutationRoot
 void onFinished(uint64_t token, CliCommand command, const std::vector<MutationRoot> &roots, const CliResult &result,
                 LaneRun run = LaneRun::Single) {
     ActionsState &st = actionsState();
+    endGcMute(token);
     if (st.stopped) {
         // A run of two calls lets go of the lane here: no propose after quit.
         if (run != LaneRun::Single) st.lane.finish(token);
@@ -695,6 +721,7 @@ void onFinished(uint64_t token, CliCommand command, const std::vector<MutationRo
 
 void onRefused(uint64_t token, CliCommand command, const std::string &refusal, LaneRun run = LaneRun::Single) {
     ActionsState &st = actionsState();
+    endGcMute(token);
     st.lane.finish(token);
     const ActivityResult notStarted = activityNotStarted(refusal);
     activityEnd(activityLaneKey(token),
@@ -734,6 +761,103 @@ void startOnQueue(uint64_t token, std::shared_ptr<const CliConfig> config, std::
     if (!started) {
         dispatch_async(dispatch_get_main_queue(), ^{
             onRefused(token, command, refusal, run);
+        });
+    }
+}
+
+// --- auto-scan (B12, main unless noted) ---
+
+// Every path that lets go of the auto-scan's lane token: releases the lane,
+// ends its status-bar entry (`count`: the roots it wrote, for the result
+// text), asks for the refresh when a process ran (`refresh`), then hands
+// the exit to the driver (its scheduler's exit and next wakeup). After
+// on_quit only the lane is released.
+void endAutoScanRun(uint64_t token, const ActivityResult &activity, std::optional<size_t> count, AutoScanExit how,
+                    bool refresh) {
+    ActionsState &st = actionsState();
+    st.lane.finish(token);
+    if (token == 0 || token != st.autoScanToken) return;
+    std::function<void(AutoScanExit)> done = std::move(st.autoScanDone);
+    st.autoScanToken = 0;
+    st.autoScanIncome.clear();
+    st.autoScanDone = nullptr;
+    activityEnd(activityLaneKey(token), activity, count);
+    if (st.stopped) return;
+    if (refresh) serviceRefreshAfterCommand();
+    if (done) done(how);
+}
+
+// The scan on `token` finished and its line is out: the end of its lane
+// run. This is where PLAN-B12 scope addition 1 (the auto-propose, the next
+// step) hands the resolved roots the scan wrote (outcome.reply.written) to
+// `propose` on the same token, keeping the lane and the status-bar entry
+// until that propose ends; as it stands no propose follows and the run
+// ends with the scan.
+void proposeAfterScanOrEnd(uint64_t token, const AutoScanOutcome &outcome) {
+    endAutoScanRun(token, outcome.activity, outcome.newRoots, outcome.exit, true);
+}
+
+void onAutoScanBudget(uint64_t token) {
+    ActionsState &st = actionsState();
+    if (st.stopped || token == 0 || token != st.autoScanToken) return;
+    // doc 03 "Timeouts": E_CLI_TIMEOUT is reported and the scan goes on.
+    // No tooltip (a scan names no roots), no refresh, no Error line; its
+    // status-bar entry stays until it exits.
+    logInfo(autoScanBudgetLine(st.autoScanIncome));
+}
+
+void onAutoScanFinished(uint64_t token, const CliResult &result) {
+    ActionsState &st = actionsState();
+    if (st.stopped || token == 0 || token != st.autoScanToken) {
+        // After on_quit the result is dropped (the lane is still released).
+        endAutoScanRun(token, ActivityResult(), std::nullopt, AutoScanExit::Finished, false);
+        return;
+    }
+    logCliResult(result);
+    const AutoScanOutcome outcome = autoScanOutcome(st.autoScanIncome, result);
+    logInfo(outcome.line);
+    if (outcome.exit != AutoScanExit::Finished) {
+        // E_NO_CLI or the cap kill: nothing to propose.
+        endAutoScanRun(token, outcome.activity, outcome.newRoots, outcome.exit, true);
+        return;
+    }
+    proposeAfterScanOrEnd(token, outcome);
+}
+
+// startCliCommand refused the request (nothing ran: no refresh).
+void onAutoScanRefused(uint64_t token, const std::string &refusal) {
+    ActionsState &st = actionsState();
+    if (!st.stopped && token != 0 && token == st.autoScanToken) {
+        logInfo("auto-scan: " + st.autoScanIncome + " not started (" + refusal + ")");
+    }
+    endAutoScanRun(token, activityNotStarted(refusal), std::nullopt, AutoScanExit::Refused, false);
+}
+
+// Queue: starts the scan like startOnQueue, with the auto-scan's own budget
+// handler and completion.
+void startAutoScanOnQueue(uint64_t token, std::shared_ptr<const CliConfig> config,
+                          std::shared_ptr<const CliRequest> request) {
+    ActionsState &st = actionsState();
+    CliRunOptions options;
+    options.outputDirectory = st.outputDirectory;
+    std::string refusal;
+    const bool started = startCliCommand(
+        st.runner, *config, *request, options, st.queue,
+        [token](CliBudgetEvent) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                onAutoScanBudget(token);
+            });
+        },
+        [token](CliResult &&result) {
+            auto shared = std::make_shared<CliResult>(std::move(result));
+            dispatch_async(dispatch_get_main_queue(), ^{
+                onAutoScanFinished(token, *shared);
+            });
+        },
+        &refusal);
+    if (!started) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            onAutoScanRefused(token, refusal);
         });
     }
 }
@@ -798,6 +922,19 @@ std::string runMutation(const ActionEntry &entry, const std::string &reason, uin
     ActivityKind kind = ActivityKind::Propose;
     if (activityKindFor(request.command, request.dryRun, kind)) {
         activityBegin(activityLaneKey(token), kind, request.ids.size(), firstLabel);
+    }
+    if (gc) {
+        // B12: gc's renames in income folders are no arrivals for the
+        // auto-scan: muted from before it is dispatched until it exits or
+        // is refused (onFinished, onRefused). The Execute follow-up's gc
+        // (heldToken) comes through here too.
+        std::vector<std::string> rootPaths;
+        for (const MutationRoot &r : *roots) rootPaths.push_back(r.rootPath);
+        const uint64_t mute = autoScanMuteGc(rootPaths);
+        if (mute != 0) {
+            st.gcMuteToken = token;
+            st.gcMute = mute;
+        }
     }
     auto sharedConfig = std::make_shared<const CliConfig>(std::move(config));
     auto sharedRequest = std::make_shared<const CliRequest>(request);
@@ -2506,6 +2643,36 @@ bool actionsLaneBusy() {
 bool actionsLaneFree() {
     const ActionsState &st = actionsState();
     return !st.stopped && st.runScanDone && !st.lane.busy();
+}
+
+AutoScanStart actionsStartAutoScan(const AutoScanJob &job, std::function<void(AutoScanExit how)> done) {
+    ActionsState &st = actionsState();
+    if (!actionsLaneFree()) return AutoScanStart::LaneTaken;
+    const std::string &name = job.income.name;
+    CliConfig config;
+    if (!serviceMutationConfig(config)) {
+        logInfo("auto-scan: " + name + " not started: intake is not running or has no CLI path");
+        return AutoScanStart::Refused;
+    }
+    CliRequest request;
+    request.command = CliCommand::Scan;
+    request.income = name;
+    request.incomePath = job.income.path;  // sent instead of a name starting with '-'
+    const uint64_t token = st.lane.acquire(LaneHolder::Scan);
+    if (token == 0) return AutoScanStart::LaneTaken;
+    st.autoScanToken = token;
+    st.autoScanIncome = name;
+    st.autoScanDone = std::move(done);
+    logInfo(autoScanStartLine(name, job.startup));
+    // B14: from here to every path that releases the lane (endAutoScanRun).
+    // The count stays 0: the result's count is the roots the scan wrote.
+    activityBegin(activityLaneKey(token), ActivityKind::Scan, 0, name);
+    auto sharedConfig = std::make_shared<const CliConfig>(std::move(config));
+    auto sharedRequest = std::make_shared<const CliRequest>(std::move(request));
+    dispatch_async(st.queue, ^{
+        startAutoScanOnQueue(token, sharedConfig, sharedRequest);
+    });
+    return AutoScanStart::Started;
 }
 
 // The menu's table for `sel` (main thread): each row by its income path,
