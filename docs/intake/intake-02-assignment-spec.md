@@ -100,7 +100,9 @@ From `genre-map.yaml`: P(folder|artist) = release-count distribution of the
 artist across collections. Matching is normalized: casefold, strip diacritics,
 `&`↔`and`, articles. Collab handling: try full string first (exceptions list
 covers names containing separators); else split on `&, feat., ft., vs., x,
-meets, with` — each known member votes with its own prior, averaged.
+meets, with` (spaces around them) and on a comma followed by a space ("A, B";
+"10,000 Maniacs" never splits) — each known member votes with its own prior,
+averaged.
 Alias expansion: on first miss, fetch Discogs artist aliases/ANVs + groups
 once, cache into `genre-map.yaml` under `aliases:`.
 

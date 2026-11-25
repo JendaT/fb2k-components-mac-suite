@@ -53,7 +53,9 @@ export interface AssignOutcome {
   short_circuited: boolean;
 }
 
-const SEPARATOR_RE = /\s+(?:&|,|feat\.?|ft\.?|vs\.?|x|meets|with)\s+/i;
+// Collab separators (doc 02 Tier 1). A comma is written "A, B": no space before
+// it, one after. A comma without a space after ("10,000 Maniacs") never splits.
+const SEPARATOR_RE = /\s*,\s+|\s+(?:&|feat\.?|ft\.?|vs\.?|x|meets|with)\s+/i;
 
 function mergedArtistCounts(genre: GenreMap, key: string): FolderCounts {
   const out: FolderCounts = { ...(genre.artists[key] ?? {}) };
