@@ -55,6 +55,16 @@ test("artist prior: direct, alias map, collab split, exceptions", async () => {
   expect(collab?.dist[PCP]).toBe(1);
   expect(collab?.releases).toBe(8);
 
+  // A comma collab as tags write it ("A, B": no space before the comma) splits
+  // the same way, also next to another separator.
+  const comma = await artistPrior("Aes Dana, Miktek", g, null, learned);
+  expect(comma?.dist[PCP]).toBe(1);
+  expect(comma?.releases).toBe(8);
+  const mixed = await artistPrior("Aes Dana, Nobody Known & Miktek", g, null, learned);
+  expect(mixed?.releases).toBe(8);
+  // A comma without a space after it is part of a name ("10,000 Maniacs").
+  expect(await artistPrior("Aes Dana,Miktek", g, null, learned)).toBeNull();
+
   // Exception: full name with separator, unknown -> never split into members.
   g.exceptions.push("Cell & Vampillia");
   const exception = await artistPrior("Cell & Vampillia", g, null, learned);

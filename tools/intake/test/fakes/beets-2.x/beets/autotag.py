@@ -1,4 +1,5 @@
 import os
+import socket
 from collections import namedtuple
 from typing import NamedTuple
 
@@ -58,11 +59,17 @@ def _is_items(items):
     return isinstance(items, list) and all(isinstance(i, Item) for i in items)
 
 
+def _report_timeout():
+    # The shim's stdout goes to stderr while beets runs.
+    print("stub beets: socket timeout %r" % socket.getdefaulttimeout())
+
+
 if os.environ.get("STUB_BEETS_API") == "2.4":
 
     def tag_album(items, search_artist=None, search_album=None, search_ids=[]):
         if not _is_items(items):
             raise TypeError("beets 2.4-2.13 tag_album takes the item list")
+        _report_timeout()
         return "Stub Artist", "Stub Album", Proposal(_candidates(items), 0)
 
 else:
@@ -78,4 +85,5 @@ else:
         if not (isinstance(source, Source) and _is_items(source.items)):
             # What beets 2.14 does when handed the item list.
             raise AttributeError("'%s' object has no attribute 'desc'" % type(source).__name__)
+        _report_timeout()
         return Proposal(_candidates(source.items), 0)

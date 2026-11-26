@@ -39,11 +39,13 @@ import contextlib
 import inspect
 import json
 import os
+import socket
 import sys
 
 AUDIO_EXTS = {".flac", ".mp3", ".wav", ".aiff", ".aif", ".m4a", ".ogg", ".ape", ".wv", ".dsf", ".dff"}
 SOURCES = {"musicbrainz": "mb", "discogs": "discogs"}
 MAX_CANDIDATES = 5
+SOCKET_TIMEOUT_S = 30  # socket.setdefaulttimeout, in seconds (see main)
 USAGE = "usage: beets_identify.py <release_dir> <file>... --json"
 
 _STDOUT = sys.stdout
@@ -137,6 +139,13 @@ def main():
     files = [f for f in files if is_audio(f)]
     if not files:
         fail(2, "no_audio_files")
+
+    # Neither musicbrainzngs (beets 1.6's MusicBrainz client) nor beets sets a
+    # socket timeout, so a stalled connection blocked the shim forever. With a
+    # default one a stalled read raises socket.timeout, which musicbrainzngs
+    # retries like other transient errors. Set before beets is imported. The
+    # CLI also limits the whole run (structure.yaml assign.shim_timeout_s).
+    socket.setdefaulttimeout(SOCKET_TIMEOUT_S)
 
     # Keep stdout pure JSON (beets and plugins may print), and make any
     # interactive prompt (e.g. discogs OAuth without a token) fail instead of

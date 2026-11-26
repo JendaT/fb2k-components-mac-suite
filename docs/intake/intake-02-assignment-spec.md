@@ -100,7 +100,9 @@ From `genre-map.yaml`: P(folder|artist) = release-count distribution of the
 artist across collections. Matching is normalized: casefold, strip diacritics,
 `&`↔`and`, articles. Collab handling: try full string first (exceptions list
 covers names containing separators); else split on `&, feat., ft., vs., x,
-meets, with` — each known member votes with its own prior, averaged.
+meets, with` (spaces around them) and on a comma followed by a space ("A, B";
+"10,000 Maniacs" never splits) — each known member votes with its own prior,
+averaged.
 Alias expansion: on first miss, fetch Discogs artist aliases/ANVs + groups
 once, cache into `genre-map.yaml` under `aliases:`.
 
@@ -280,7 +282,8 @@ Decisions made during implementation; normative for schema v1 consumers.
   artist, album, year, label, catno, styles[], genres[], distance, grammar,
   candidates, identified_at, issues? }`. `issues` (optional, present only
   when non-empty) names each evidence source that failed, e.g.
-  `shim_unavailable`, `beets_unavailable` (the beets shim's error text) or
+  `shim_unavailable`, `beets_unavailable` (the beets shim's error text),
+  `shim_timeout` (the shim ran past `assign.shim_timeout_s`) or
   `discogs_unreachable`, so `unconfirmed` is not read as checked and not
   found. `status` ∈ `fast_path` (Discogs-confirmed) |
   `shim` (beets candidate accepted, distance ≤ threshold) | `unconfirmed`
@@ -338,7 +341,12 @@ Decisions made during implementation; normative for schema v1 consumers.
 - **Config** (`structure.yaml`): `assign.weights{artist,label,similar,style}`,
   `assign.short_circuit{min_releases,confidence}`,
   `assign.needs_review{confidence,margin}`, `assign.shim_accept_distance`,
-  `naming.release`/`naming.release_no_label` templates, `tiers.*` as specced.
+  `assign.shim_timeout_s` (time limit on one beets shim run, in seconds,
+  default 180; anything but a number above 0 is `E_BAD_RULES`; a root whose
+  run passes it is identified without the shim, `needs_review` and issue
+  `shim_timeout`), `naming.release`/`naming.release_no_label` templates,
+  `tiers.*` as specced. The shim's command, time limit and process handling
+  are documented in `tools/intake/README.md`, "beets hard path".
 - **Providers**: Discogs via `DISCOGS_TOKEN`, Last.fm via `LASTFM_API_KEY`
   (similar-artist cache in `INTAKE_CACHE_DIR`, default `~/.cache/intake`,
   TTL 90 d), shim command override via `INTAKE_BEETS_SHIM`. Without

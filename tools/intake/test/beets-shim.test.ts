@@ -172,6 +172,16 @@ test("interactive plugin prompt gets EOF instead of blocking on an open stdin", 
   expect(doc.candidates).toHaveLength(5);
 });
 
+// Neither musicbrainzngs nor beets sets a socket timeout: without the
+// shim's default, a stalled MusicBrainz connection blocked it forever.
+for (const [stub, api] of [["beets-1.6", null], ["beets-2.x", "2.4"], ["beets-2.x", null]] as const) {
+  test(`${stub}${api ? ` (${api} shape)` : ""}: beets runs with a 30 s default socket timeout`, () => {
+    const { code, stderr } = runShim([release, ...FILES, "--json"], stub, api ? { STUB_BEETS_API: api } : {});
+    expect(code).toBe(0);
+    expect(stderr).toContain("stub beets: socket timeout 30.0"); // reported by the stub's tag_album
+  });
+}
+
 test("beets missing: exit 3, beets_unavailable", () => {
   const { code, doc } = runShim([release, ...FILES, "--json"], null);
   expect(code).toBe(3);
