@@ -26,6 +26,14 @@
 //  from a successful load is dropped too (the store stays bounded by the
 //  roots that exist).
 //
+//  Timeout errors (setTimeout): an error that came from E_CLI_TIMEOUT (a
+//  call's 10 s report, or a call killed at the hard cap) says nothing about
+//  the root itself. It follows every rule above, and Refresh drops it too
+//  (clearTimeouts, before its reload). Integration marks it by the call's
+//  outcome, never by its text. An ordinary error set for the root
+//  afterwards replaces it, mark included, and a timeout error replaces an
+//  ordinary one (the newer one wins, as above).
+//
 //  Loads already running: apply() takes the time the load's `status` call
 //  started. An error set at or after that time may be newer than what the
 //  call read (a run that ended while an FSEvents reload was in flight), so
@@ -57,11 +65,20 @@ public:
 
     // A new error for `id` (an empty text clears instead), kept while the
     // root stays in `baseline` (see above; Unknown: the first load's). `at`
-    // is when it was set (tests pass their own).
+    // is when it was set (tests pass their own). It replaces the root's
+    // error, a timeout one included.
     void set(const std::string &id, std::string text, IntakeStatus baseline = IntakeStatus::Unknown,
              Clock::time_point at = Clock::now());
+    // As set, for an error that came from E_CLI_TIMEOUT (see above):
+    // clearTimeouts drops it too. It replaces the root's error, an
+    // ordinary one included.
+    void setTimeout(const std::string &id, std::string text, IntakeStatus baseline = IntakeStatus::Unknown,
+                    Clock::time_point at = Clock::now());
     void clear(const std::string &id);
     void clearAll();
+    // Drops the timeout errors only (set with setTimeout and not replaced
+    // since); returns how many.
+    size_t clearTimeouts();
 
     // The loader's annotator: every record gets its root's error in
     // lastError (or an empty one), and errors whose root changed status
@@ -73,6 +90,7 @@ public:
     // For tests and logs.
     size_t size() const;
     std::string errorFor(const std::string &id) const;
+    bool isTimeout(const std::string &id) const;
 
 private:
     struct Entry {
@@ -80,7 +98,9 @@ private:
         bool hasBaseline = false;
         IntakeStatus baseline = IntakeStatus::Unknown;
         Clock::time_point setAt;
+        bool timeout = false;  // from E_CLI_TIMEOUT (setTimeout)
     };
+    void put(const std::string &id, std::string text, IntakeStatus baseline, Clock::time_point at, bool timeout);
     mutable std::mutex mutex_;
     std::unordered_map<std::string, Entry> entries_;
 };

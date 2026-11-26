@@ -5,7 +5,10 @@
 //  Unit tests for IntakeMutationResult (which root an error belongs to,
 //  path-less errors that name an id included, the tooltip text, the console
 //  line) and IntakeRootErrors (the lastError lifecycle: shown until the
-//  root's status changes from the one the menu showed). Synthetic envelopes,
+//  root's status changes from the one the menu showed; timeout errors, which
+//  Refresh also clears: clearTimeouts, ordinary and timeout errors replacing
+//  each other, a hard-cap kill's errors as Integration stores them).
+//  Synthetic envelopes,
 //  plus real replies of Tests/mock-cli/intake-mock (a fresh state directory
 //  under the test's temp root): a partial approve with E_BAD_STATUS, and a
 //  propose on two virtual roots sharing one folder. B9: gc results (done,
@@ -311,6 +314,116 @@ static void testErrorStoreInFlight() {
     std::vector<IntakeRecord> other = {record("itk_00000013", IntakeStatus::Placing)};
     same.apply(other, t1);
     CHECK(same.size() == 1, "an error set at the call's start is not judged by it");
+}
+
+// Timeout errors (E_CLI_TIMEOUT: a 10 s report, a hard-cap kill): the same
+// lifecycle, and Refresh drops them (clearTimeouts) while real per-root
+// errors stay.
+static void testErrorStoreTimeouts() {
+    g_context = "error-store-timeouts";
+    // onBudget's text: the command's name first, never the code.
+    const std::string tenSeconds = "propose: Intake CLI timed out: still running after 10 s; it is not stopped, "
+                                   "and intake refreshes when it exits";
+    RootErrorStore store;
+    store.set("itk_00000020", "propose: No target collection", IntakeStatus::Resolved);
+    store.setTimeout("itk_00000021", tenSeconds, IntakeStatus::Resolved);
+    store.setTimeout("itk_00000022", tenSeconds, IntakeStatus::Resolved);
+    CHECK(store.size() == 3 && store.errorFor("itk_00000021") == tenSeconds, "a timeout error is set like any");
+    CHECK(!store.isTimeout("itk_00000020") && store.isTimeout("itk_00000021"), "only setTimeout marks it");
+    std::vector<IntakeRecord> load = {record("itk_00000020", IntakeStatus::Resolved),
+                                      record("itk_00000021", IntakeStatus::Resolved),
+                                      record("itk_00000022", IntakeStatus::Resolved)};
+    store.apply(load);
+    CHECK(load[1].lastError == tenSeconds && load[2].lastError == tenSeconds, "shown in the rows like any error");
+
+    CHECK_EQ(store.clearTimeouts(), 2, "clearTimeouts drops the timeout errors and counts them");
+    CHECK(store.size() == 1 && store.errorFor("itk_00000020") == "propose: No target collection",
+          "a real per-root error stays");
+    std::vector<IntakeRecord> after = {record("itk_00000020", IntakeStatus::Resolved),
+                                       record("itk_00000021", IntakeStatus::Resolved),
+                                       record("itk_00000022", IntakeStatus::Resolved)};
+    store.apply(after);
+    CHECK(!after[0].lastError.empty() && after[1].lastError.empty() && after[2].lastError.empty(),
+          "the reload after it shows only the real error");
+    CHECK_EQ(store.clearTimeouts(), 0, "nothing left to clear");
+
+    g_context = "error-store-timeouts/replace";
+    // An ordinary error replaces a timeout one, mark included...
+    RootErrorStore replace;
+    replace.setTimeout("itk_00000023", tenSeconds, IntakeStatus::Resolved);
+    replace.set("itk_00000023", "propose: No target collection", IntakeStatus::Resolved);
+    CHECK(!replace.isTimeout("itk_00000023") && replace.errorFor("itk_00000023") == "propose: No target collection",
+          "ordinary replaces timeout");
+    CHECK(replace.clearTimeouts() == 0 && replace.size() == 1, "and Refresh keeps it");
+    // ...and a timeout error replaces an ordinary one (the newer wins).
+    replace.setTimeout("itk_00000023", tenSeconds, IntakeStatus::Resolved);
+    CHECK(replace.isTimeout("itk_00000023") && replace.errorFor("itk_00000023") == tenSeconds,
+          "timeout replaces ordinary");
+    CHECK(replace.clearTimeouts() == 1 && replace.size() == 0, "and Refresh drops it");
+    // The call ends after its 10 s report (onFinished): its roots' errors
+    // are cleared, then its result sets ordinary ones.
+    replace.setTimeout("itk_00000024", tenSeconds, IntakeStatus::Resolved);
+    replace.clear("itk_00000024");
+    replace.set("itk_00000024", "propose: No target collection", IntakeStatus::Resolved);
+    CHECK(!replace.isTimeout("itk_00000024") && replace.clearTimeouts() == 0, "the result's error is no timeout");
+    replace.setTimeout("itk_00000025", "", IntakeStatus::Resolved);
+    CHECK(replace.size() == 1 && replace.errorFor("itk_00000025").empty(), "an empty timeout text clears too");
+    replace.setTimeout("itk_00000026", tenSeconds);
+    replace.clearAll();
+    CHECK(replace.size() == 0 && replace.clearTimeouts() == 0, "clearAll drops timeout errors too");
+
+    g_context = "error-store-timeouts/apply";
+    // apply() keeps its rules for a timeout error: dropped when the status
+    // changes from the baseline, kept while it stays.
+    RootErrorStore lifecycle;
+    lifecycle.setTimeout("itk_00000027", tenSeconds, IntakeStatus::Resolved);
+    lifecycle.setTimeout("itk_00000028", tenSeconds);  // no baseline: the first load's
+    std::vector<IntakeRecord> same = {record("itk_00000027", IntakeStatus::Resolved),
+                                      record("itk_00000028", IntakeStatus::Proposed)};
+    lifecycle.apply(same);
+    lifecycle.apply(same);
+    CHECK(same[0].lastError == tenSeconds && same[1].lastError == tenSeconds && lifecycle.size() == 2,
+          "kept while the status stays");
+    std::vector<IntakeRecord> moved = {record("itk_00000027", IntakeStatus::Proposed),
+                                       record("itk_00000028", IntakeStatus::Proposed)};
+    lifecycle.apply(moved);
+    CHECK(moved[0].lastError.empty() && !moved[1].lastError.empty() && lifecycle.size() == 1,
+          "dropped when the status changes");
+    CHECK(lifecycle.isTimeout("itk_00000028"), "a baseline taken from a load keeps the mark");
+    std::vector<IntakeRecord> gone = {record("itk_0000000b", IntakeStatus::Resolved)};
+    lifecycle.apply(gone);
+    CHECK(lifecycle.size() == 0, "a root missing from a load is dropped");
+    using Clock = RootErrorStore::Clock;
+    const Clock::time_point t0 = Clock::now();
+    lifecycle.setTimeout("itk_00000029", tenSeconds, IntakeStatus::Resolved, t0 + std::chrono::milliseconds(10));
+    std::vector<IntakeRecord> older = {record("itk_00000029", IntakeStatus::Proposed)};
+    lifecycle.apply(older, t0);
+    CHECK(older[0].lastError == tenSeconds && lifecycle.size() == 1, "an older read decides nothing about it");
+
+    g_context = "error-store-timeouts/hard-cap";
+    // A propose killed at the hard cap, as Integration stores it: outcome
+    // Timeout gives every root the host's E_CLI_TIMEOUT, stored with
+    // setTimeout; E_NO_CLI stays an ordinary error.
+    const std::vector<MutationRoot> two = {root("itk_0000002a", kDump + "A", IntakeStatus::Resolved),
+                                           root("itk_0000002b", kDump + "B", IntakeStatus::Resolved)};
+    const EnvelopeResult capped = hostTimeout("still running at the hard cap; terminated");
+    const MutationOutcome o = summarizeMutation(CliCommand::Propose, two, capped);
+    CHECK(capped.outcome == CliOutcome::Timeout && o.rootErrors.size() == 2 && o.succeeded.empty(),
+          "a hard-cap kill names every root");
+    bool allTimeout = true;
+    for (const auto &e : o.rootErrors) allTimeout = allTimeout && contains(e.second, "timed out");
+    CHECK(allTimeout, "each with the host's timeout error");
+    RootErrorStore hardCap;
+    for (const auto &e : o.rootErrors) {
+        if (capped.outcome == CliOutcome::Timeout) {
+            hardCap.setTimeout(e.first, e.second, IntakeStatus::Resolved);
+        } else {
+            hardCap.set(e.first, e.second, IntakeStatus::Resolved);
+        }
+    }
+    hardCap.set("itk_0000002c", "propose: Intake CLI not available: exit code 127", IntakeStatus::Resolved);
+    CHECK(hardCap.clearTimeouts() == 2 && hardCap.size() == 1 && !hardCap.errorFor("itk_0000002c").empty(),
+          "Refresh clears the hard cap's tooltips, not E_NO_CLI's");
 }
 
 static void testPathlessIds() {
@@ -665,6 +778,7 @@ int main() {
         testHostAndNfd();
         testErrorStore();
         testErrorStoreInFlight();
+        testErrorStoreTimeouts();
         testPathlessIds();
         testTargetPaths();
         testBaseline();

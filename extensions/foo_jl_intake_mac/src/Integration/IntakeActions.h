@@ -29,7 +29,12 @@
 //  execute_context_action returns). An entry that is disabled or has no
 //  qualifying root runs nothing.
 //   - Refresh intake status: serviceReload(true) (the slow-volume reset
-//     and a `version` recheck included).
+//     and a `version` recheck included). First the tooltips that came from
+//     E_CLI_TIMEOUT (a 10 s report, a call killed at the hard cap) are
+//     cleared (RootErrorStore::clearTimeouts; one Info line "refresh:
+//     cleared N timeout tooltips" when any were), so that reload drops
+//     them from the rows; per-root CLI errors stay until the status
+//     changes. The preferences' Reload now does not clear them.
 //   - Propose, Approve: run at once. B12: a Propose of more than
 //     kProposeChunkSize (4) roots runs as the chunked propose (below)
 //     instead of one call: it starts the chain, or joins the one running.
@@ -232,7 +237,10 @@
 //  call still running at its 10 s report gets E_CLI_TIMEOUT (doc 03
 //  "Timeouts"): one Error line, the error on each of its roots and a
 //  refresh to show it; it keeps running, and its result replaces those
-//  errors. A dry run's 10 s report releases the lane and its late result
+//  errors. A call killed at the hard cap (envelope outcome Timeout) leaves
+//  E_CLI_TIMEOUT on every root. Both are timeout errors
+//  (RootErrorStore::setTimeout, chosen by the outcome, never the text):
+//  Refresh clears them too. A dry run's 10 s report releases the lane and its late result
 //  is dropped (the execute dry run, B8). After on_quit (actionsShutdown)
 //  results are dropped: no refresh, no UI; the processes keep running
 //  (doc 03: mutating calls are not killed before the 15-minute cap, the
@@ -295,7 +303,8 @@
 //  continues)" (no tooltip, no refresh), its result line with "(chunk 2 of
 //  13)", and at the end "propose: done for 46 of 49 roots in 13 chunks;
 //  failed: <ids>". Per-root errors become tooltips as for any propose
-//  (baseline resolved). The chain stops (one Info line "propose: stopped
+//  (baseline resolved; a chunk killed at the hard cap leaves timeout
+//  errors, which Refresh clears). The chain stops (one Info line "propose: stopped
 //  after chunk k of n (<reason>); done for 34 of 40 roots; failed: <ids>;
 //  M roots not proposed: <ids>", or "stopped before the first chunk") when
 //  a chunk was killed at the hard cap, on E_NO_CLI, when a chunk is

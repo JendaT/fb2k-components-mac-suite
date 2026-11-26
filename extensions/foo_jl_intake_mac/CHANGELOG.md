@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Automatic scan**: New files in an income folder are scanned (`intake scan <income>`) 60 s after they stop arriving, one scan at a time; income folders on this Mac are also scanned once at startup; errors go to the console only.
 - **Propose after scan**: Releases an automatic scan writes as resolved are proposed in the same run, also those that need review, followed by one reload.
 - **Propose in chunks**: A propose of more than 4 releases (menu, after Assign, after a scan) runs 4 at a time, so a batch killed at the 15-minute cap loses only those 4; the status bar counts n/m.
+- **Timeout tooltips**: Refresh clears tooltips left by a timeout or the 15-minute cap; real per-root errors stay until the status changes.
 - **Income folder guard**: A release root that is an income folder itself (loose files at its top level) is ignored, so stray rows under the folder are not tinted or acted on.
 - **Network shares**: `mac-volume://` rows match, also when a share is mounted twice; a stalled volume is skipped instead of blocking; rows with decomposed (accented) names away from every release skip Unicode normalisation.
 - **Share links**: Rows kept under a local symlink to the music share (`file://<link>/...`, the plorg shadow link) match the share's releases; the link is read without touching the share.

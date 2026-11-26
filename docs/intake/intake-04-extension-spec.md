@@ -341,7 +341,8 @@ resolved or proposed and is sticky until `approve`.
   4. With a proposal: `Assigned by you` (`assigned_by` user), `Assigned by
      the engine (confidence 0.91)`, or `Confidence 0.91` when `assigned_by`
      is absent.
-  5. The root's last per-command error, kept until its status changes.
+  5. The root's last per-command error, kept until its status changes (an
+     `E_CLI_TIMEOUT` one also until Refresh, see Failure behavior).
 
   A root whose status renders nothing (placed unverified, gc_done,
   unknown) gets only its last error as a tooltip-only visual, if it has
@@ -999,7 +1000,12 @@ configStore (`foo_jl_intake.`), cached; never read on the decorate path.
   of the CLI path, bun path or rules folder, an FSEvents batch or a mount
   (other preference changes load nothing, see Reload).
 - **Everything else is per command:** console line + per-root tooltip; never
-  modal, never inert. A failed refresh keeps the last data. The automatic
+  modal, never inert. A per-root tooltip stays until the root's status
+  changes. One from `E_CLI_TIMEOUT` (a mutating call's 10 s report, or a
+  call terminated at the 15-minute cap) says nothing about the root, so
+  Refresh also clears it (the menu item; the page's Reload now does not),
+  with one Info line `refresh: cleared N timeout tooltips`. A failed
+  refresh keeps the last data. The automatic
   scan names no roots, so its errors are an Info line and its status bar
   result only (the propose after it sets tooltips as usual).
 - **Timeouts** (doc 03 v1.2), classified by command whatever its flags:
@@ -1019,7 +1025,8 @@ configStore (`foo_jl_intake.`), cached; never read on the decorate path.
   chunk k of n still running (E_CLI_TIMEOUT: no reply after 10 s; the
   chunk continues)`, with no tooltip and no reload;
   the lane stays held until the chunk exits. A chunk terminated at the cap
-  sets the timeout tooltip on its own roots only and stops the chain.
+  sets the timeout tooltip on its own roots only (Refresh clears it) and
+  stops the chain.
 - An inert provider still triggers SimPlaylist's 16 pt gutter (provider
   presence enables it, see Part A); accepted.
 

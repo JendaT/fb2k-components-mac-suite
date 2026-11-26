@@ -84,7 +84,9 @@ Rows are matched to intake releases (roots) by their file path.
   (confidence 0.91)`). The CLI reports only that a release needs review,
   not why.
 - A failed command adds its error to the release's tooltip until the
-  release's status changes.
+  release's status changes. An error from a timeout (a command still
+  running after 10 seconds, or stopped at the 15-minute limit) says
+  nothing about the release, so Refresh intake status also clears it.
 - While intake is inactive (the CLI cannot run, or it reports an
   unsupported schema), rows of the last known releases show a tooltip
   naming the reason.
@@ -162,7 +164,7 @@ qualify. "(2 of 3)" in a title means it runs on only some of them.
 | Resume placement | `execute --resume` in the background | placing, when no run is going on it |
 | Swap to library paths | no CLI call: points the playlist rows at the library copies | placed and verified |
 | Delete local copy… | `gc` | placed and verified |
-| Refresh intake status | a full reload | always |
+| Refresh intake status | a full reload; clears timeout errors from the tooltips | always |
 
 - An ellipsis means a dialog comes first. Reject and Delete local copy
   lose it when their confirmation is turned off.

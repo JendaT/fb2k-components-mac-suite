@@ -397,6 +397,23 @@ ActivityResult activityNotStarted(const std::string &why) {
     return r;
 }
 
+// A failed root's tooltip (baseline: see IntakeRootErrors.h), with its
+// Debug line. `timedOut`: the call's envelope outcome is Timeout (a
+// mutating call is killed only at the hard cap, and summarizeMutation then
+// gives every failed root the host-synthesized E_CLI_TIMEOUT). Such a
+// tooltip says nothing about the root itself, so Refresh clears it too
+// (RootErrorStore::setTimeout). Decided by the outcome, never by the text.
+void setRootTooltip(const std::string &id, const std::string &text, IntakeStatus baseline, bool timedOut) {
+    RootErrorStore &errors = actionsErrorStore();
+    if (timedOut) {
+        errors.setTimeout(id, text, baseline);
+        logDebug("tooltip " + id + " until its status changes or Refresh: " + text);
+        return;
+    }
+    errors.set(id, text, baseline);
+    logDebug("tooltip " + id + " until its status changes: " + text);
+}
+
 struct PickerFlow;
 struct ExecuteFlow;
 struct DeleteFlow;
@@ -720,14 +737,16 @@ void onBudget(uint64_t token, CliCommand command, const std::vector<MutationRoot
     } else if (event == CliBudgetEvent::Timeout) {
         // doc 03 v1.2 "Timeouts": report E_CLI_TIMEOUT, keep it running.
         // Per command (doc 04 "Failure behavior"): a console line and a
-        // tooltip on each of its roots until it exits; the refresh shows
-        // the tooltips (status as of now, the call's writes so far).
+        // tooltip on each of its roots until it exits (or a Refresh: it
+        // says nothing about the root, so it is a timeout error); the
+        // refresh shows the tooltips (status as of now, the call's writes
+        // so far).
         CliError timeout;
         timeout.code = "E_CLI_TIMEOUT";
         timeout.msg = "still running after 10 s; it is not stopped, and intake refreshes when it exits";
         const std::string text = name + ": " + renderError(timeout);
         RootErrorStore &errors = actionsErrorStore();
-        for (const MutationRoot &r : roots) errors.set(r.id, text, r.status);
+        for (const MutationRoot &r : roots) errors.setTimeout(r.id, text, r.status);
         st.timeoutReported = token;
         logError(text + " (" + rootCountText(roots.size()) + ")");
         serviceRefreshAfterCommand();
@@ -773,20 +792,24 @@ void onFinished(uint64_t token, CliCommand command, const std::vector<MutationRo
     RootErrorStore &errors = actionsErrorStore();
     if (st.timeoutReported == token) {
         // The 10 s report's E_CLI_TIMEOUT (which replaced any older error
-        // of these roots) gives way to the result.
+        // of these roots; a Refresh since may have cleared it already)
+        // gives way to the result: their errors are cleared, timeout mark
+        // or not.
         st.timeoutReported = 0;
         for (const MutationRoot &r : roots) errors.clear(r.id);
     }
     std::unordered_map<std::string, IntakeStatus> menuStatus;
     for (const MutationRoot &r : roots) menuStatus.emplace(r.id, r.status);
     for (const std::string &id : outcome.succeeded) errors.clear(id);
+    // Killed at the hard cap: every root's error is the host's E_CLI_TIMEOUT.
+    const bool timedOut = result.envelope.outcome == CliOutcome::Timeout;
     for (const auto &entry : outcome.rootErrors) {
         // Baseline: the status the menu showed, so a root the CLI changed
         // anyway, or one already past it (a stale menu), drops it at the
         // next load (IntakeRootErrors.h).
         auto status = menuStatus.find(entry.first);
-        errors.set(entry.first, entry.second, status == menuStatus.end() ? IntakeStatus::Unknown : status->second);
-        logDebug("tooltip " + entry.first + " until its status changes: " + entry.second);
+        setRootTooltip(entry.first, entry.second, status == menuStatus.end() ? IntakeStatus::Unknown : status->second,
+                       timedOut);
     }
     // B12: everything the auto-scan's run logs is Info (its errors also
     // show as tooltips and in the status bar).
@@ -1158,15 +1181,17 @@ void onChunkFinished(uint64_t token, const std::vector<MutationRoot> &roots, con
     logCliResult(result);
     const MutationOutcome outcome = summarizeMutation(CliCommand::Propose, roots, result.envelope);
     // Errors and tooltips as for any propose: baseline Resolved (the
-    // chunk's roots were resolved when it started).
+    // chunk's roots were resolved when it started); a chunk killed at the
+    // hard cap leaves timeout errors (setRootTooltip).
     RootErrorStore &errors = actionsErrorStore();
     std::unordered_map<std::string, IntakeStatus> baseline;
     for (const MutationRoot &r : roots) baseline.emplace(r.id, r.status);
     for (const std::string &id : outcome.succeeded) errors.clear(id);
+    const bool timedOut = result.envelope.outcome == CliOutcome::Timeout;
     for (const auto &entry : outcome.rootErrors) {
         auto status = baseline.find(entry.first);
-        errors.set(entry.first, entry.second, status == baseline.end() ? IntakeStatus::Resolved : status->second);
-        logDebug("tooltip " + entry.first + " until its status changes: " + entry.second);
+        setRootTooltip(entry.first, entry.second, status == baseline.end() ? IntakeStatus::Resolved : status->second,
+                       timedOut);
     }
     const std::string what =
         outcome.consoleLine.empty() ? "propose: " + std::string(cliOutcomeName(result.envelope.outcome))
@@ -1870,14 +1895,15 @@ RunSummary applyRunResult(CliCommand command, const std::vector<MutationRoot> &r
     const RunSummary summary = summarizeRun(command, roots, envelope);
     RootErrorStore &errors = actionsErrorStore();
     for (const std::string &id : summary.outcome.succeeded) errors.clear(id);
+    // A run is never killed, so never Timeout; kept generic, as onFinished.
+    const bool timedOut = envelope.outcome == CliOutcome::Timeout;
     for (const auto &entry : summary.outcome.rootErrors) {
         const bool reverted =
             std::find(summary.reverted.begin(), summary.reverted.end(), entry.first) != summary.reverted.end();
         // Baseline: a reverted resume root ended approved; any other failed
         // root takes the status of the next load (approved again, still
         // placing, ...), and the tooltip stays until it leaves it.
-        errors.set(entry.first, entry.second, reverted ? IntakeStatus::Approved : IntakeStatus::Unknown);
-        logDebug("tooltip " + entry.first + " until its status changes: " + entry.second);
+        setRootTooltip(entry.first, entry.second, reverted ? IntakeStatus::Approved : IntakeStatus::Unknown, timedOut);
     }
     if (summary.outcome.isError) {
         logError(summary.outcome.consoleLine);
@@ -3008,6 +3034,16 @@ std::string actionsDispatch(const ActionEntry &entry) {
     if (st.stopped) return "not run: intake is not running";
     if (entry.action == IntakeAction::Refresh) {
         logInfo("refresh requested");
+        // Tooltips from E_CLI_TIMEOUT (a 10 s report, a call killed at the
+        // hard cap) say nothing about their roots: cleared first, so this
+        // reload drops them from the rows. Per-root CLI errors stay until
+        // the status changes. Only here: the preferences' Reload now keeps
+        // them.
+        const size_t cleared = actionsErrorStore().clearTimeouts();
+        if (cleared > 0) {
+            logInfo("refresh: cleared " + std::to_string(cleared) +
+                    (cleared == 1 ? " timeout tooltip" : " timeout tooltips"));
+        }
         serviceReload(true);
         return "refresh requested";
     }

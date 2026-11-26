@@ -139,7 +139,8 @@ struct IntakeRecord {
     bool singlesRoot = false;
     // A per-command error, set before the snapshot is built
     // (LoaderSettings::annotateRecords, IntakeRootErrors) and kept until
-    // the root's status changes.
+    // the root's status changes (one from E_CLI_TIMEOUT also until
+    // Refresh).
     std::string lastError;
 };
 

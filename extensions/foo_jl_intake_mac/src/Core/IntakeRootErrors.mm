@@ -10,6 +10,16 @@
 namespace intake {
 
 void RootErrorStore::set(const std::string &id, std::string text, IntakeStatus baseline, Clock::time_point at) {
+    put(id, std::move(text), baseline, at, false);
+}
+
+void RootErrorStore::setTimeout(const std::string &id, std::string text, IntakeStatus baseline,
+                                Clock::time_point at) {
+    put(id, std::move(text), baseline, at, true);
+}
+
+void RootErrorStore::put(const std::string &id, std::string text, IntakeStatus baseline, Clock::time_point at,
+                         bool timeout) {
     if (text.empty()) {
         clear(id);
         return;
@@ -20,6 +30,7 @@ void RootErrorStore::set(const std::string &id, std::string text, IntakeStatus b
     e.hasBaseline = baseline != IntakeStatus::Unknown;
     e.baseline = baseline;
     e.setAt = at;
+    e.timeout = timeout;
 }
 
 void RootErrorStore::clear(const std::string &id) {
@@ -30,6 +41,20 @@ void RootErrorStore::clear(const std::string &id) {
 void RootErrorStore::clearAll() {
     std::lock_guard<std::mutex> lock(mutex_);
     entries_.clear();
+}
+
+size_t RootErrorStore::clearTimeouts() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    size_t cleared = 0;
+    for (auto it = entries_.begin(); it != entries_.end();) {
+        if (it->second.timeout) {
+            it = entries_.erase(it);
+            cleared++;
+        } else {
+            ++it;
+        }
+    }
+    return cleared;
 }
 
 void RootErrorStore::apply(std::vector<IntakeRecord> &records, Clock::time_point statusStarted) {
@@ -82,6 +107,12 @@ std::string RootErrorStore::errorFor(const std::string &id) const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = entries_.find(id);
     return it == entries_.end() ? std::string() : it->second.text;
+}
+
+bool RootErrorStore::isTimeout(const std::string &id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = entries_.find(id);
+    return it != entries_.end() && it->second.timeout;
 }
 
 } // namespace intake
