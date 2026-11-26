@@ -7,8 +7,8 @@ built and accepted in-app on the mock, user acceptance pending; share links
 built, in-app run pending; automatic income scan built, untested in the app).
 v1.5 adds the automatic income scan (B12): `scan <income>` on new files in an
 income folder and at startup, the propose after it, the `auto_scan`
-preference, and a propose of more than 4 roots in chunks of 4 (Chunked
-propose). v1.4 (2026-11-20) adds share links (B11, the plorg shadow
+preference, a propose of more than 4 roots in chunks of 4 (Chunked
+propose), and Refresh clearing tooltips left by `E_CLI_TIMEOUT`. v1.4 (2026-11-20) adds share links (B11, the plorg shadow
 link, `docs/shadow-link.md`): path matching, preferences page, Swap, Delete
 local copy. v1.3 (2026-11-16) applies CR-EXT-002 (`docs/intake/CR-EXT-002-doc04.md`):
 Swap, Delete local copy, row colours, confirmations, cache gate, reload
