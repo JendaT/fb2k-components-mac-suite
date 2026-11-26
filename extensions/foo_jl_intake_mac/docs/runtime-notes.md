@@ -84,26 +84,39 @@ a time [`src/Core/IntakeMutationLane.h`]:
 - A propose of more than 4 roots (B12; the menu's Propose, the propose
   after an assign, the one after an automatic scan) runs as a chain of
   chunks of up to 4 roots [`src/Core/IntakeProposeChain.h`
-  `kProposeChunkSize`: the CLI's per-root time limit, a shim timeout of
-  180 s by default, times 4 is 720 s, under the cap], each its own
-  lane run (`LaneHolder::Mutating`, `LaneRun::ProposeChunk`), so no batch
-  holds the lane for 15 minutes and a cap kill loses at most one chunk.
+  `kProposeChunkSize`: with a CLI that time-limits the beets shim per root
+  (`assign.shim_timeout_s`, default 180 s, on `dev/intake-shim`, not in
+  main yet), 4 times 180 s is 720 s, under the cap, while that per-user
+  setting stays at most 225 s; with the CLI in main a stalled shim can
+  still run a chunk into the cap, and only that chunk is lost], each its
+  own lane run (`LaneHolder::Mutating`, `LaneRun::ProposeChunk`), so no
+  batch holds the lane for 15 minutes and a cap kill loses at most one
+  chunk.
   The lane is released after each chunk. Then one reload; its end
   re-checks the pending roots' statuses (a root no longer `resolved`, or
   missing from the view, is skipped) and starts the next chunk. A reload
   that does not succeed (loader state other than ready) stops the chain:
   the view kept is the old one. Roots that join while no chunk runs (a new
   chain included) get one more reload first, so the roots a scan or an
-  assign just wrote are in the view. A busy lane (a click or an automatic
-  scan took it between chunks), or an Execute follow-up still to run (the
-  same rule as `actionsLaneFree`, so the follow-up's gc finds the lane
-  free), is retried with one `dispatch_after` of 2 s on the main queue,
+  assign just wrote are in the view. A call that held the lane when the
+  reload was asked for, or took it before the reload ended (a Reject in
+  the gap), may have written after the load read its roots: the reload's
+  end compares `MutationLane::acquisitions()` with the count taken at the
+  request (a holder then counts as one more) and, when the lane is free
+  again, runs one more reload before the chunk. A busy lane (a click or
+  an automatic scan took it between chunks), or an Execute follow-up still
+  to run (the same rule as `actionsLaneFree`, so the follow-up's gc finds
+  the lane free), is retried with one `dispatch_after` of 2 s on the main queue,
   never two at once, never after quit, with one Info line per wait; no CLI
   call is queued. When the wait ends, a reload runs before the chunk. After
   the last chunk the chain ends at once, without the lane, a view or a CLI
-  path. One chain at a time: roots asked for meanwhile join it,
-  deduplicated by id against its pending, running and handled roots; roots
-  it already failed are named in the join's line, not retried.
+  path. One chain at a time: a propose of more than 4 roots asked for
+  meanwhile joins it, deduplicated by id against its pending, running,
+  proposed and failed roots; roots it already failed are named in the
+  join's line, not retried; roots it skipped go back to pending. A propose
+  of 4 or fewer roots runs as its own call in a gap between chunks (the
+  chain waits for it): a root the chain failed is proposed again at once,
+  and one still pending in the chain is later skipped as `proposed`.
 - A chunk's 10 s report is one Info line, `propose: chunk k of n still
   running (E_CLI_TIMEOUT: no reply after 10 s; the chunk continues)` (no
   tooltip, no reload). The chain stops after a chunk that was killed at

@@ -9,6 +9,7 @@
 
 #include "IntakeErrorMap.h"
 
+#include <algorithm>
 #include <climits>
 #include <unordered_set>
 
@@ -69,7 +70,18 @@ ProposeChainStop proposeChainStopFor(const EnvelopeResult &envelope) {
 size_t ProposeChain::add(const std::vector<MutationRoot> &roots) {
     size_t added = 0;
     for (const MutationRoot &r : roots) {
-        if (r.id.empty() || known(r.id)) continue;
+        if (r.id.empty()) continue;
+        if (known(r.id)) {
+            // A root this chain skipped joins again, at the end of the
+            // pending roots (the next chunk checks its status again).
+            const auto it = std::find(skipped_.begin(), skipped_.end(), r.id);
+            if (it == skipped_.end()) continue;
+            skippedNotes_.erase(skippedNotes_.begin() + (it - skipped_.begin()));
+            skipped_.erase(it);
+            pending_.push_back(r);
+            added++;
+            continue;
+        }
         known_.insert(r.id);
         added_.push_back(r);
         pending_.push_back(r);

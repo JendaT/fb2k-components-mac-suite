@@ -4,7 +4,7 @@
 //
 //  Unit tests for IntakeProposeChain (B12: a propose of many roots in chunks
 //  of kProposeChunkSize): add (order, repeats against pending, in-flight and
-//  handled roots, the total), nextChunk (the size: fewer, exactly, one more,
+//  handled roots, a skipped root joining again, the total), nextChunk (the size: fewer, exactly, one more,
 //  several chunks; the current status re-check, skipped
 //  roots and their Debug line, nothing while a chunk is in flight), record
 //  (done and failed per root, roots the call did not name), the stop
@@ -201,10 +201,43 @@ static void testAdd() {
     CHECK_EQ(d.add(roots({1, 3, K + 4})), 1, "done and failed roots do not join again");
     Statuses gone;
     gone.except[idFor(K + 1)] = IntakeStatus::Proposed;
-    d.nextChunk(gone.fn());
-    CHECK_EQ(d.add(roots({K + 1})), 0, "a skipped root does not join again");
-    CHECK_EQ(d.total(), K + 4, "the total counts every root added");
+    const ProposeChunk second = d.nextChunk(gone.fn());
+    CHECK(second.ids() == ids({K + 2, K + 3, K + 4}) && d.skipped() == ids({K + 1}),
+          "K+1 skipped, the rest in flight");
+    const size_t doneBefore = d.done();
+
+    g_context = "add/skipped-rejoins";
+    CHECK_EQ(d.add(roots({K + 1, K + 1})), 1, "a skipped root joins again, once");
+    CHECK(d.pendingIds() == ids({K + 1}), "back among the pending roots");
+    CHECK(d.skipped().empty(), "no longer skipped");
+    CHECK_EQ(d.done(), doneBefore - 1, "done goes down by one");
+    CHECK_EQ(d.total(), K + 4, "the total counts every root once");
     CHECK(d.firstRoot()->id == idFor(1), "the first root stays");
+    CHECK(d.summaryLine().find("skipped") == std::string::npos, "its skipped note is gone");
+    CHECK_EQ(d.add(roots({K + 1})), 0, "pending again: no repeat");
+    d.record(second.roots, succeededAll(second));
+    const ProposeChunk third = d.nextChunk(kAllResolved);
+    CHECK(third.ids() == ids({K + 1}), "resolved again: the next chunk proposes it");
+    d.record(third.roots, succeededAll(third));
+    CHECK(d.finished() && d.skipped().empty() && d.succeeded().back() == idFor(K + 1), "proposed, not skipped");
+    CHECK_EQ(d.add(roots({K + 1})), 0, "proposed: it does not join again");
+
+    g_context = "add/skipped-twice";
+    ProposeChain twice;
+    twice.add(range(1, 2));
+    Statuses noView;
+    noView.except[idFor(1)] = std::nullopt;
+    twice.nextChunk(noView.fn());
+    CHECK_EQ(twice.add(roots({1})), 1, "skipped (not in the view): joins again");
+    twice.record(roots({2}), [] {
+        MutationOutcome o;
+        o.succeeded = ids({2});
+        return o;
+    }());
+    const ProposeChunk again = twice.nextChunk(noView.fn());
+    CHECK(again.roots.empty() && twice.skipped() == ids({1}), "skipped once more: listed once");
+    CHECK(twice.summaryLine() == "propose: done for 1 root in 1 chunk; skipped: " + idFor(1) + " (not in the view)",
+          "one skipped note");
 
     // failedAmong: the roots of a join that this chain already failed.
     struct FailedRow {
@@ -214,7 +247,7 @@ static void testAdd() {
     };
     const FailedRow failedTable[] = {
         {"a failed root", roots({3}), ids({3})},
-        {"done, skipped, in-flight and new roots", roots({1, K + 1, K + 4, K + 5}), {}},
+        {"done, rejoined and new roots", roots({1, K + 1, K + 4, K + 5}), {}},
         {"in the join's order, each once", roots({K + 5, 3, 3, 1}), ids({3})},
         {"nothing", {}, {}},
     };

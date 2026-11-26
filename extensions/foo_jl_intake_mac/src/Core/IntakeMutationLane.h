@@ -73,6 +73,12 @@ public:
     // Dry runs released at their report whose process has not exited yet.
     size_t releasedRunning() const { return released_.size(); }
 
+    // How many times the lane was taken (every acquire that returned a
+    // token; a refused one does not count). B12: the chunked propose
+    // compares two reads to tell whether some call took the lane in
+    // between.
+    uint64_t acquisitions() const { return next_ - 1; }
+
 private:
     LaneHolder holder_ = LaneHolder::None;
     uint64_t current_ = 0;

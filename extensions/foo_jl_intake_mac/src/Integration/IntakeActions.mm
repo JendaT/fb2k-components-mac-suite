@@ -506,15 +506,17 @@ struct ActionsState {
     // B12: the chunked propose (see "chunked propose" below): one chain at
     // a time, chainSerial 0 for none; its model; the lane token of the chunk
     // running (0: none); the refresh whose end runs the next chunk (0: none
-    // on its way); whether this wait for the lane has been logged; and the
-    // 2 s retry on its way (never two; it clears the flag when it fires,
-    // whichever chain is current then).
+    // on its way) and the lane's use when it was asked for (chainLaneMark,
+    // see chainRefreshThenNext); whether this wait for the lane has been
+    // logged; and the 2 s retry on its way (never two; it clears the flag
+    // when it fires, whichever chain is current then).
     uint64_t chainSerial = 0;
     uint64_t chainSerialNext = 0;
     ProposeChain chain;
     uint64_t chainToken = 0;
     uint64_t chainRefresh = 0;
     uint64_t chainRefreshNext = 0;
+    uint64_t chainLaneMark = 0;
     bool chainWaitLogged = false;
     bool chainRetryArmed = false;
 
@@ -902,17 +904,20 @@ void startOnQueue(uint64_t token, std::shared_ptr<const CliConfig> config, std::
 // (IntakeProposeChain), each its own lane run (LaneRun::ProposeChunk,
 // LaneHolder::Mutating): the lane is free between chunks, and a chunk
 // killed at the hard cap stops the chain having lost only that chunk. One
-// chain at a time; roots asked for while it runs join it (chainJoin). Each
-// chunk starts after a refresh that succeeded: the one after the chunk
-// before, the one chainJoin asks for when roots join while no chunk runs
-// (a new chain included), or the one after a wait for the lane, so the
-// status re-check sees what the last call, the scan, the assign or the
-// lane's other holder wrote; a refresh that fails stops the chain (its
-// statuses would be the old view's). A busy lane, or an Execute follow-up
-// still to run (as actionsLaneFree), is waited for with a 2 s retry (one
-// timer at most, one Info line per wait), never a queued call. A chain
-// with nothing left finishes without the lane. The status bar has one
-// entry for the whole chain (activityChainKey).
+// chain at a time; a propose of more than kProposeChunkSize roots asked for
+// while it runs joins it (chainJoin), a smaller one runs as its own call in
+// a gap between chunks (the chain waits for it). Each chunk starts after a
+// refresh that succeeded: the one after the chunk before, the one
+// chainJoin asks for when roots join while no chunk runs (a new chain
+// included), the one after a wait for the lane, or one more when a call
+// held or took the lane while the refresh ran, so the status re-check sees
+// what the last call, the scan, the assign or the lane's other holder
+// wrote; a refresh that fails stops the chain (its statuses would be the
+// old view's). A busy lane, or an Execute follow-up still to run (as
+// actionsLaneFree), is waited for with a 2 s retry (one timer at most, one
+// Info line per wait), never a queued call. A chain with nothing left
+// finishes without the lane. The status bar has one entry for the whole
+// chain (activityChainKey).
 
 // The lane as the chain may take it: as actionsLaneFree (the caller checks
 // st.stopped): between an execute run's end and its follow-up's gc the
@@ -1028,12 +1033,19 @@ void chainRetryLater() {
 // A refresh, whose end runs the next chunk (unless the chain moved on). A
 // refresh that did not succeed stops the chain: the view kept is the old
 // one, where the roots a scan or an assign just wrote are missing and would
-// be skipped.
+// be skipped. A call that held the lane when the refresh was asked for, or
+// took it before the refresh ended, may have written after the load read
+// its roots (a Reject in the gap between chunks): when the lane is free
+// again at the end, one more refresh runs before the chunk; when it is
+// still busy, runNextChunk waits, and that wait ends with a refresh too.
 void chainRefreshThenNext() {
     ActionsState &st = actionsState();
     const uint64_t serial = st.chainSerial;
     const uint64_t refresh = ++st.chainRefreshNext;
     st.chainRefresh = refresh;
+    // The lane's uses so far, minus the holder now if there is one: it may
+    // still write, so it counts as a use after this mark.
+    st.chainLaneMark = st.lane.acquisitions() - (st.lane.busy() ? 1 : 0);
     serviceRefreshAfterCommand([serial, refresh](const LoaderStatus &status) {
         ActionsState &now = actionsState();
         if (now.stopped || now.chainSerial != serial || now.chainRefresh != refresh) return;
@@ -1041,6 +1053,10 @@ void chainRefreshThenNext() {
         if (!now.chain.finished() && status.state != LoaderState::Ready) {
             stopChain(std::string("the status reload failed (") + loaderStateName(status.state) +
                       (status.error.empty() ? std::string() : ": " + status.error) + ")");
+            return;
+        }
+        if (!now.chain.finished() && now.lane.acquisitions() != now.chainLaneMark && chainLaneFree()) {
+            chainRefreshThenNext();
             return;
         }
         // A retry on its way finds a chunk running, or the lane still busy.
@@ -1126,7 +1142,8 @@ std::string chainJoin(const std::vector<MutationRoot> &roots, const std::string 
         return "propose: " + rootCountText(added) + chunks;
     }
     // Roots this chain already failed do not join again (a retry of them
-    // waits for its end): the line says so, with their ids.
+    // waits for its end): the line says so, with their ids. Roots it
+    // skipped join again (ProposeChain::add).
     const std::vector<std::string> failedBefore = st.chain.failedAmong(roots);
     const size_t added = st.chain.add(roots);
     std::string what;

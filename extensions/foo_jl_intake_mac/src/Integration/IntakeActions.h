@@ -284,11 +284,16 @@
 //  assign, the auto-propose after a scan) runs as a chain of `propose`
 //  calls of up to 4 roots, each its own lane run (LaneHolder::Mutating), so
 //  no batch holds the lane for 15 minutes and a cap kill loses at most one
-//  chunk. 4 or fewer keep their single call. One chain at a time: roots
-//  asked for while it runs join it (deduplicated against its pending and
-//  handled roots; one Info line, also when none is new, naming the roots it
-//  already failed: they are proposed again only after it ends). Before
-//  each chunk (also after a wait for the lane) the view is refreshed and
+//  chunk. 4 or fewer keep their single call. One chain at a time: a
+//  propose of more than 4 roots asked for while it runs joins it
+//  (deduplicated against its pending, proposed and failed roots; one Info
+//  line, also when none is new, naming the roots it already failed: they
+//  are proposed again only after it ends; roots it skipped go back to
+//  pending). A propose of 4 or fewer runs as its own call in a gap between
+//  chunks (the chain waits for it; a root the chain failed is proposed
+//  again at once, one still pending is later skipped as proposed). Before
+//  each chunk (also after a wait for the lane, and once more when a call
+//  held or took the lane while the refresh ran) the view is refreshed and
 //  every pending root's status re-checked: a root no longer resolved, or
 //  not in the view, is skipped (one Debug line); a refresh that did not
 //  succeed stops the chain. Between chunks the lane is free (a user's

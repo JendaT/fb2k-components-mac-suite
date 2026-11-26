@@ -263,7 +263,9 @@ files land in an income folder, then `propose` for the roots it resolved
   reloads.
 - **Reload:** an event batch (1 s debounce), the exit of a command the
   component started (an automatic scan: once, after the propose that
-  follows it), a change of the CLI path, bun path or rules folder
+  follows it; with more than 4 roots to propose, the chunked propose's
+  first reload, before its first chunk, then one after each chunk), a
+  change of the CLI path, bun path or rules folder
   (with `version` first), a mount event, Refresh or the page's Reload now
   triggers one coalesced full `status --json` load, never a filtered one
   (doc 03 gives `--filter` no cost guarantee). Other preference changes
@@ -475,23 +477,34 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
   takes 18-114 s per root (identify, MusicBrainz): one call for 49 roots
   ran into the 15-minute cap (2026-11-25), every root got the timeout
   tooltip, and the lane was held the whole time. 4 or fewer roots keep
-  their single call. The size is one constant (`kProposeChunkSize`): the
-  CLI's per-root time limit (a shim timeout, default 180 s) times 4 is
-  720 s, under the cap, where 5 would reach it exactly; it follows that
-  limit if it changes. One chain at a time; roots asked for while it runs
-  join it, by id, against the roots still pending and those it already
-  handled (the total grows; one Info line, also when none is new). A root
+  their single call. The size is one constant (`kProposeChunkSize`). With
+  a CLI that time-limits the beets shim per root (`assign.shim_timeout_s`,
+  default 180 s; on `dev/intake-shim`, not in main yet), 4 times 180 s is
+  720 s, under the cap, where 5 would reach it exactly; the bound holds
+  only while that per-user setting is at most 225 s, and the component
+  never reads it. With the CLI in main (no shim time limit) a stalled shim
+  can still run a chunk into the cap; the chunking then limits the loss to
+  that chunk. The constant follows that limit if it changes. One chain at
+  a time; a propose of more than 4 roots asked for while it runs joins it,
+  by id, against the roots still pending and those it already proposed or
+  failed (the total grows; one Info line, also when none is new). A root
   the chain already failed does not join again: the line names it, to be
-  proposed again after the chain ends. Before each chunk a reload runs
-  (also after a wait for the lane) and every pending root's status is
-  checked again: a root no longer `resolved`, or not in the view, is
-  skipped (one Debug line). A reload that does not succeed stops the chain
-  (the view kept is the old one). Each chunk holds the lane until it exits,
-  so the menu's mutating items stay disabled while it runs; the lane is
-  free only between chunks, during the reload, when a click or an
-  automatic scan may take it. The chain then waits for it (retried every
-  2 s, one Info line per wait, never a queued call), and also while an
-  execute run's swap and delete are still to run. A chunk's root errors
+  proposed again after the chain ends. A root it skipped does join again
+  (back to pending; its status is checked again). A propose of 4 or fewer
+  roots does not join: it runs as its own call in a gap between chunks
+  (the chain waits for it), a root the chain failed among them is proposed
+  again at once, and one still pending in the chain is later skipped as
+  `proposed`. Before each chunk a reload runs (also after a wait for the
+  lane, and once more when a call held or took the lane while the reload
+  ran) and every pending root's status is checked again: a root no longer
+  `resolved`, or not in the view, is skipped (one Debug line). A reload
+  that does not succeed stops the chain (the view kept is the old one).
+  Each chunk holds the lane until it exits, so the menu's mutating items
+  stay disabled while it runs; the lane is free only between chunks,
+  during the reload, when a click or an automatic scan may take it. The
+  chain then waits for it (retried every 2 s, one Info line per wait,
+  never a queued call), and also while an execute run's swap and delete
+  are still to run. A chunk's root errors
   become tooltips like any propose's (baseline `resolved`); its result line
   is Info, Error only when the whole chunk failed. The chain stops when a
   chunk was killed at the 15-minute cap or ended with `E_NO_CLI`, when a

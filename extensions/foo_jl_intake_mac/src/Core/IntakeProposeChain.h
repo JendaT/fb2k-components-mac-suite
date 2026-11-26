@@ -14,9 +14,12 @@
 //  no I/O.
 //
 //  The roots (add). In the order added; a root is known by its id, and one
-//  already pending, in the chunk in flight or handled by this chain (done,
-//  failed or skipped) is not added again, so roots asked for while the chain
-//  runs join it without repeats. total() counts every root added.
+//  already pending, in the chunk in flight, proposed or failed by this
+//  chain is not added again, so roots asked for while the chain runs join
+//  it without repeats. A root the chain skipped does join again: it leaves
+//  the skipped roots (and the skipped notes) and goes to the end of the
+//  pending ones, and the next chunk checks its status again (add counts it;
+//  done() goes down by one). total() counts every root once.
 //  failedAmong() names the roots of a join that this chain already tried
 //  and failed: they do not join again, and the join's line says so.
 //
@@ -108,9 +111,14 @@ namespace intake {
 
 // The most roots one `propose` call of a chain names. A propose of more
 // roots than this goes through the chain; one of this many or fewer stays a
-// single call. Why 4: the CLI's per-root time limit (a shim timeout,
-// default 180 s) times 4 is 720 s, under the 15-minute hard cap; 5 times
-// 180 s reaches it exactly. Change this one constant when that limit
+// single call. Why 4: with a CLI that time-limits the beets shim per root
+// (dev/intake-shim, not in main yet: structure.yaml
+// `assign.shim_timeout_s`, default 180 s), 4 times 180 s is 720 s, under
+// the 15-minute hard cap; 5 times 180 s reaches it exactly. The bound holds
+// only while that setting is at most 225 s; it is a per-user rules setting
+// the component never reads. With the CLI in main (no shim time limit) a
+// stalled shim can still run a chunk into the cap; the chunks then limit
+// the loss to that chunk. Change this one constant when that limit
 // changes: Integration, the log lines and the tests follow it.
 inline constexpr size_t kProposeChunkSize = 4;
 
@@ -149,8 +157,9 @@ struct ProposeChainProgress {
 
 class ProposeChain {
 public:
-    // Adds the roots not known to this chain yet (see the top of this
-    // file); returns how many were added.
+    // Adds the roots not known to this chain yet, and takes back the ones
+    // it skipped (see the top of this file); returns how many became
+    // pending.
     size_t add(const std::vector<MutationRoot> &roots);
 
     // The ids among `roots` whose propose this chain already tried and

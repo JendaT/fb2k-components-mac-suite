@@ -180,11 +180,13 @@ qualify. "(2 of 3)" in a title means it runs on only some of them.
   killed at the 15-minute limit loses only its 4 releases. While a batch
   runs, the menu's other commands stay disabled, as for any command; a
   click or an automatic scan gets in only in the short gap between two
-  batches, and the next batch then waits for it. Releases proposed in such
-  a gap join the batches; releases that already failed in them do not
-  (the console says so: propose them again afterwards). A batch stopped at
-  the 15-minute limit, or a missing CLI, stops the rest (one console line
-  lists the releases not proposed); errors of single releases do not.
+  batches, and the next batch then waits for it. A Propose on more than 4
+  releases in such a gap joins the batches; releases that already failed
+  in them do not (the console says so: propose them again afterwards).
+  A Propose on 4 or fewer runs at once on its own, also for releases that
+  failed in the batches. A batch stopped at the 15-minute limit, or a
+  missing CLI, stops the rest (one console line lists the releases not
+  proposed); errors of single releases do not.
   When foobar2000 quits, the batch running finishes; the releases not
   started stay resolved: propose them again.
 
