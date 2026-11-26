@@ -122,8 +122,9 @@ export interface AssignRow {
 
 /**
  * Engine dependencies a caller may substitute. Commands default to
- * `buildProviders()` (env-configured HTTP + subprocess shim); tests and
- * `propose` pass their own, so nothing below the command layer needs env vars.
+ * `buildProviders()` (env-configured HTTP + subprocess shim, its runs limited
+ * by `assign.shim_timeout_s`); tests and `propose` pass their own, so nothing
+ * below the command layer needs env vars.
  */
 export interface P2Deps {
   providers?: Providers;
@@ -197,8 +198,8 @@ export async function identifyRoots(
 ): Promise<{ data: IdentifyRow[]; errors: JsonError[]; shimErrors: string[] }> {
   const errors: JsonError[] = [];
   const shimErrors: string[] = [];
-  const providers = deps.providers ?? buildProviders();
   const cfg = loadAssignConfig();
+  const providers = deps.providers ?? buildProviders({ shimTimeoutMs: cfg.shim_timeout_s * 1000 });
   const data: IdentifyRow[] = [];
   for (const root of roots) {
     // Doc 03 legal source statuses: never on a rejected root or one that has
@@ -303,7 +304,7 @@ export async function assignRoots(
   const rules = { genre, labels: loadLabelMap(rdir), styles: loadStyleMap(rdir), config: loadAssignConfig() };
   const noTarget = (root: RootRef, input: AssignInput) =>
     notices.push(`no target path for ${root.dir}: ${noTargetReason(input, rules.config) ?? "unknown reason"}`);
-  const providers = deps.providers ?? buildProviders();
+  const providers = deps.providers ?? buildProviders({ shimTimeoutMs: rules.config.shim_timeout_s * 1000 });
   const library = deps.library ?? diskLibraryProbe();
   const assignProviders: AssignProviders = {
     similar: providers.similar,

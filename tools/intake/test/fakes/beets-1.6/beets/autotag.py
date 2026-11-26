@@ -1,3 +1,4 @@
+import socket
 from collections import namedtuple
 
 from beets.library import Item
@@ -25,6 +26,8 @@ class AlbumInfo:
 def tag_album(items, search_artist=None, search_album=None, search_ids=[]):
     if not (isinstance(items, list) and all(isinstance(i, Item) for i in items)):
         raise TypeError("beets 1.6 tag_album takes the item list")
+    # The shim's stdout goes to stderr while beets runs.
+    print("stub beets: socket timeout %r" % socket.getdefaulttimeout())
     info = AlbumInfo(
         data_source="MusicBrainz",
         album_id="mb-16",

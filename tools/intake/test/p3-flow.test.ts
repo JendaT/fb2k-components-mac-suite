@@ -159,7 +159,7 @@ test("execute: copy, tag, verify, atomic place, journal, genre-map count", async
   expect(treeHash(corpus.income)).toBe(pristineIncome);
 });
 
-test("execute mp3 root: prepended ID3 provenance keeps mp3sha1 stable", async () => {
+test("execute mp3 root: ID3 provenance merged into the tag keeps mp3sha1 stable", async () => {
   const koan = dirOf("todo", "Koan-Condemned-(MKL033)-WEB-2016-KOAN");
   await cmdPropose([koan], OPTS);
   cmdApprove([koan], OPTS);
@@ -170,7 +170,7 @@ test("execute mp3 root: prepended ID3 provenance keeps mp3sha1 stable", async ()
   const target = doc.placed!.target_path;
   for (const f of doc.files) {
     expect((await audioHash(join(target, f.path))).hash).toBe(f.audio_hash);
-    // The copy grew by the prepended ID3v2 block (bytes differ, hash equal).
+    // The copy grew by the merged TXXX frames (bytes differ, hash equal).
     const placed = readFileSync(join(target, f.path));
     expect(placed.length).toBeGreaterThan(readFileSync(join(koan, f.path)).length);
     expect(placed.subarray(0, 3).toString("latin1")).toBe("ID3");
