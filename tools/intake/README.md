@@ -53,8 +53,9 @@ keys: `id`, `status`, `needs_review`, `income_folder`, `source_type`, `tier`
 `root_path`; an unknown, malformed or repeated key is `E_BAD_ARGS`. A rules
 file the command loads that it cannot use (a YAML syntax error in
 income.yaml, structure.yaml, genre-map.yaml, label-map.yaml or styles.yaml,
-a malformed genre-map.yaml or label-map.yaml entry, or a bad
-`archive_code_pages`) fails that command with `E_BAD_RULES`, exit 2, `path`
+a malformed genre-map.yaml or label-map.yaml entry, a bad
+`archive_code_pages` or a bad `assign.shim_timeout_s`) fails that command
+with `E_BAD_RULES`, exit 2, `path`
 the file, the message naming the file and, where known, the key.
 
 genre-map.yaml and label-map.yaml are rewritten whole by assign (user
@@ -165,7 +166,28 @@ The shim detects the API shape itself:
 The shim reads the beets config from `$BEETSDIR` (default `~/.config/beets`),
 never opens the library database and never writes to the release dir.
 
-Execute/gc need `journal.path` in structure.yaml (the Amunet location is
+Each shim run has a time limit, set in structure.yaml:
+
+```yaml
+assign:
+  shim_timeout_s: 180   # seconds per root (the default)
+```
+
+A value that is not a number above 0 fails every command that loads the
+assign settings (identify, assign, propose, execute and gc, which read
+`tiers:` with them) with `E_BAD_RULES`. The shim runs in its own process
+group. Past the limit the CLI kills the whole group, and the root goes the
+way of any shim error: `unconfirmed` (or `unidentified`), `needs_review`,
+`shim_timeout` in `identification.issues`, and the human-mode notice "beets
+shim failed for N root(s): shim_timeout". The next root then starts, so one
+stalled lookup cannot hold up a `propose` batch. A SIGTERM, SIGINT or SIGHUP
+to the CLI during a shim run kills the shim's group first, then the CLI ends
+by that signal. Inside the shim every socket gets a 30 s default timeout,
+because neither beets nor musicbrainzngs sets one: a stalled MusicBrainz read
+then raises `socket.timeout`, which musicbrainzngs retries, instead of
+blocking for good.
+
+Execute/gc need `journal.path` in structure.yaml (the NAS location is
 pending confirmation; nothing runs without it). Execute copies and verifies —
 income originals are only ever removed by `gc`, which re-verifies both the
 journal record and the placed files' audio hashes first, then leaves the
@@ -205,7 +227,12 @@ original is never changed. Provenance tags are part of the placement: a failed t
 root before the rename, so nothing is placed or journaled, the temp dir is
 removed and the root goes back to `approved` with a per-root `E_VERIFY`. A
 skipped write (`provenance_tags_skipped:*`: an `fsha1:`-keyed FLAC, a format
-with no writer) stays an issue on the placed root.
+with no writer) stays an issue on the placed root. An MP3's TXXX provenance
+frames are merged into its ID3v2.3 or ID3v2.4 tag (old `INTAKE_*` frames
+replaced, every other frame and the audio bytes kept), or go into a new
+ID3v2.3 tag when it has none. A tag that cannot be rebuilt safely is a
+`provenance_write_failed`: ID3v2.2, unsynchronisation, an extended header,
+two tags at the head, or frames that do not parse.
 
 `propose --all-resolved` never picks up `needs_review` roots — offline (no
 Discogs confirmation) that is every root, so unattended auto-proposing

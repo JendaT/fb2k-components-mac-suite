@@ -10,7 +10,7 @@
 //
 // A tool run has a hard time limit (UNPACK_TIMEOUT_MS): a hung tool is killed
 // and the archive fails. While a tool runs, SIGTERM, SIGINT and SIGHUP kill
-// it and remove the partial dir before intake ends (see runTool).
+// it and remove the partial dir before intake ends (runTool, src/proc.ts).
 //
 // rar is checked by intake itself, because bsdtar's exit code cannot be
 // trusted for it (src/rarheaders.ts): the headers are read before anything
@@ -42,6 +42,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { clearImmutableTree } from "./fflags.ts";
+import { runTool } from "./proc.ts";
 import { readRarHeaders, verifyRarExtraction, type RarHeaders } from "./rarheaders.ts";
 import { ext, PARTIAL_UNPACK_SUFFIX } from "./util.ts";
 import {
@@ -331,105 +332,8 @@ export function archiveNameCodePage(archivePath: string, prefer: readonly CodePa
 /** Hard limit on one unpack tool run. */
 export const UNPACK_TIMEOUT_MS = 30 * 60 * 1000;
 
-/** Signals that end intake while a tool runs; the tool and the partial dir go first. */
-const STOP_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
-
-/** How long a signalled intake waits for the killed tool before it cleans up and ends anyway. */
-const STOP_GRACE_MS = 5000;
-
 const formatDuration = (ms: number): string =>
   ms % 60_000 === 0 ? `${ms / 60_000} min` : ms % 1000 === 0 ? `${ms / 1000} s` : `${ms} ms`;
-
-interface ToolRun {
-  code: number;
-  stderr: string;
-  timedOut: boolean;
-}
-
-/**
- * Run an unpack tool (stdin ignored, stdout discarded, stderr collected) in
- * its own process group, so a kill reaches every process of it: Homebrew's
- * `7z` is a shell wrapper that runs p7zip as a child, and killing only the
- * wrapper would leave p7zip writing. The group is SIGKILLed when the run
- * exceeds `timeoutMs`, and the result is then `timedOut`.
- *
- * While the tool runs, SIGTERM, SIGINT and SIGHUP are caught: the group is
- * killed, `cleanup` runs once the tool has exited (or after STOP_GRACE_MS, for
- * a tool stuck in the kernel), and intake re-raises the signal to end as it
- * would have without the handler. A tool in its own group would not get a
- * terminal's SIGINT or SIGHUP, and nothing forwards a SIGTERM sent to intake.
- * The handlers exist only during the run. SIGKILL cannot be caught: a partial
- * dir left by it is removed by the next scan.
- */
-async function runTool(argv: string[], timeoutMs: number, cleanup: () => void): Promise<ToolRun> {
-  const proc = Bun.spawn(argv, { stdin: "ignore", stdout: "ignore", stderr: "pipe", detached: true });
-  const killGroup = () => {
-    try {
-      process.kill(-proc.pid, "SIGKILL");
-    } catch {
-      // already gone
-    }
-  };
-  // Drain stderr while waiting: a tool that fills the pipe would block forever.
-  const chunks: Uint8Array[] = [];
-  const reader = proc.stderr.getReader();
-  const drained = (async () => {
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) return;
-        chunks.push(value);
-      }
-    } catch {
-      // cancelled after a kill
-    }
-  })();
-
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    killGroup();
-  }, timeoutMs);
-
-  let signal: NodeJS.Signals | null = null;
-  let stopped = false;
-  const removeHandlers = () => {
-    for (const s of STOP_SIGNALS) process.off(s, onSignal);
-  };
-  const stop = (s: NodeJS.Signals) => {
-    if (stopped) return;
-    stopped = true;
-    try {
-      cleanup();
-    } catch {
-      // best effort; the next scan removes a leftover partial dir
-    }
-    removeHandlers();
-    process.kill(process.pid, s);
-  };
-  function onSignal(s: NodeJS.Signals) {
-    if (signal !== null) return;
-    signal = s;
-    clearTimeout(timer);
-    killGroup();
-    setTimeout(() => stop(s), STOP_GRACE_MS);
-  }
-  for (const s of STOP_SIGNALS) process.on(s, onSignal);
-
-  try {
-    const code = await proc.exited;
-    if (signal !== null) {
-      stop(signal);
-      await new Promise(() => {}); // the re-raised signal ends the process
-    }
-    if (timedOut) void reader.cancel().catch(() => {});
-    else await drained;
-    return { code, stderr: Buffer.concat(chunks).toString(), timedOut };
-  } finally {
-    clearTimeout(timer);
-    removeHandlers();
-  }
-}
 
 export interface UnpackOptions {
   /** Overrides UNPACK_TIMEOUT_MS (tests). */
@@ -498,7 +402,7 @@ export async function unpackArchive(archivePath: string, dryRun: boolean, opts: 
     } else {
       argv = args!;
     }
-    const run = await runTool(argv, timeoutMs, cleanupOnSignal);
+    const run = await runTool(argv, timeoutMs, { cleanup: cleanupOnSignal });
     // Whatever the outcome: read-only modes from the archive would block the
     // removal of a failed tree and the tag writes on copies of a good one.
     makeOwnerWritable(partial);

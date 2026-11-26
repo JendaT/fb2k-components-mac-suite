@@ -34,7 +34,7 @@ naming:
   release: "{artist} [{year}] {album} ({label}; {catno})"
   release_no_label: "{artist} [{year}] {album}"
 
-# Execute/gc (doc 03). Journal location on Amunet pending confirmation; the
+# Execute/gc (doc 03). Journal location on the NAS pending confirmation; the
 # fixture uses a synthetic path (P3 tests rewrite this file with temp paths).
 journal:
   path: /library/music.meta/intake-journal.ndjson

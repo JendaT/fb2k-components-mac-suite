@@ -228,6 +228,8 @@ export interface AssignConfig {
   short_circuit: { min_releases: number; confidence: number };
   needs_review: { confidence: number; margin: number };
   shim_accept_distance: number;
+  /** Time limit on one beets shim run, in seconds (a finite number > 0). */
+  shim_timeout_s: number;
   naming: {
     release: string; // template with {artist} {year} {album} {label} {catno}
     release_no_label: string;
