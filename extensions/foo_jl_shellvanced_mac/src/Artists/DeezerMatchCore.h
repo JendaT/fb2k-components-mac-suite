@@ -63,7 +63,7 @@ inline std::string casefoldExact(const std::string& name) {
 }  // namespace detail
 
 // Name tier: among `exact` (indices from exactCandidates), if exactly one candidate matches the local
-// name case-insensitively with whitespace/punctuation preserved, narrow to it; otherwise unchanged.
+// name case-insensitively with whitespace/punctuation preserved AND has a real picture, narrow to it; otherwise unchanged.
 inline std::vector<size_t> narrowByExactName(const std::string& artist,
                                              const std::vector<Candidate>& candidates,
                                              const std::vector<size_t>& exact) {
@@ -72,7 +72,9 @@ inline std::vector<size_t> narrowByExactName(const std::string& artist,
     std::vector<size_t> hits;
     for (size_t i : exact)
         if (detail::casefoldExact(candidates[i].name) == want) hits.push_back(i);
-    return hits.size() == 1 ? hits : exact;
+    // Only narrow to a candidate that has a real picture; otherwise keep the full key-equal set.
+    if (hits.size() == 1 && hasRealPicture(candidates[hits[0]].pictureUrl)) return hits;
+    return exact;
 }
 
 // Drops (..)/[..] groups, EP/LP/VA/remaster/deluxe/edition words, punctuation, case.

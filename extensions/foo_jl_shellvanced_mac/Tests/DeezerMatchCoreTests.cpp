@@ -17,16 +17,23 @@ int main() {
 
     g_context = "narrowByExactName";
     {
-        std::vector<Candidate> a = {{"1", "Alps Core", "", 1}, {"2", "ALPSCORE", "", 1}};
+        std::vector<Candidate> a = {{"1", "Alps Core", "https://x/images/artist/abc/1.jpg", 1}, {"2", "ALPSCORE", "https://x/images/artist/abc/1.jpg", 1}};
         CHECK(narrowByExactName("Alpscore", a, exactCandidates("Alpscore", a)) == (std::vector<size_t>{1}), "Alpscore -> ALPSCORE");
-        std::vector<Candidate> r = {{"1", "Radice.", "", 1}, {"2", "Radice", "", 1}};
+        std::vector<Candidate> r = {{"1", "Radice.", "https://x/images/artist/abc/1.jpg", 1}, {"2", "Radice", "https://x/images/artist/abc/1.jpg", 1}};
         CHECK(narrowByExactName("Radice", r, exactCandidates("Radice", r)) == (std::vector<size_t>{1}), "Radice -> Radice");
-        std::vector<Candidate> k = {{"1", "Kaya", "", 1}, {"2", "KAYA", "", 1}};
+        std::vector<Candidate> k = {{"1", "Kaya", "https://x/images/artist/abc/1.jpg", 1}, {"2", "KAYA", "https://x/images/artist/abc/1.jpg", 1}};
         CHECK(narrowByExactName("kaya", k, exactCandidates("kaya", k)) == (std::vector<size_t>{0, 1}), "two matches: no narrowing");
-        std::vector<Candidate> n = {{"1", "Alps Core", "", 1}, {"2", "Alpscore!", "", 1}};
+        std::vector<Candidate> n = {{"1", "Alps Core", "https://x/images/artist/abc/1.jpg", 1}, {"2", "Alpscore!", "https://x/images/artist/abc/1.jpg", 1}};
         CHECK(narrowByExactName("Alpscore", n, exactCandidates("Alpscore", n)) == (std::vector<size_t>{0, 1}), "no match: unchanged");
-        std::vector<Candidate> u = {{"1", "BJÖRK", "", 1}, {"2", "Bjork", "", 1}};
+        std::vector<Candidate> u = {{"1", "BJÖRK", "https://x/images/artist/abc/1.jpg", 1}, {"2", "Bjork", "https://x/images/artist/abc/1.jpg", 1}};
         CHECK(narrowByExactName(" Björk ", u, exactCandidates("Björk", u)) == (std::vector<size_t>{0}), "accent kept, trimmed");
+    }
+    {
+        const std::string pic = "https://x/images/artist/abc/56x56.jpg", none = "https://x/images/artist//56x56.jpg";
+        std::vector<Candidate> a = {{"1", "Alps Core", pic, 1}, {"2", "ALPSCORE", none, 1}};
+        CHECK(narrowByExactName("Alpscore", a, exactCandidates("Alpscore", a)) == (std::vector<size_t>{0, 1}), "photoless name match: no narrowing");
+        std::vector<Candidate> b = {{"1", "Alps Core", none, 1}, {"2", "ALPSCORE", pic, 1}};
+        CHECK(narrowByExactName("Alpscore", b, exactCandidates("Alpscore", b)) == (std::vector<size_t>{1}), "name match with photo narrows");
     }
     g_context = "titles";
     CHECK(normalizeTitle("Replication EP") == "replication", "EP dropped");
