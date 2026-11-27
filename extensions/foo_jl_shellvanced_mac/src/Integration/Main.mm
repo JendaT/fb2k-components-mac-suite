@@ -26,12 +26,7 @@ namespace {
     public:
         service_ptr instantiate(service_ptr arg) override {
             @autoreleasepool {
-                NSDictionary<NSString*,NSString*>* params = nil;
-                id obj = arg.is_valid() ? fb2k::unwrapNSObject(arg) : nil;
-                if ([obj isKindOfClass:[NSDictionary class]]) {
-                    params = (NSDictionary<NSString*,NSString*>*)obj;
-                }
-                ShellVancedController* controller = [[ShellVancedController alloc] initWithParams:params];
+                ShellVancedController* controller = [[ShellVancedController alloc] init];
                 return fb2k::wrapNSObject(controller);
             }
         }

@@ -42,20 +42,28 @@ static NSString* SVKeyString(NSString* key) {
     return key;
 }
 
-static void SVDumpMenu(NSMenu* menu, NSString* path) {
+static void SVDumpMenu(NSMenu* menu, NSString* path, NSUInteger* count) {
     for (NSMenuItem* item in menu.itemArray) {
         if (item.isSeparatorItem) continue;
         NSString* title = item.title.length ? item.title : @"(untitled)";
         NSString* itemPath = path.length ? [NSString stringWithFormat:@"%@ > %@", path, title] : title;
         if (item.keyEquivalent.length > 0) {
-            NSString* line = [NSString stringWithFormat:@"[ShellVanced] key: %@ | %@%@",
+            NSMutableString* flags = [NSMutableString string];
+            if (item.isHidden)    [flags appendString:@" [hidden]"];
+            if (item.isAlternate) [flags appendString:@" [alternate]"];
+            // key='X' prints the raw key equivalent with its case: an uppercase
+            // letter implies shift even when the shift modifier bit is not set.
+            NSString* line = [NSString stringWithFormat:@"[ShellVanced] key: %@ | %@%@ | key='%@'%@",
                               itemPath,
                               SVModifierString(item.keyEquivalentModifierMask),
-                              SVKeyString(item.keyEquivalent)];
+                              SVKeyString(item.keyEquivalent),
+                              item.keyEquivalent,
+                              flags];
             console::info(line.UTF8String);
+            (*count)++;
         }
         if (item.submenu) {
-            SVDumpMenu(item.submenu, itemPath);
+            SVDumpMenu(item.submenu, itemPath, count);
         }
     }
 }
@@ -64,43 +72,35 @@ static void SVDumpMainMenuKeyEquivalentsOnce() {
     static bool s_done = false;
     if (s_done) return;
     s_done = true;
-    // Next run-loop turn so dynamically built menus exist.
-    dispatch_async(dispatch_get_main_queue(), ^{
+    // Delay so foobar has finished building its (partly dynamic) main menu.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         NSMenu* mainMenu = NSApp.mainMenu;
         if (!mainMenu) {
             console::info("[ShellVanced] key: (no main menu)");
             return;
         }
-        SVDumpMenu(mainMenu, @"");
+        FB2K_console_formatter() << "[ShellVanced] key: top-level menus: " << (unsigned)mainMenu.numberOfItems;
+        NSUInteger count = 0;
+        SVDumpMenu(mainMenu, @"", &count);
+        FB2K_console_formatter() << "[ShellVanced] key: total items with key equivalents: " << (unsigned)count;
     });
 }
 
 #pragma mark - Controller
 
 @implementation ShellVancedController {
-    NSDictionary<NSString*,NSString*>* _params;
     NSViewController* _hosted;
     NSTextField* _placeholder;
 }
 
-- (instancetype)initWithParams:(NSDictionary<NSString*,NSString*>*)params {
-    self = [super initWithNibName:nil bundle:nil];
-    if (self) {
-        _params = [params copy] ?: @{};
-    }
-    return self;
-}
-
 - (instancetype)init {
-    return [self initWithParams:nil];
+    return [super initWithNibName:nil bundle:nil];
 }
 
 - (void)loadView {
     NSView* container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 600, 500)];
     container.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.view = container;
-
-    SVDumpMainMenuKeyEquivalentsOnce();
 
     // Spike: host AlbumViewVanced filling the whole view.
     _hosted = SVInstantiateElement(kSVGuidAlbumViewVanced, @{});
@@ -125,6 +125,11 @@ static void SVDumpMainMenuKeyEquivalentsOnce() {
             [_placeholder.trailingAnchor constraintLessThanOrEqualToAnchor:container.trailingAnchor constant:-12],
         ]];
     }
+}
+
+- (void)viewDidAppear {
+    [super viewDidAppear];
+    SVDumpMainMenuKeyEquivalentsOnce();
 }
 
 @end
