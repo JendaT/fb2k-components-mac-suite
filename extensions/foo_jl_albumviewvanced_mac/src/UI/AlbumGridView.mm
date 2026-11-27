@@ -884,6 +884,20 @@ typedef struct {
     CGFloat w = self.bounds.size.width;
     NSInteger cols = columnsForWidth(w, _thumbnailSize);
 
+    BOOL isArrow = (ch == NSLeftArrowFunctionKey || ch == NSRightArrowFunctionKey ||
+                    ch == NSUpArrowFunctionKey || ch == NSDownArrowFunctionKey);
+    if (isArrow && (_selectedAlbumIndex == NSNotFound || _selectedAlbumIndex >= (NSInteger)_albums.count)) {
+        // No (valid) selection: any arrow key selects the first album.
+        if (_albums.count > 0) {
+            _selectedAlbumIndex = 0;
+            _expandedAlbumIndex = NSNotFound;
+            _selectedTrackIndex = NSNotFound;
+            [self reloadData];
+            [self scrollToAlbumIndex:0];
+        }
+        return;
+    }
+
     if (ch == NSLeftArrowFunctionKey) {
         if (_selectedAlbumIndex > 0) {
             _selectedAlbumIndex--;
