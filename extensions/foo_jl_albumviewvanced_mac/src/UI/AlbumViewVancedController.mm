@@ -117,6 +117,8 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
 
     NSString *_artistFilter;
     NSString *_stashedSearchText;   // search text saved while an artist filter is active
+    BOOL _nextGridUpdateResets;     // filter/search changed: next grid update resets selection/expansion
+    void (^_openAlbumHandler)(NSDictionary<NSString *, id> *);
 }
 
 - (void)loadView {
@@ -263,6 +265,7 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
     if ((newFilter == nil && _artistFilter == nil) || [newFilter isEqualToString:_artistFilter]) return;
     BOOL wasFiltered = (_artistFilter != nil);
     _artistFilter = newFilter;
+    _nextGridUpdateResets = YES;
 
     if (_artistFilter != nil) {
         BOOL needsReload = NO;
@@ -305,6 +308,29 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
     [self applyArtistFilterToGrid];
 }
 
+- (void)setOpenAlbumHandler:(nullable void (^)(NSDictionary<NSString *, id> *))handler {
+    [self view];   // make sure the grid exists
+    _openAlbumHandler = [handler copy];
+    if (_openAlbumHandler == nil) {
+        _gridView.openAlbumHandler = nil;
+        return;
+    }
+    __weak AlbumViewVancedController *weakSelf = self;
+    _gridView.openAlbumHandler = ^(AlbumItem *album) {
+        AlbumViewVancedController *strongSelf = weakSelf;
+        if (!strongSelf || !strongSelf->_openAlbumHandler) return;
+        NSString *artist = album.artistName ?: @"";
+        NSString *title = album.albumName ?: @"";
+        strongSelf->_openAlbumHandler(@{
+            @"key":    [NSString stringWithFormat:@"%@\x1f%@", artist, title],
+            @"title":  title,
+            @"artist": artist,
+            @"year":   album.year ?: @"",
+            @"paths":  [album allTrackPaths] ?: @[],
+        });
+    };
+}
+
 /// Pushes the data source's albums to the grid, applying the artist filter if one is set.
 - (void)applyArtistFilterToGrid {
     NSArray<AlbumItem *> *all = _dataSource.albums;
@@ -339,7 +365,9 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
         shown = combined;
     }
 
-    _gridView.albums = shown;
+    BOOL reset = _nextGridUpdateResets;
+    _nextGridUpdateResets = NO;
+    [_gridView setAlbums:shown resetSelection:reset];
     _gridView.appearsOnStartIndex = appearsOnStart;
     [_gridView reloadData];
     [self updateStatusTextForAlbums:shown];
@@ -411,6 +439,7 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
 - (void)performSearch {
     NSString *query = _searchField.stringValue;
     if (query.length == 0) query = nil;
+    _nextGridUpdateResets = YES;
     [_gridView collapseExpandedAlbum];
     [_dataSource rebuildWithFilter:query];
 }

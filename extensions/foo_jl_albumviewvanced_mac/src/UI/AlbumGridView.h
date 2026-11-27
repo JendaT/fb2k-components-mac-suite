@@ -35,6 +35,14 @@ extern NSPasteboardType const AlbumViewVancedPasteboardType;
 /// Index of the album whose track list is expanded, or NSNotFound.
 @property (nonatomic, assign, readonly) NSInteger expandedAlbumIndex;
 
+/// When set, a single click on an album card calls this instead of expanding it inline
+/// (the grid never expands while it is set). nil restores inline expansion.
+@property (nonatomic, copy, nullable) void (^openAlbumHandler)(AlbumItem *album);
+
+/// Replaces the albums. With resetSelection:NO (data-only rebuild) the selected and expanded
+/// albums are re-found by identity (artist + album + date) and track indices are clamped.
+- (void)setAlbums:(nullable NSArray<AlbumItem *> *)albums resetSelection:(BOOL)reset;
+
 - (void)reloadData;
 - (void)recalcFrameHeight;
 - (void)collapseExpandedAlbum;

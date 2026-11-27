@@ -121,17 +121,86 @@ static inline CGFloat contentWidthForView(CGFloat viewWidth) {
 }
 
 - (void)setAlbums:(NSArray<AlbumItem *> *)albums {
+    [self setAlbums:albums resetSelection:YES];
+}
+
+static BOOL sameAlbumIdentity(AlbumItem *a, AlbumItem *b) {
+    return [a.artistName isEqualToString:b.artistName] &&
+           [a.albumName isEqualToString:b.albumName] &&
+           [a.year isEqualToString:b.year];
+}
+
+static NSInteger indexOfAlbumLike(NSArray<AlbumItem *> *albums, AlbumItem *target) {
+    if (!target) return NSNotFound;
+    for (NSUInteger i = 0; i < albums.count; i++) {
+        if (sameAlbumIdentity(albums[i], target)) return (NSInteger)i;
+    }
+    return NSNotFound;
+}
+
+- (void)setAlbums:(NSArray<AlbumItem *> *)albums resetSelection:(BOOL)reset {
     if (_albums != albums) {
-        _selectedAlbumIndex = NSNotFound;
-        _selectedTrackIndex = NSNotFound;
-        _expandedAlbumIndex = NSNotFound;
-        _hoveredAlbumIndex = NSNotFound;
-        [self _cancelExpandTimer];
+        if (reset) {
+            _selectedAlbumIndex = NSNotFound;
+            _selectedTrackIndex = NSNotFound;
+            _expandedAlbumIndex = NSNotFound;
+            _hoveredAlbumIndex = NSNotFound;
+            [self _cancelExpandTimer];
+        } else {
+            // Data-only rebuild: keep the open/selected albums by identity.
+            AlbumItem *oldSelected = [self selectedAlbum];
+            AlbumItem *oldExpanded = (_expandedAlbumIndex != NSNotFound && _expandedAlbumIndex < (NSInteger)_albums.count)
+                ? _albums[_expandedAlbumIndex] : nil;
+            NSInteger newSelected = indexOfAlbumLike(albums, oldSelected);
+            NSInteger newExpanded = indexOfAlbumLike(albums, oldExpanded);
+            _selectedAlbumIndex = newSelected;
+            _expandedAlbumIndex = newExpanded;
+            _hoveredAlbumIndex = NSNotFound;
+            if (newSelected == NSNotFound) {
+                _selectedTrackIndex = NSNotFound;
+            } else if (_selectedTrackIndex != NSNotFound) {
+                NSInteger n = (NSInteger)albums[newSelected].tracks.count;
+                if (_selectedTrackIndex >= n) _selectedTrackIndex = n > 0 ? n - 1 : NSNotFound;
+            }
+            if (_pendingExpandAlbumIndex != NSNotFound) {
+                [self _cancelExpandTimer];
+            }
+        }
     }
     _albums = albums;
     if (_appearsOnStartIndex != NSNotFound && _appearsOnStartIndex >= (NSInteger)albums.count) {
         _appearsOnStartIndex = NSNotFound;
     }
+}
+
+- (void)setOpenAlbumHandler:(void (^)(AlbumItem *))handler {
+    _openAlbumHandler = [handler copy];
+    if (_openAlbumHandler) {
+        [self _cancelExpandTimer];
+        if (_expandedAlbumIndex != NSNotFound) [self collapseExpandedAlbum];
+    }
+}
+
+/// Cover rect of an album card (flat layout; only valid while nothing is expanded).
+- (NSRect)artRectForAlbumIndex:(NSInteger)index {
+    CGFloat w = self.bounds.size.width;
+    if (w <= 0 || index < 0 || index >= (NSInteger)_albums.count) return NSZeroRect;
+    CGFloat contentW = contentWidthForView(w);
+    NSInteger cols = columnsForWidth(contentW, _thumbnailSize);
+    CGFloat cw = cellWidth(contentW, cols);
+    CGFloat ch = cellTotalHeight(cw);
+    NSInteger albumCount = (NSInteger)_albums.count;
+    CGFloat y = 0;
+    for (NSInteger rowStart = 0, rowEnd; rowStart < albumCount; rowStart = rowEnd) {
+        rowEnd = [self rowEndForStart:rowStart cols:cols count:albumCount];
+        y += [self sectionHeaderHeightBeforeRow:rowStart];
+        if (index >= rowStart && index < rowEnd) {
+            CGFloat x = kContentInsetLeft + (index - rowStart) * (cw + kCellPadding);
+            return NSMakeRect(x, y, cw, cw);
+        }
+        y += ch;
+    }
+    return NSZeroRect;
 }
 
 - (void)setAppearsOnStartIndex:(NSInteger)index {
@@ -742,6 +811,26 @@ typedef struct {
         return;
     }
 
+    if (_openAlbumHandler) {
+        // Hosted mode: open through the handler immediately; the hover play button still plays.
+        [self _cancelExpandTimer];
+        _selectedAlbumIndex = hit.albumIndex;
+        _selectedTrackIndex = NSNotFound;
+        [self setNeedsDisplay:YES];
+        AlbumItem *album = _albums[hit.albumIndex];
+        if (hit.albumIndex == _hoveredAlbumIndex) {
+            NSRect art = [self artRectForAlbumIndex:hit.albumIndex];
+            CGFloat circR = art.size.width * 0.25 * 0.9;
+            CGFloat dx = point.x - NSMidX(art), dy = point.y - NSMidY(art);
+            if (!NSIsEmptyRect(art) && dx * dx + dy * dy <= circR * circR) {
+                [_delegate albumGridView:self wantsPlayAlbum:album];
+                return;
+            }
+        }
+        _openAlbumHandler(album);
+        return;
+    }
+
     // Clicked on an album cell — select immediately, but delay expand/collapse
     // so a fast double-click can cancel it before it fires
     _selectedAlbumIndex = hit.albumIndex;
@@ -787,6 +876,8 @@ typedef struct {
 }
 
 - (void)mouseUp:(NSEvent *)event {
+    // Hosted mode: the first click already opened the album; double-click never plays.
+    if (_openAlbumHandler) return;
     if (event.clickCount == 2) {
         NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
         GridHitResult hit = [self hitTestAtPoint:point];
@@ -870,6 +961,10 @@ typedef struct {
         return;
     }
 
+    if (ch == ' ' && _openAlbumHandler) {
+        [super keyDown:event];   // PlayVanced owns Space in the shell
+        return;
+    }
     if (ch == ' ') {
         playback_control::get()->toggle_pause();
         return;
