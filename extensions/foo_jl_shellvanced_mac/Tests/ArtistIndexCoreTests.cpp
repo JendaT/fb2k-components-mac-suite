@@ -65,5 +65,32 @@ int main() {
     auto i5 = buildIndex(r5);
     CHECK_EQ(i5.size(), 1, "merge without album artist");
     if (i5.size() == 1) CHECK(i5[0].name == lower, "most frequent spelling wins");
+    g_context = "coArtists";
+    {
+        std::vector<TrackRow> r = {
+            {"Maramba", "Kaikkialla", "Maramba - Various Tracks", "2018", 0},
+            {"", "Kaikkialla Meets Yaminahua", "Solo", "2019", 1},
+            {"", "Kaikkialla VS Maramba", "X", "2020", 2},
+            {"Various Artists", "Kaikkialla", "Comp", "2021", 3},
+            {"Popol Vuh Records", "Kaikkialla & Yaminahua", "Label", "2022", 4},
+        };
+        auto co = buildCoArtists(r);
+        const auto& k = co["kaikkialla"];
+        CHECK(k.keys.count("maramba") && k.keys.count("yaminahua") && k.keys.count("popolvuhrecords"), "Kaikkialla co-artists");
+        CHECK(!k.keys.count("kaikkialla") && !k.keys.count("variousartists"), "no self, no VA");
+        CHECK(k.collabStrings.count("Kaikkialla VS Maramba") && k.collabStrings.count("Kaikkialla & Yaminahua"), "collab strings");
+        CHECK(co["maramba"].keys.count("kaikkialla"), "symmetric");
+        CHECK(co.find("nala") == co.end(), "stranger has none");
+    }
+    g_context = "coverProbeOrder";
+    {
+        std::vector<CoverProbeRow> p = {
+            {"Old", "2010", 0}, {"New", "2022", 1}, {"New", "2022", 2}, {"Mid", "2015", 3}, {"", "2023", 4}, {"", "2009", 5},
+        };
+        auto o = coverProbeOrder(p, 6);
+        CHECK(o == (std::vector<size_t>{4, 1, 3, 0, 5, 2}), "newest first, one per album, extras last");
+        CHECK(coverProbeOrder(p, 2) == (std::vector<size_t>{4, 1}), "capped");
+        CHECK(coverProbeOrder({}, 6).empty(), "empty");
+    }
     TEST_MAIN_END();
 }

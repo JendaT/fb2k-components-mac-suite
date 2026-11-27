@@ -35,6 +35,16 @@ extern NSNotificationName const SVArtistLibraryDidChangeNotification;
 /// Album titles only (owned + appears-on), raw.
 - (NSArray<NSString *> *)albumTitlesForArtist:(NSString *)name;
 
+/// Co-artist keys (artistKey) from the user's own tags: other artists on the same tracks / album artists
+/// of albums the artist appears on. The artist itself is never included.
+- (NSArray<NSString *> *)coArtistKeysForArtist:(NSString *)name;
+
+/// Raw multi-artist tag strings ("A vs B") the artist appears in.
+- (NSArray<NSString *> *)collabStringsForArtist:(NSString *)name;
+
+/// Tracks to probe for cover art (newest album first, one per album, up to 6); empty if unknown.
+- (metadb_handle_list)coverProbeHandlesForArtist:(NSString *)name;
+
 /// First track of the artist's newest album (for the cover fallback); invalid if unknown.
 - (metadb_handle_ptr)representativeHandleForArtist:(NSString *)name;
 

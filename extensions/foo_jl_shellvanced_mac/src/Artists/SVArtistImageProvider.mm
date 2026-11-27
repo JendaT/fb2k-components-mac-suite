@@ -17,6 +17,7 @@
 #import "SVDeezerClient.h"
 #import "SVSpotifyClient.h"
 #include "ImageHashCore.h"
+#include "SpotifyMatchCore.h"
 #include "DeezerMatchCore.h"
 #include "../../../../shared/ArtistNames.h"
 
@@ -25,6 +26,9 @@
 NSNotificationName const SVArtistImagesDidChangeNotification = @"SVArtistImagesDidChangeNotification";
 
 static const NSTimeInterval kNegativeTTL = 30.0 * 24 * 60 * 60;
+// Bump when the matching rules change so stored negatives (Deezer and sp:) are re-checked once.
+// v4: title cleanup + co-artist evidence.
+static const int kNegativeRuleVersion = 4;
 
 @interface SVPendingRequest : NSObject
 @property CGFloat size;
@@ -282,10 +286,10 @@ static NSString *SHA1Hex(NSString *s) {
         _negative = [NSMutableDictionary dictionary];
         NSData *data = [NSData dataWithContentsOfURL:[self negativeURL]];
         id json = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-        // v3 format: {"v":3,"e":{key:epoch}}. Older (unversioned) files were recorded under the previous
-        // matching rule and are ignored so the new rule can retry those artists.
+        // Format {"v":kNegativeRuleVersion,"e":{key:epoch}}. Files written under an older matching rule
+        // (including unversioned ones) are ignored so the current rule re-checks those artists once.
         NSDictionary *entries = nil;
-        if ([json isKindOfClass:[NSDictionary class]] && [json[@"v"] isEqual:@3] &&
+        if ([json isKindOfClass:[NSDictionary class]] && [json[@"v"] isEqual:@(kNegativeRuleVersion)] &&
             [json[@"e"] isKindOfClass:[NSDictionary class]])
             entries = json[@"e"];
         if (entries) {
@@ -316,7 +320,7 @@ static NSString *SHA1Hex(NSString *s) {
         self->_negativeSavePending = YES;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), self->_diskQueue, ^{
             self->_negativeSavePending = NO;
-            NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"v": @3, @"e": [self negativeStoreLocked]} options:0 error:nil];
+            NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"v": @(kNegativeRuleVersion), @"e": [self negativeStoreLocked]} options:0 error:nil];
             [data writeToURL:[self negativeURL] atomically:YES];
         });
     });
@@ -431,17 +435,24 @@ static NSString *SHA1Hex(NSString *s) {
 
 static NSString *const kSpotifyNegPrefix = @"sp:";
 
-static std::vector<std::string> NormalizedUserTitles(NSString *name) {
-    std::vector<std::string> user;
-    for (NSString *t in [[SVArtistLibrary shared] userTitlesForArtist:name])
-        user.push_back(deezermatch::normalizeTitle(t.UTF8String ?: ""));
-    return user;
+// Multi-artist strings from the user's tags ("A vs B"), used to strip "<collab> - " title prefixes.
+static std::vector<std::string> CollabStrings(NSString *name) {
+    std::vector<std::string> out;
+    for (NSString *c in [[SVArtistLibrary shared] collabStringsForArtist:name]) out.push_back(c.UTF8String ?: "");
+    return out;
 }
 
-static std::vector<std::string> NormalizedTitles(NSArray<NSString *> *titles) {
+// Cleaned + normalized (both sides of every comparison).
+static std::vector<std::string> NormalizedTitles(NSArray<NSString *> *titles, NSString *name) {
     std::vector<std::string> out;
-    for (NSString *t in titles) out.push_back(deezermatch::normalizeTitle(t.UTF8String ?: ""));
+    const std::string artist = name.UTF8String ?: "";
+    const std::vector<std::string> collabs = CollabStrings(name);
+    for (NSString *t in titles) out.push_back(deezermatch::cleanNormalizedTitle(t.UTF8String ?: "", artist, collabs));
     return out;
+}
+
+static std::vector<std::string> NormalizedUserTitles(NSString *name) {
+    return NormalizedTitles([[SVArtistLibrary shared] userTitlesForArtist:name], name);
 }
 
 // 9x8 grayscale-ready render for the dHash.
@@ -530,7 +541,7 @@ static BOOL DHashOfImage(NSImage *img, uint64_t *out) {
     [[SVDeezerClient shared] albumsForArtistId:cid completion:^(NSArray<NSString *> *titles, NSArray<NSString *> *covers) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (!titles) { [self fallbackForName:name key:key cacheResult:NO]; return; }  // transient failure
-            if (deezermatch::chooseCandidate(user, {NormalizedTitles(titles)}) == 0) {
+            if (deezermatch::chooseCandidate(user, {NormalizedTitles(titles, name)}) == 0) {
                 [self acceptDeezerPicture:[NSString stringWithUTF8String:cand.pictureUrl.c_str()] covers:covers name:name key:key];
                 return;
             }
@@ -570,7 +581,7 @@ static BOOL DHashOfImage(NSImage *img, uint64_t *out) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (!titles) { [self fallbackForName:name key:key cacheResult:NO]; return; }  // transient failure
             auto all = remote;
-            all.push_back(NormalizedTitles(titles));
+            all.push_back(NormalizedTitles(titles, name));
             [self confirmCandidates:cands index:i + 1 remote:std::move(all)
                          coverLists:[coverLists arrayByAddingObject:covers]
                          userTitles:user name:name key:key];
@@ -729,10 +740,12 @@ typedef NS_ENUM(NSInteger, SVPickPersist) { SVPickPersistNone, SVPickPersistNorm
             BOOL anyImage = NO;
             for (const auto &c : use) if (!c.imageUrl.empty()) anyImage = YES;
             if (!anyImage) { completion(nil, SVSpotifyStatusOK); return; }  // nothing to show: no album fetches
-            std::vector<std::string> userAll = NormalizedUserTitles(name), userAlbums;
-            for (NSString *t in [[SVArtistLibrary shared] albumTitlesForArtist:name])
-                userAlbums.push_back(deezermatch::normalizeTitle(t.UTF8String ?: ""));
-            [self spotifyConfirm:use index:0 remote:{} key:key userAlbums:userAlbums userAll:userAll completion:completion];
+            std::vector<std::string> userAll = NormalizedUserTitles(name);
+            std::vector<std::string> userAlbums = NormalizedTitles([[SVArtistLibrary shared] albumTitlesForArtist:name], name);
+            std::vector<std::string> userCo;
+            for (NSString *k in [[SVArtistLibrary shared] coArtistKeysForArtist:name]) userCo.push_back(k.UTF8String ?: "");
+            [self spotifyConfirm:use index:0 remote:{} name:name key:key userAlbums:userAlbums userAll:userAll
+                          userCo:userCo completion:completion];
         });
     }];
 }
@@ -740,12 +753,14 @@ typedef NS_ENUM(NSInteger, SVPickPersist) { SVPickPersistNone, SVPickPersistNorm
 - (void)spotifyConfirm:(std::vector<spmatch::Candidate>)cands
                  index:(size_t)i
                 remote:(std::vector<spmatch::RemoteTitles>)remote
+                  name:(NSString *)name
                    key:(NSString *)key
             userAlbums:(std::vector<std::string>)userAlbums
                userAll:(std::vector<std::string>)userAll
+                userCo:(std::vector<std::string>)userCo
             completion:(void (^)(NSString *_Nullable, SVSpotifyStatus))completion {
     if (i >= cands.size()) {
-        const int chosen = spmatch::chooseConfirmed(userAlbums, userAll, remote);
+        const int chosen = spmatch::chooseConfirmed(userAlbums, userAll, remote, userCo);
         NSString *url = (chosen >= 0 && !cands[(size_t)chosen].imageUrl.empty())
             ? [NSString stringWithUTF8String:cands[(size_t)chosen].imageUrl.c_str()] : nil;
         completion(url, SVSpotifyStatusOK);
@@ -753,16 +768,22 @@ typedef NS_ENUM(NSInteger, SVPickPersist) { SVPickPersistNone, SVPickPersistNorm
     }
     NSString *cid = [NSString stringWithUTF8String:cands[i].id.c_str()];
     [[SVSpotifyClient shared] albumsForArtistId:cid urgent:[self isUrgentKey:key]
-        completion:^(NSArray<NSString *> *all, NSArray<NSString *> *primary, long total, SVSpotifyStatus st) {
+        completion:^(NSArray<NSString *> *all, NSArray<NSString *> *primary, NSArray<NSString *> *artists, long total, SVSpotifyStatus st) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (st != SVSpotifyStatusOK || !all) { completion(nil, st == SVSpotifyStatusOK ? SVSpotifyStatusFailed : st); return; }
             auto r = remote;
             spmatch::RemoteTitles rt;
-            rt.all = NormalizedTitles(all);
-            rt.primary = NormalizedTitles(primary);
+            rt.all = NormalizedTitles(all, name);
+            rt.primary = NormalizedTitles(primary, name);
+            const std::string ownKey = artistnames::artistKey(cands[i].name);
+            for (NSString *a in artists) {  // local comparison only; nothing is sent
+                const std::string k = artistnames::artistKey(a.UTF8String ?: "");
+                if (!k.empty() && k != ownKey && std::find(rt.coArtistKeys.begin(), rt.coArtistKeys.end(), k) == rt.coArtistKeys.end())
+                    rt.coArtistKeys.push_back(k);
+            }
             r.push_back(std::move(rt));
-            [self spotifyConfirm:cands index:i + 1 remote:std::move(r) key:key
-                      userAlbums:userAlbums userAll:userAll completion:completion];
+            [self spotifyConfirm:cands index:i + 1 remote:std::move(r) name:name key:key
+                      userAlbums:userAlbums userAll:userAll userCo:userCo completion:completion];
         });
     }];
 }
@@ -773,7 +794,7 @@ typedef NS_ENUM(NSInteger, SVPickPersist) { SVPickPersistNone, SVPickPersistNorm
         NSMutableDictionary *store = [self negativeStoreLocked];
         for (NSString *k in [store allKeys])
             if ([k hasPrefix:kSpotifyNegPrefix]) [store removeObjectForKey:k];
-        NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"v": @3, @"e": store} options:0 error:nil];
+        NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"v": @(kNegativeRuleVersion), @"e": store} options:0 error:nil];
         [data writeToURL:[self negativeURL] atomically:YES];
         NSFileManager *fm = [NSFileManager defaultManager];
         for (NSURL *u in [fm contentsOfDirectoryAtURL:self->_cacheDir includingPropertiesForKeys:nil options:0 error:nil])
@@ -791,23 +812,27 @@ typedef NS_ENUM(NSInteger, SVPickPersist) { SVPickPersistNone, SVPickPersistNorm
 
 // Step 5: newest album cover, else placeholder.
 - (void)fallbackForName:(NSString *)name key:(NSString *)key cacheResult:(BOOL)cache {
-    metadb_handle_ptr handle = [[SVArtistLibrary shared] representativeHandleForArtist:name];
-    // Empty handle = snapshot not built yet / artist not indexed: only the 60 s path, never session-long.
-    if (handle.is_empty()) { [self finishKey:key name:name source:nil cache:NO]; return; }
+    // Probe several tracks (newest album first, one per album): the newest release often has no art, or an
+    // empty album tag leaves no "newest album" at all.
+    metadb_handle_list handles = [[SVArtistLibrary shared] coverProbeHandlesForArtist:name];
+    // No handles = snapshot not built yet / artist not indexed: only the 60 s path, never session-long.
+    if (handles.get_count() == 0) { [self finishKey:key name:name source:nil cache:NO]; return; }
     [_workQueue addOperationWithBlock:^{
         NSImage *cover = nil;
-        try {
-            abort_callback_dummy abort;
-            auto manager = album_art_manager_v2::get();
-            metadb_handle_list items;
-            items.add_item(handle);
-            pfc::list_t<GUID> ids;
-            ids.add_item(album_art_ids::cover_front);
-            auto extractor = manager->open(items, ids, abort);
-            album_art_data_ptr art;
-            if (extractor->query(album_art_ids::cover_front, art, abort) && art.is_valid() && art->size() > 0)
-                cover = DecodeImage([NSData dataWithBytes:art->data() length:art->size()]);
-        } catch (...) {}
+        for (size_t i = 0; i < handles.get_count() && !cover; i++) {
+            try {
+                abort_callback_dummy abort;
+                auto manager = album_art_manager_v2::get();
+                metadb_handle_list items;
+                items.add_item(handles[i]);
+                pfc::list_t<GUID> ids;
+                ids.add_item(album_art_ids::cover_front);
+                auto extractor = manager->open(items, ids, abort);
+                album_art_data_ptr art;
+                if (extractor->query(album_art_ids::cover_front, art, abort) && art.is_valid() && art->size() > 0)
+                    cover = DecodeImage([NSData dataWithBytes:art->data() length:art->size()]);
+            } catch (...) {}
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
             [self finishKey:key name:name source:cover cache:cache];
         });

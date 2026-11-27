@@ -4,6 +4,7 @@
 //
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <string>
@@ -48,17 +49,32 @@ inline std::vector<size_t> exactCandidates(const std::string& artist, const std:
 
 // A candidate's normalized album titles: `primary` = album/single groups, `all` = every group
 // (adds appears_on/compilation).
+// `coArtistKeys` = artistKeys of the other artists credited on the candidate's albums (candidate itself excluded).
 struct RemoteTitles {
     std::vector<std::string> primary, all;
+    std::vector<std::string> coArtistKeys;
 };
+
+// Distinct keys present on both sides (empty keys ignored).
+inline int sharedCoArtists(const std::vector<std::string>& userCo, const std::vector<std::string>& remoteCo) {
+    std::vector<std::string> seen;
+    for (const std::string& k : userCo) {
+        if (k.empty() || std::find(seen.begin(), seen.end(), k) != seen.end()) continue;
+        if (std::find(remoteCo.begin(), remoteCo.end(), k) != remoteCo.end()) seen.push_back(k);
+    }
+    return (int)seen.size();
+}
 
 // Spotify always needs title overlap (no small-discography shortcut):
 //  - >= 2 distinct EXACT title equalities (no containment). A user ALBUM title may equal any Spotify
 //    title; a user TRACK-only title may equal only a Spotify album/single (primary) title, so
 //    appears_on/compilation names never confirm tracks.
 //  - or exactly one strong (exact, >= 6 chars) user ALBUM title vs a Spotify album/single.
+// Inputs are cleaned+normalized titles. Co-artist evidence (user tags vs the candidate's album credits) adds:
+//  - >= 1 shared co-artist key AND >= 1 exact title equality of any kind (any group, tracks included), or
+//  - >= 2 distinct shared co-artist keys.
 inline bool confirmed(const std::vector<std::string>& userAlbums, const std::vector<std::string>& userAll,
-                      const RemoteTitles& remote) {
+                      const RemoteTitles& remote, const std::vector<std::string>& userCo = {}) {
     auto has = [](const std::vector<std::string>& v, const std::string& t) {
         return std::find(v.begin(), v.end(), t) != v.end();
     };
@@ -70,15 +86,21 @@ inline bool confirmed(const std::vector<std::string>& userAlbums, const std::vec
     }
     if (seen.size() >= 2) return true;
     const deezermatch::OverlapScore sc = deezermatch::scoreOverlap(userAlbums, remote.primary);
-    return sc.distinct == 1 && sc.strongSingle;
+    if (sc.distinct == 1 && sc.strongSingle) return true;
+    const int shared = sharedCoArtists(userCo, remote.coArtistKeys);
+    if (shared >= 2) return true;
+    if (shared >= 1)
+        for (const std::string& u : userAll)
+            if (!u.empty() && has(remote.all, u)) return true;
+    return false;
 }
 
 // Index of the single confirmed candidate; none or several confirmed (ambiguous) -> -1.
 inline int chooseConfirmed(const std::vector<std::string>& userAlbums, const std::vector<std::string>& userAll,
-                           const std::vector<RemoteTitles>& remote) {
+                           const std::vector<RemoteTitles>& remote, const std::vector<std::string>& userCo = {}) {
     int chosen = -1;
     for (size_t i = 0; i < remote.size(); i++) {
-        if (!confirmed(userAlbums, userAll, remote[i])) continue;
+        if (!confirmed(userAlbums, userAll, remote[i], userCo)) continue;
         if (chosen >= 0) return -1;
         chosen = (int)i;
     }

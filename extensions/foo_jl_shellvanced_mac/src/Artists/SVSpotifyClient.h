@@ -43,10 +43,12 @@ typedef NS_ENUM(NSInteger, SVSpotifyStatus) {
           completion:(void (^)(std::vector<spmatch::Candidate> candidates, SVSpotifyStatus status))completion;
 
 /// Album titles (up to 2 pages of 50): `allTitles` = every group, `primaryTitles` = album/single groups only.
-/// `total` is the endpoint's total, -1 when unknown.
+/// `total` is the endpoint's total, -1 when unknown. `artistNames` = distinct credited artist names across
+/// the albums (candidate included; used locally for co-artist evidence).
 - (void)albumsForArtistId:(NSString *)artistId urgent:(BOOL)urgent
                completion:(void (^)(NSArray<NSString *> *_Nullable allTitles,
                                     NSArray<NSString *> *_Nullable primaryTitles,
+                                    NSArray<NSString *> *artistNames,
                                     long total, SVSpotifyStatus status))completion;
 
 /// Spotify image CDN (https, *.scdn.co only, redirects re-checked; no token, not on the API queue).

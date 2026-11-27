@@ -6,6 +6,7 @@
 //
 #pragma once
 
+#include <algorithm>
 #include <map>
 #include <set>
 #include <string>
@@ -123,6 +124,64 @@ inline std::vector<ArtistEntry> buildIndex(const std::vector<TrackRow>& rows) {
         b.pickName();
         if (!b.haveOwned) b.entry.newestAlbum = b.appearsNewest;
         out.push_back(std::move(b.entry));
+    }
+    return out;
+}
+
+// Co-artist evidence derived from the user's own tags, per artistKey: keys of the other artists credited on
+// the same track (artist tag and album artist, VA album artists excluded) and the raw multi-artist strings.
+struct CoArtistInfo {
+    std::set<std::string> keys;
+    std::set<std::string> collabStrings;
+};
+
+inline std::map<std::string, CoArtistInfo> buildCoArtists(const std::vector<TrackRow>& rows) {
+    std::map<std::string, CoArtistInfo> out;
+    for (const TrackRow& r : rows) {
+        std::set<std::string> all;
+        std::vector<std::string> raws;
+        auto addParts = [&](const std::string& tag) {
+            if (tag.empty() || artistnames::isVariousArtists(tag)) return;
+            const std::vector<std::string> parts = artistnames::splitArtists(tag);
+            for (const std::string& n : parts) {
+                const std::string k = artistnames::artistKey(n);
+                if (!k.empty()) all.insert(k);
+            }
+            if (parts.size() > 1) raws.push_back(tag);
+        };
+        addParts(r.artist);
+        addParts(r.albumArtist);
+        if (all.size() < 2) continue;
+        for (const std::string& k : all) {
+            CoArtistInfo& info = out[k];
+            for (const std::string& o : all) if (o != k) info.keys.insert(o);
+            for (const std::string& s : raws) info.collabStrings.insert(s);
+        }
+    }
+    return out;
+}
+
+// Which tracks to probe for cover art, in order: newest date first, one track per distinct album (an empty
+// album tag counts each track as its own album), then further tracks of the same albums; at most `maxProbes`.
+struct CoverProbeRow {
+    std::string album, date;
+    size_t trackIndex;
+};
+
+inline std::vector<size_t> coverProbeOrder(const std::vector<CoverProbeRow>& rows, size_t maxProbes = 6) {
+    std::vector<size_t> order(rows.size());
+    for (size_t i = 0; i < order.size(); i++) order[i] = i;
+    std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return rows[a].date > rows[b].date; });
+    std::vector<size_t> out, rest;
+    std::set<std::string> albums;
+    for (size_t i : order) {
+        if (out.size() >= maxProbes) break;
+        if (rows[i].album.empty() || albums.insert(rows[i].album).second) out.push_back(rows[i].trackIndex);
+        else rest.push_back(rows[i].trackIndex);
+    }
+    for (size_t t : rest) {
+        if (out.size() >= maxProbes) break;
+        out.push_back(t);
     }
     return out;
 }

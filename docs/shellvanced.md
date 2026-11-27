@@ -42,7 +42,7 @@ Turn off **Playback follows cursor**. With it on, foobar plays from the focused 
 Sources, in order:
 
 1. **Deezer** photo, when the match is unambiguous (single exact-name candidate, or the only candidate whose Deezer albums share at least two titles with your library, or one exact title of 6+ characters). A lone candidate with no title overlap is accepted only with at most 15 albums and an artist name of 5+ characters. Deezer's generic grey silhouette is detected and treated as "no photo". A picture that is really one of the artist's album covers (perceptual hash within 10 bits of any of up to 10 covers) is only a fallback.
-2. **Spotify**, only if credentials are configured and only for artists with no usable Deezer photo or a cover-like one. Exact-name match plus mandatory title overlap (no small-discography shortcut): two distinct matching titles, or one exact title of 6+ characters that is one of your album titles matched to a Spotify album/single (a track title or an appears-on entry alone is not enough). Titles are compared locally. The fallback is shown immediately and replaced when Spotify returns a verified photo; the artist page's requests go first in the queue. Largest image up to 640 px.
+2. **Spotify**, only if credentials are configured and only for artists with no usable Deezer photo or a cover-like one. Exact-name match plus mandatory title overlap (no small-discography shortcut): two distinct matching titles, or one exact title of 6+ characters that is one of your album titles matched to a Spotify album/single (a track title or an appears-on entry alone is not enough). Messy tags are cleaned on both sides first (leading `<artist> - `, number/BPM/key brackets, `Released on ..`/`Soon on ..`/`Master16`/`Original Mix` tails, `V/A` and `Compiled By ..`). Co-artist evidence also confirms: a shared co-artist (from your own artist/album-artist tags vs the credits on the candidate's Spotify albums) plus one exact title, or two distinct shared co-artists. Titles and co-artist names are compared locally. The fallback is shown immediately and replaced when Spotify returns a verified photo; the artist page's requests go first in the queue. Largest image up to 640 px.
 3. A cover-like Deezer picture, if any.
 4. The newest album's cover, cropped round, then initials.
 
@@ -52,7 +52,8 @@ Privacy and limits:
 
 - Only artist names and Deezer/Spotify ids are sent; never track or album titles.
 - Deezer: at most 8 requests per second. Spotify: a single serialized queue with at least 2 seconds between requests. Spotify stops for the session after 5 consecutive failures or on 403. On HTTP 429 the Retry-After time is saved in `spotify-block.json` and Spotify is skipped until it passes (affected artists are retried in a later session, not remembered as misses).
-- Cache: `~/Library/Caches/foo_jl_shellvanced/artists/`. `*.jpg` are photos, `*.cl` are cover-like Deezer pictures kept as fallback (30 days). Misses are remembered for 30 days in `negative.json` (Spotify misses under `sp:` keys). The cache format is versioned (`format` file); a new version wipes photos once. Delete the folder to refetch.
+- No-photo fallback probes up to 6 tracks (newest album first, one per album) for front cover art before showing initials.
+- Cache: `~/Library/Caches/foo_jl_shellvanced/artists/`. `*.jpg` are photos, `*.cl` are cover-like Deezer pictures kept as fallback (30 days). Misses are remembered for 30 days in `negative.json` (versioned by matching rule; a rule change re-checks them once) (Spotify misses under `sp:` keys). The cache format is versioned (`format` file); a new version wipes photos once. Delete the folder to refetch.
 
 ## Implementation notes
 

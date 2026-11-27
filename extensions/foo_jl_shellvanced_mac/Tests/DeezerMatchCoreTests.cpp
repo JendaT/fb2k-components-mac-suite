@@ -161,5 +161,51 @@ int main() {
         CHECK(!spmatch::needsSpotify(true, false, true), "real photo -> deezer");
         CHECK(!spmatch::needsSpotify(false, false, false) && !spmatch::needsSpotify(true, true, false), "unavailable -> no spotify");
     }
+    g_context = "cleanTitle";
+    {
+        using V = std::vector<std::string>;
+        const std::string A = "Kaikkialla";
+        const V collabs = {"Kaikkialla VS Maramba"};
+        auto cn = [&](const char* t) { return cleanNormalizedTitle(t, A, collabs); };
+        CHECK(cn("Kaikkialla - Lentas (191bpm) Released on Zeakon Records") == "lentas", "Lentas");
+        CHECK(cn("Kaikkialla - The Sumerian [190] Soon On STZ - Records") == "the sumerian", "The Sumerian");
+        CHECK(cn("Kaikkialla - Illusion Of Diversity [174] SOOn on Kamayura Rec") == "illusion of diversity", "Illusion Of Diversity");
+        CHECK(cn("Kaikkialla - Overt\xC3\xBCre [175] SOON OUT") == cn("Overt\xC3\xBCre"), "Overture");
+        CHECK(cn("Kaikkialla Meets Yaminahua - Digital Jungle Master16") == "digital jungle", "Digital Jungle");
+        CHECK(cn("Kaikkialla VS Maramba - Hybrid") == "hybrid", "collab prefix");
+        CHECK(cn("V/A Pushing The Boundary Compiled By  JokerFox") == "pushing the boundary", "Pushing The Boundary");
+        CHECK(cn("VA - Pushing The Boundary") == "pushing the boundary", "VA prefix");
+        CHECK(cn("Strange Day [Am] Free Download") == "strange day", "key bracket + free download");
+        CHECK(cn("Strange Day (200 Bpm) Original Mix") == "strange day", "bpm + original mix");
+        CHECK(cn("Strange Day [8A]") == "strange day", "camelot");
+        CHECK(cn("Out Now") == "out now", "never emptied");
+        CHECK(cn("Someone Else - Track") == "someone else track", "unrelated prefix kept");
+        CHECK(cleanTitle("Va Bene", A) == "Va Bene", "lowercase Va kept");
+        CHECK(cn("Lentas") == cn("Kaikkialla - Lentas (191bpm) Released on Zeakon Records"), "both sides match");
+        CHECK(cn("Overt\xC3\xBCre") == "overture", "diaeresis folded");
+    }
+    g_context = "coArtists";
+    {
+        using V = std::vector<std::string>;
+        using RT = spmatch::RemoteTitles;
+        // exact (cleaned) rule still wins alone
+        CHECK(spmatch::confirmed(V{}, V{"lentas", "the sumerian"}, RT{V{"lentas", "the sumerian"}, V{"lentas", "the sumerian"}}), "branch 1: two exact");
+        // branch 2: shared co-artist + one exact match of any kind (track vs appears_on-only title)
+        CHECK(spmatch::confirmed(V{}, V{"lentas"}, RT{V{}, V{"lentas"}, V{"maramba"}}, V{"maramba", "yaminahua"}), "branch 2: 1 shared + 1 exact");
+        CHECK(!spmatch::confirmed(V{}, V{"lentas"}, RT{V{}, V{"lentas"}, V{"other"}}, V{"maramba", "yaminahua"}), "1 exact, no shared: rejected");
+        CHECK(!spmatch::confirmed(V{}, V{"lentas"}, RT{V{}, V{"x"}, V{"maramba"}}, V{"maramba"}), "1 shared, no exact: rejected");
+        CHECK(!spmatch::confirmed(V{}, V{"night drive"}, RT{V{}, V{"night drive extended"}, V{"maramba"}}, V{"maramba"}), "1 shared + containment only: rejected");
+        // branch 3: two distinct shared keys, no title evidence
+        CHECK(spmatch::confirmed(V{}, V{"abc"}, RT{V{}, V{"zzz"}, V{"maramba", "yaminahua", "x"}}, V{"maramba", "yaminahua", "popolvuhrecords"}), "branch 3: 2 shared");
+        CHECK(!spmatch::confirmed(V{}, V{"abc"}, RT{V{}, V{"zzz"}, V{"maramba", "maramba"}}, V{"maramba", "maramba"}), "duplicate key counts once");
+        // stranger "Nala": no shared co-artists, containment-only title matches
+        CHECK(!spmatch::confirmed(V{"night drive"}, V{"night drive", "blue hour"},
+                                  RT{V{"night drive extended"}, V{"night drive extended", "blue hour mix"}, V{"someoneelse"}}, V{"maramba", "yaminahua"}),
+              "Nala stranger rejected");
+        CHECK(!spmatch::confirmed(V{}, V{"abc"}, RT{V{}, V{"abc"}, V{"maramba"}}, V{}), "no user co-artists: no evidence");
+        // ambiguity still applies
+        CHECK_EQ(spmatch::chooseConfirmed(V{}, V{"lentas"}, {RT{V{}, V{"lentas"}, V{"maramba"}}, RT{V{}, V{"lentas"}, V{"maramba"}}}, V{"maramba"}), -1, "two confirmed: ambiguous");
+        CHECK_EQ(spmatch::chooseConfirmed(V{}, V{"lentas"}, {RT{V{}, V{"lentas"}, V{"maramba"}}, RT{V{}, V{"q"}, V{}}}, V{"maramba"}), 0, "one confirmed via co-artist");
+    }
     TEST_MAIN_END();
 }

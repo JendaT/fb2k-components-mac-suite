@@ -5,6 +5,7 @@
 
 #import "SVArtistLibrary.h"
 #include <atomic>
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -22,6 +23,8 @@ struct Snapshot {
     std::unordered_map<std::string, size_t> byKey;
     metadb_handle_list handles;
     std::vector<std::string> handleAlbums;  // parallel to handles
+    std::vector<std::string> handleDates;   // parallel to handles
+    std::map<std::string, artistindex::CoArtistInfo> coArtists;
 };
 
 NSString *NS(const std::string &s) { return [NSString stringWithUTF8String:s.c_str()] ?: @""; }
@@ -113,6 +116,7 @@ private:
             const size_t n = all.get_count();
             rows.reserve(n);
             snap->handleAlbums.reserve(n);
+            snap->handleDates.reserve(n);
             pfc::string8 out;
             for (size_t i = 0; i < n; i++) {
                 out.reset();
@@ -125,8 +129,10 @@ private:
                 }
                 rows.push_back({parts[0], parts[1], parts[2], parts[3], i});
                 snap->handleAlbums.push_back(parts[2]);
+                snap->handleDates.push_back(parts[3]);
             }
             snap->entries = artistindex::buildIndex(rows);
+            snap->coArtists = artistindex::buildCoArtists(rows);
             for (size_t i = 0; i < snap->entries.size(); i++) snap->byKey[snap->entries[i].key] = i;
         } catch (...) {
             return;
@@ -203,6 +209,38 @@ private:
         }
     } catch (...) {}
     return titles;
+}
+
+- (NSArray<NSString *> *)coArtistKeysForArtist:(NSString *)name {
+    NSMutableArray<NSString *> *out = [NSMutableArray array];
+    const auto *e = [self entryForName:name];
+    if (!e) return out;
+    auto it = _snapshot->coArtists.find(e->key);
+    if (it == _snapshot->coArtists.end()) return out;
+    for (const auto &k : it->second.keys) [out addObject:NS(k)];
+    return out;
+}
+
+- (NSArray<NSString *> *)collabStringsForArtist:(NSString *)name {
+    NSMutableArray<NSString *> *out = [NSMutableArray array];
+    const auto *e = [self entryForName:name];
+    if (!e) return out;
+    auto it = _snapshot->coArtists.find(e->key);
+    if (it == _snapshot->coArtists.end()) return out;
+    for (const auto &s : it->second.collabStrings) [out addObject:NS(s)];
+    return out;
+}
+
+- (metadb_handle_list)coverProbeHandlesForArtist:(NSString *)name {
+    metadb_handle_list out;
+    const auto *e = [self entryForName:name];
+    if (!e) return out;
+    std::vector<artistindex::CoverProbeRow> rows;
+    rows.reserve(e->trackIndices.size());
+    for (size_t idx : e->trackIndices)
+        rows.push_back({_snapshot->handleAlbums[idx], _snapshot->handleDates[idx], idx});
+    for (size_t idx : artistindex::coverProbeOrder(rows, 6)) out.add_item(_snapshot->handles[idx]);
+    return out;
 }
 
 - (metadb_handle_ptr)representativeHandleForArtist:(NSString *)name {

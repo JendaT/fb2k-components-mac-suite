@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -106,6 +107,167 @@ inline std::string normalizeTitle(const std::string& title) {
     std::string out;
     for (const std::string& t : tokens) { if (!out.empty()) out += ' '; out += t; }
     return out;
+}
+
+namespace detail {
+
+inline std::string asciiLowerKeep(const std::string& s) {  // byte-length preserving
+    std::string o = s;
+    for (char& c : o) if ((unsigned char)c < 0x80) c = (char)std::tolower((unsigned char)c);
+    return o;
+}
+inline std::string trimSeps(const std::string& s) {  // whitespace and dash-like separators at both ends
+    size_t b = 0, e = s.size();
+    auto sep = [&](size_t i) {
+        const unsigned char c = (unsigned char)s[i];
+        return std::isspace(c) || c == '-' || c == ':' || c == ',' || c == ';';
+    };
+    while (b < e && sep(b)) b++;
+    while (e > b && sep(e - 1)) e--;
+    return s.substr(b, e - b);
+}
+inline bool isWordByte(char c) { return std::isalnum((unsigned char)c) || (unsigned char)c >= 0x80; }
+// Word-bounded find of lowercase `needle` in lowercase `hay`.
+inline size_t findWord(const std::string& hay, const std::string& needle, size_t from = 0) {
+    if (needle.empty()) return std::string::npos;
+    size_t pos = from;
+    while ((pos = hay.find(needle, pos)) != std::string::npos) {
+        const bool l = pos == 0 || !isWordByte(hay[pos - 1]);
+        const size_t e = pos + needle.size();
+        const bool r = e == hay.size() || !isWordByte(hay[e]);
+        if (l && r) return pos;
+        pos++;
+    }
+    return std::string::npos;
+}
+inline bool allDigits(const std::string& s, bool allowDot) {
+    bool any = false;
+    for (char c : s) {
+        if (std::isdigit((unsigned char)c)) any = true;
+        else if (!(allowDot && (c == '.' || c == ','))) return false;
+    }
+    return any;
+}
+inline bool allDigitsOrEmpty(const std::string& s) { return s.empty() || allDigits(s, false); }
+// Bracket content that is only a number, a BPM ("191bpm", "200 Bpm") or a musical key ("Am", "F# minor", "8A").
+inline bool bracketContentIsNoise(const std::string& content) {
+    std::string c;
+    for (char ch : asciiLowerKeep(artistnames::detail::trim(content))) if (!std::isspace((unsigned char)ch)) c.push_back(ch);
+    if (c.empty()) return false;
+    if (allDigits(c, true)) return true;
+    if (c.size() > 3 && c.compare(c.size() - 3, 3, "bpm") == 0 && allDigits(c.substr(0, c.size() - 3), true)) return true;
+    if (c.size() > 3 && c.compare(0, 3, "bpm") == 0 && allDigits(c.substr(3), true)) return true;
+    if (c.size() >= 2 && c.size() <= 3 && (c.back() == 'a' || c.back() == 'b') &&
+        allDigits(c.substr(0, c.size() - 1), false)) return true;  // Camelot 8A / 12b
+    if (c[0] >= 'a' && c[0] <= 'g') {
+        size_t i = 1;
+        if (i < c.size() && (c[i] == '#' || c[i] == 'b')) i++;
+        const std::string rest = c.substr(i);
+        if (rest.empty() || rest == "m" || rest == "min" || rest == "maj" || rest == "minor" || rest == "major") return true;
+    }
+    return false;
+}
+inline std::string stripNoiseBrackets(const std::string& s) {
+    std::string out;
+    for (size_t i = 0; i < s.size(); i++) {
+        const char o = s[i];
+        if (o == '(' || o == '[') {
+            const char c = (o == '(') ? ')' : ']';
+            const size_t j = s.find(c, i + 1);
+            if (j != std::string::npos && s.find(o, i + 1) > j && bracketContentIsNoise(s.substr(i + 1, j - i - 1))) {
+                out.push_back(' ');
+                i = j;
+                continue;
+            }
+        }
+        out.push_back(o);
+    }
+    return out;
+}
+// Removes "<artist or collab containing the artist> - " from the front.
+inline std::string stripArtistPrefix(const std::string& s, const std::string& artist,
+                                     const std::vector<std::string>& collabs) {
+    size_t p = std::string::npos, len = 0;
+    static const char* seps[] = {" - ", " \xE2\x80\x93 ", " \xE2\x80\x94 "};
+    for (const char* sp : seps) {
+        const size_t q = s.find(sp);
+        if (q != std::string::npos && q > 0 && (p == std::string::npos || q < p)) { p = q; len = std::strlen(sp); }
+    }
+    if (p == std::string::npos) return s;
+    const std::string prefix = artistnames::detail::trim(s.substr(0, p));
+    const std::string rest = artistnames::detail::trim(s.substr(p + len));
+    if (prefix.empty() || rest.empty()) return s;
+    const std::string pk = artistnames::artistKey(prefix), ak = artistnames::artistKey(artist);
+    if (pk.empty() || ak.empty()) return s;
+    bool match = pk == ak;
+    for (size_t i = 0; !match && i < collabs.size(); i++) match = artistnames::artistKey(collabs[i]) == pk;
+    if (!match)
+        for (const std::string& part : artistnames::splitArtists(prefix))
+            if (artistnames::artistKey(part) == ak) { match = true; break; }
+    if (!match) match = findWord(asciiLowerKeep(prefix), asciiLowerKeep(artistnames::detail::trim(artist))) != std::string::npos;
+    return match ? rest : s;
+}
+inline std::string stripVariousPrefix(const std::string& s) {
+    const std::string l = asciiLowerKeep(s);
+    size_t n = 0;
+    if (l.compare(0, 3, "v/a") == 0) n = 3;
+    else if (s.compare(0, 2, "VA") == 0) n = 2;
+    else if (l.compare(0, 15, "various artists") == 0) n = 15;
+    if (n == 0 || (n < s.size() && isWordByte(s[n]))) return s;
+    const std::string rest = trimSeps(s.substr(n));
+    return rest.empty() ? s : rest;
+}
+// Cuts the earliest release-promo phrase (and everything after it), then trailing "Master16" / "Original Mix".
+inline std::string stripTrailingNoise(std::string s) {
+    static const char* phrases[] = {"released on", "soon on", "soon out", "out now", "free download", "compiled by"};
+    const std::string l = asciiLowerKeep(s);
+    size_t cut = std::string::npos;
+    for (const char* ph : phrases) {
+        const size_t q = findWord(l, ph);
+        if (q != std::string::npos && q > 0 && !trimSeps(s.substr(0, q)).empty() && q < cut) cut = q;
+    }
+    if (cut != std::string::npos) s = s.substr(0, cut);
+    s = trimSeps(s);
+    for (bool changed = true; changed;) {
+        changed = false;
+        const std::string ll = asciiLowerKeep(s);
+        const size_t sp = ll.find_last_of(" \t");
+        if (sp == std::string::npos) break;
+        const std::string last = ll.substr(sp + 1);
+        bool drop = false;
+        size_t dropFrom = sp;
+        if (last.compare(0, 6, "master") == 0 && allDigitsOrEmpty(last.substr(6))) drop = true;
+        else if (last == "mix") {
+            const size_t sp2 = ll.find_last_of(" \t", sp == 0 ? 0 : sp - 1);
+            if (sp2 != std::string::npos && sp2 < sp && ll.substr(sp2 + 1, sp - sp2 - 1) == "original") { drop = true; dropFrom = sp2; }
+        }
+        if (drop) {
+            const std::string t = trimSeps(s.substr(0, dropFrom));
+            if (!t.empty()) { s = t; changed = true; }
+        }
+    }
+    return s;
+}
+
+}  // namespace detail
+
+// Cleans a track/album title before normalizeTitle: leading "<artist / collab containing it> - ", noise
+// brackets (number, BPM, key), "V/A" prefix, "Compiled By ..", "Released on ..", "Soon on/out", "Out now",
+// "Free download", trailing "Master16" / "Original Mix". Never returns an empty string for a non-empty input.
+inline std::string cleanTitle(const std::string& title, const std::string& artist,
+                              const std::vector<std::string>& collabs = {}) {
+    std::string s = artistnames::detail::trim(title);
+    s = detail::stripArtistPrefix(s, artist, collabs);
+    s = detail::stripVariousPrefix(s);
+    s = detail::stripNoiseBrackets(s);
+    s = detail::stripTrailingNoise(s);
+    return s.empty() ? title : s;
+}
+
+// cleanTitle + normalizeTitle: the form compared against the other side.
+inline std::string cleanNormalizedTitle(const std::string& title, const std::string& artist,
+                                        const std::vector<std::string>& collabs = {}) {
+    return normalizeTitle(cleanTitle(title, artist, collabs));
 }
 
 namespace detail {

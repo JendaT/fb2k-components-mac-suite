@@ -313,14 +313,15 @@ static std::string Str(id v) {
 }
 
 - (void)albumsForArtistId:(NSString *)artistId urgent:(BOOL)urgent
-               completion:(void (^)(NSArray<NSString *> *, NSArray<NSString *> *, long, SVSpotifyStatus))completion {
+               completion:(void (^)(NSArray<NSString *> *, NSArray<NSString *> *, NSArray<NSString *> *, long, SVSpotifyStatus))completion {
     NSCharacterSet *bad = [[NSCharacterSet alphanumericCharacterSet] invertedSet];
     if (artistId.length == 0 || artistId.length > 40 || [artistId rangeOfCharacterFromSet:bad].location != NSNotFound) {
-        completion(nil, nil, -1, SVSpotifyStatusFailed);
+        completion(nil, nil, @[], -1, SVSpotifyStatusFailed);
         return;
     }
     [self schedule:^{
         NSMutableArray<NSString *> *all = [NSMutableArray array], *primary = [NSMutableArray array];
+        NSMutableOrderedSet<NSString *> *artistNames = [NSMutableOrderedSet orderedSet];
         long total = -1;
         for (int page = 0; page < 2; page++) {
             NSDictionary *json = nil;
@@ -329,7 +330,7 @@ static std::string Str(id v) {
                 [NSURLQueryItem queryItemWithName:@"limit" value:@"50"],
                 [NSURLQueryItem queryItemWithName:@"offset" value:[NSString stringWithFormat:@"%d", page * 50]]]
                                   json:&json];
-            if (st != SVSpotifyStatusOK) { completion(nil, nil, -1, st); return; }
+            if (st != SVSpotifyStatusOK) { completion(nil, nil, @[], -1, st); return; }
             if (page == 0 && [json[@"total"] respondsToSelector:@selector(longValue)]) total = [json[@"total"] longValue];
             NSArray *items = [json[@"items"] isKindOfClass:[NSArray class]] ? json[@"items"] : @[];
             for (id item in items) {
@@ -337,12 +338,16 @@ static std::string Str(id v) {
                 NSString *t = item[@"name"];
                 if (![t isKindOfClass:[NSString class]] || t.length == 0) continue;
                 [all addObject:t];
+                if ([item[@"artists"] isKindOfClass:[NSArray class]])
+                    for (id a in item[@"artists"])
+                        if ([a isKindOfClass:[NSDictionary class]] && [a[@"name"] isKindOfClass:[NSString class]] && [a[@"name"] length])
+                            [artistNames addObject:a[@"name"]];
                 NSString *g = [item[@"album_group"] isKindOfClass:[NSString class]] ? item[@"album_group"] : @"";
                 if ([g isEqualToString:@"album"] || [g isEqualToString:@"single"]) [primary addObject:t];
             }
             if (![json[@"next"] isKindOfClass:[NSString class]]) break;
         }
-        completion(all, primary, total, SVSpotifyStatusOK);
+        completion(all, primary, artistNames.array, total, SVSpotifyStatusOK);
     } urgent:urgent];
 }
 
