@@ -129,12 +129,12 @@ int main() {
         using V = std::vector<std::string>;
         using RT = spmatch::RemoteTitles;
         // Nala: user album "Ubuntu" + track "Interlude" vs another Nala's single "Interlude".
-        CHECK(!spmatch::confirmed(V{"ubuntu"}, V{"ubuntu", "interlude"}, RT{V{"interlude"}, V{"interlude"}}), "track vs single: rejected");
-        CHECK(!spmatch::confirmed(V{"ubuntu"}, V{"ubuntu", "interlude"}, RT{V{}, V{"interlude"}}), "track vs appears_on: rejected");
-        CHECK(spmatch::confirmed(V{"ubuntu"}, V{"ubuntu", "interlude"}, RT{V{"ubuntu"}, V{"ubuntu"}}), "album vs album/single: accepted");
+        CHECK(!spmatch::confirmed(V{"ubuntu"}, V{"ubuntu", "nightfall"}, RT{V{"nightfall"}, V{"nightfall"}}), "track vs single: rejected");
+        CHECK(!spmatch::confirmed(V{"ubuntu"}, V{"ubuntu", "nightfall"}, RT{V{}, V{"nightfall"}}), "track vs appears_on: rejected");
+        CHECK(spmatch::confirmed(V{"ubuntu"}, V{"ubuntu", "nightfall"}, RT{V{"ubuntu"}, V{"ubuntu"}}), "album vs album/single: accepted");
         CHECK(!spmatch::confirmed(V{"ubuntu"}, V{"ubuntu"}, RT{V{}, V{"ubuntu"}}), "album vs appears_on only: single rejected");
         CHECK(!spmatch::confirmed(V{"home"}, V{"home"}, RT{V{"home"}, V{"home"}}), "short single title: rejected");
-        CHECK(spmatch::confirmed(V{"ubuntu"}, V{"ubuntu", "interlude"}, RT{V{"interlude"}, V{"interlude", "ubuntu"}}), "album vs any group + track vs primary: accepted");
+        CHECK(spmatch::confirmed(V{"ubuntu"}, V{"ubuntu", "nightfall"}, RT{V{"nightfall"}, V{"nightfall", "ubuntu"}}), "album vs any group + track vs primary: accepted");
         CHECK(spmatch::confirmed(V{}, V{"night drive", "blue hour"}, RT{V{"night drive", "blue hour"}, V{"night drive", "blue hour"}}), "two track matches vs primary: accepted");
         CHECK(!spmatch::confirmed(V{}, V{"replication"}, RT{V{"replication"}, V{"replication"}}), "one track only: rejected");
         CHECK(!spmatch::confirmed(V{}, V{"paradise", "sunrise"}, RT{V{}, V{"paradise beach chillout", "sunrise yoga vol 2"}}), "tracks vs appears_on containment: rejected");
@@ -179,6 +179,7 @@ int main() {
         CHECK(cn("Strange Day (200 Bpm) Original Mix") == "strange day", "bpm + original mix");
         CHECK(cn("Strange Day [8A]") == "strange day", "camelot");
         CHECK(cn("Out Now") == "out now", "never emptied");
+        CHECK(cn("Puppet Master") == "puppet master", "Master kept without digits");
         CHECK(cn("Someone Else - Track") == "someone else track", "unrelated prefix kept");
         CHECK(cleanTitle("Va Bene", A) == "Va Bene", "lowercase Va kept");
         CHECK(cn("Lentas") == cn("Kaikkialla - Lentas (191bpm) Released on Zeakon Records"), "both sides match");
@@ -203,6 +204,15 @@ int main() {
                                   RT{V{"night drive extended"}, V{"night drive extended", "blue hour mix"}, V{"someoneelse"}}, V{"maramba", "yaminahua"}),
               "Nala stranger rejected");
         CHECK(!spmatch::confirmed(V{}, V{"abc"}, RT{V{}, V{"abc"}, V{"maramba"}}, V{}), "no user co-artists: no evidence");
+        // branch 2 title strength: short non-album title does not count; a short user ALBUM title does
+        CHECK(!spmatch::confirmed(V{}, V{"lent"}, RT{V{}, V{"lent"}, V{"maramba"}}, V{"maramba"}), "branch 2: short track title rejected");
+        CHECK(spmatch::confirmed(V{"lent"}, V{"lent"}, RT{V{}, V{"lent"}, V{"maramba"}}, V{"maramba"}), "branch 2: short album title ok");
+        CHECK(spmatch::confirmed(V{}, V{"lentas"}, RT{V{}, V{"lentas"}, V{"maramba"}}, V{"maramba"}), "branch 2: 6-char track title ok");
+        // generic titles never match, in any branch
+        CHECK(!spmatch::confirmed(V{}, V{"intro", "outro"}, RT{V{"intro", "outro"}, V{"intro", "outro"}}), "branch 1: generic ignored");
+        CHECK(!spmatch::confirmed(V{"interlude"}, V{"interlude"}, RT{V{"interlude"}, V{"interlude"}}), "single-strong: generic ignored");
+        CHECK(!spmatch::confirmed(V{"original mix", "track 05"}, V{"original mix", "track 05", "bonus track", "abc"}, RT{V{"original mix", "track 05", "bonus track", "abc"}, V{"original mix", "track 05", "bonus track", "abc"}}), "stoplist + <4 chars");
+        CHECK(!spmatch::confirmed(V{}, V{"intro"}, RT{V{}, V{"intro"}, V{"maramba"}}, V{"maramba"}), "branch 2: generic ignored");
         // ambiguity still applies
         CHECK_EQ(spmatch::chooseConfirmed(V{}, V{"lentas"}, {RT{V{}, V{"lentas"}, V{"maramba"}}, RT{V{}, V{"lentas"}, V{"maramba"}}}, V{"maramba"}), -1, "two confirmed: ambiguous");
         CHECK_EQ(spmatch::chooseConfirmed(V{}, V{"lentas"}, {RT{V{}, V{"lentas"}, V{"maramba"}}, RT{V{}, V{"q"}, V{}}}, V{"maramba"}), 0, "one confirmed via co-artist");

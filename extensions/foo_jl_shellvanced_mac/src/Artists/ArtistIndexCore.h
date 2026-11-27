@@ -7,6 +7,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cctype>
 #include <map>
 #include <set>
 #include <string>
@@ -135,22 +136,59 @@ struct CoArtistInfo {
     std::set<std::string> collabStrings;
 };
 
+// Labels/compilers are not collaborators: stoplisted names or album artists spread over many track artists.
+inline bool isLabelLikeName(const std::string& name) {
+    std::string l;
+    for (char c : name) l.push_back((unsigned char)c < 0x80 ? (char)std::tolower((unsigned char)c) : c);
+    std::vector<std::string> words;
+    std::string w;
+    for (char c : l) {
+        if (std::isalnum((unsigned char)c) || (unsigned char)c >= 0x80) w.push_back(c);
+        else { if (!w.empty()) words.push_back(w); w.clear(); }
+    }
+    if (!w.empty()) words.push_back(w);
+    for (const std::string& x : words)
+        if (x == "records" || x == "recordings" || x == "music" || x == "label" || x == "sounds") return true;
+    const std::string k = artistnames::artistKey(name);
+    return k == "unknown" || k == "unknownartist" || k == "traditional" || k == "anonymous" || k == "various";
+}
+
 inline std::map<std::string, CoArtistInfo> buildCoArtists(const std::vector<TrackRow>& rows) {
+    // Pass 1: distinct track artists per album artist.
+    std::map<std::string, std::set<std::string>> spread;
+    for (const TrackRow& r : rows) {
+        if (r.albumArtist.empty() || artistnames::isVariousArtists(r.albumArtist)) continue;
+        for (const std::string& a : artistnames::splitArtists(r.albumArtist)) {
+            const std::string ak = artistnames::artistKey(a);
+            if (ak.empty() || artistnames::isVariousArtists(r.artist)) continue;
+            for (const std::string& t : artistnames::splitArtists(r.artist)) {
+                const std::string tk = artistnames::artistKey(t);
+                if (!tk.empty()) spread[ak].insert(tk);
+            }
+        }
+    }
     std::map<std::string, CoArtistInfo> out;
     for (const TrackRow& r : rows) {
         std::set<std::string> all;
         std::vector<std::string> raws;
-        auto addParts = [&](const std::string& tag) {
-            if (tag.empty() || artistnames::isVariousArtists(tag)) return;
-            const std::vector<std::string> parts = artistnames::splitArtists(tag);
+        if (!artistnames::isVariousArtists(r.artist) && !r.artist.empty()) {
+            const std::vector<std::string> parts = artistnames::splitArtists(r.artist);
             for (const std::string& n : parts) {
                 const std::string k = artistnames::artistKey(n);
                 if (!k.empty()) all.insert(k);
             }
-            if (parts.size() > 1) raws.push_back(tag);
-        };
-        addParts(r.artist);
-        addParts(r.albumArtist);
+            if (parts.size() > 1) raws.push_back(r.artist);
+        }
+        if (!r.albumArtist.empty() && !artistnames::isVariousArtists(r.albumArtist)) {
+            bool any = false;
+            for (const std::string& n : artistnames::splitArtists(r.albumArtist)) {
+                const std::string k = artistnames::artistKey(n);
+                if (k.empty() || isLabelLikeName(n) || spread[k].size() >= 4) continue;
+                all.insert(k);
+                any = true;
+            }
+            if (any && artistnames::splitArtists(r.albumArtist).size() > 1) raws.push_back(r.albumArtist);
+        }
         if (all.size() < 2) continue;
         for (const std::string& k : all) {
             CoArtistInfo& info = out[k];

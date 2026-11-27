@@ -73,12 +73,20 @@ int main() {
             {"", "Kaikkialla VS Maramba", "X", "2020", 2},
             {"Various Artists", "Kaikkialla", "Comp", "2021", 3},
             {"Popol Vuh Records", "Kaikkialla & Yaminahua", "Label", "2022", 4},
+            {"Dub Selects", "Kaikkialla", "Comp", "2023", 5},
+            {"Dub Selects", "T1", "Comp", "2023", 6}, {"Dub Selects", "T2", "Comp", "2023", 7},
+            {"Dub Selects", "T3", "Comp", "2023", 8},
+            {"Small Duo", "Kaikkialla", "Duo", "2024", 9},
         };
         auto co = buildCoArtists(r);
         const auto& k = co["kaikkialla"];
-        CHECK(k.keys.count("maramba") && k.keys.count("yaminahua") && k.keys.count("popolvuhrecords"), "Kaikkialla co-artists");
+        CHECK(k.keys.count("maramba") && k.keys.count("yaminahua") && k.keys.count("smallduo"), "Kaikkialla co-artists");
+        CHECK(!k.keys.count("popolvuhrecords"), "label by name not a co-artist");
+        CHECK(!k.keys.count("dubselects"), "comp album artist over >= 4 track artists not a co-artist");
+        CHECK(k.keys.count("maramba"), "collab tag kept");
         CHECK(!k.keys.count("kaikkialla") && !k.keys.count("variousartists"), "no self, no VA");
         CHECK(k.collabStrings.count("Kaikkialla VS Maramba") && k.collabStrings.count("Kaikkialla & Yaminahua"), "collab strings");
+        CHECK(isLabelLikeName("Popol-Vuh Records") && isLabelLikeName("Unknown Artist") && !isLabelLikeName("Maramba"), "label-like names");
         CHECK(co["maramba"].keys.count("kaikkialla"), "symmetric");
         CHECK(co.find("nala") == co.end(), "stranger has none");
     }

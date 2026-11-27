@@ -70,11 +70,36 @@ inline int sharedCoArtists(const std::vector<std::string>& userCo, const std::ve
 //    title; a user TRACK-only title may equal only a Spotify album/single (primary) title, so
 //    appears_on/compilation names never confirm tracks.
 //  - or exactly one strong (exact, >= 6 chars) user ALBUM title vs a Spotify album/single.
-// Inputs are cleaned+normalized titles. Co-artist evidence (user tags vs the candidate's album credits) adds:
-//  - >= 1 shared co-artist key AND >= 1 exact title equality of any kind (any group, tracks included), or
+// Titles too generic to count as evidence: shorter than 4 chars or on the stoplist.
+inline bool genericTitle(const std::string& t) {
+    if (t.size() < 4) return true;
+    static const char* stop[] = {"intro", "outro", "interlude", "remix", "untitled", "original mix", "bonus track"};
+    for (const char* w : stop) if (t == w) return true;
+    if (t.compare(0, 6, "track ") == 0) {
+        bool digits = t.size() > 6;
+        for (size_t i = 6; i < t.size(); i++) if (t[i] < '0' || t[i] > '9') digits = false;
+        if (digits) return true;
+    }
+    return false;
+}
+inline std::vector<std::string> usableTitles(const std::vector<std::string>& v) {
+    std::vector<std::string> out;
+    for (const std::string& t : v) if (!genericTitle(t)) out.push_back(t);
+    return out;
+}
+
+// Inputs are cleaned+normalized titles; generic titles (see genericTitle) never count as a match.
+// Co-artist evidence (user tags vs the candidate's album credits) adds:
+//  - >= 1 shared co-artist key AND >= 1 exact title equality of any kind (any group, tracks included) where
+//    the title is >= 6 chars or one of the user's album titles, or
 //  - >= 2 distinct shared co-artist keys.
-inline bool confirmed(const std::vector<std::string>& userAlbums, const std::vector<std::string>& userAll,
-                      const RemoteTitles& remote, const std::vector<std::string>& userCo = {}) {
+inline bool confirmed(const std::vector<std::string>& rawAlbums, const std::vector<std::string>& rawAll,
+                      const RemoteTitles& rawRemote, const std::vector<std::string>& userCo = {}) {
+    const std::vector<std::string> userAlbums = usableTitles(rawAlbums), userAll = usableTitles(rawAll);
+    RemoteTitles remote;
+    remote.primary = usableTitles(rawRemote.primary);
+    remote.all = usableTitles(rawRemote.all);
+    remote.coArtistKeys = rawRemote.coArtistKeys;
     auto has = [](const std::vector<std::string>& v, const std::string& t) {
         return std::find(v.begin(), v.end(), t) != v.end();
     };
@@ -91,7 +116,7 @@ inline bool confirmed(const std::vector<std::string>& userAlbums, const std::vec
     if (shared >= 2) return true;
     if (shared >= 1)
         for (const std::string& u : userAll)
-            if (!u.empty() && has(remote.all, u)) return true;
+            if (!u.empty() && (u.size() >= 6 || has(userAlbums, u)) && has(remote.all, u)) return true;
     return false;
 }
 

@@ -148,7 +148,6 @@ inline bool allDigits(const std::string& s, bool allowDot) {
     }
     return any;
 }
-inline bool allDigitsOrEmpty(const std::string& s) { return s.empty() || allDigits(s, false); }
 // Bracket content that is only a number, a BPM ("191bpm", "200 Bpm") or a musical key ("Am", "F# minor", "8A").
 inline bool bracketContentIsNoise(const std::string& content) {
     std::string c;
@@ -236,7 +235,7 @@ inline std::string stripTrailingNoise(std::string s) {
         const std::string last = ll.substr(sp + 1);
         bool drop = false;
         size_t dropFrom = sp;
-        if (last.compare(0, 6, "master") == 0 && allDigitsOrEmpty(last.substr(6))) drop = true;
+        if (last.compare(0, 6, "master") == 0 && last.size() > 6 && allDigits(last.substr(6), false)) drop = true;
         else if (last == "mix") {
             const size_t sp2 = ll.find_last_of(" \t", sp == 0 ? 0 : sp - 1);
             if (sp2 != std::string::npos && sp2 < sp && ll.substr(sp2 + 1, sp - sp2 - 1) == "original") { drop = true; dropFrom = sp2; }

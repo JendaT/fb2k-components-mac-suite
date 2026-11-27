@@ -338,12 +338,15 @@ static std::string Str(id v) {
                 NSString *t = item[@"name"];
                 if (![t isKindOfClass:[NSString class]] || t.length == 0) continue;
                 [all addObject:t];
-                if ([item[@"artists"] isKindOfClass:[NSArray class]])
-                    for (id a in item[@"artists"])
-                        if ([a isKindOfClass:[NSDictionary class]] && [a[@"name"] isKindOfClass:[NSString class]] && [a[@"name"] length])
-                            [artistNames addObject:a[@"name"]];
                 NSString *g = [item[@"album_group"] isKindOfClass:[NSString class]] ? item[@"album_group"] : @"";
-                if ([g isEqualToString:@"album"] || [g isEqualToString:@"single"]) [primary addObject:t];
+                if ([g isEqualToString:@"album"] || [g isEqualToString:@"single"]) {
+                    [primary addObject:t];
+                    // Co-artists only from album/single groups (not appears_on / compilation).
+                    if ([item[@"artists"] isKindOfClass:[NSArray class]])
+                        for (id a in item[@"artists"])
+                            if ([a isKindOfClass:[NSDictionary class]] && [a[@"name"] isKindOfClass:[NSString class]] && [a[@"name"] length])
+                                [artistNames addObject:a[@"name"]];
+                }
             }
             if (![json[@"next"] isKindOfClass:[NSString class]]) break;
         }
