@@ -5,6 +5,7 @@
 @implementation AlbumDataSource {
     NSArray<AlbumItem *> *_albums;
     NSUInteger _totalTrackCount;
+    NSUInteger _generation;   // main-thread only; latest rebuild wins
 }
 
 - (instancetype)init {
@@ -25,6 +26,7 @@
 }
 
 - (void)rebuildWithFilter:(nullable NSString *)filterQuery {
+    const NSUInteger generation = ++_generation;
     [_delegate albumDataSourceDidBeginUpdate];
 
     metadb_handle_list allItems;
@@ -68,6 +70,7 @@
         _albums = @[];
         _totalTrackCount = 0;
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (generation != self->_generation) return;
             [self->_delegate albumDataSourceDidUpdate];
         });
         return;
@@ -89,6 +92,7 @@
             for (AlbumItem *a in albums) totalTracks += a.trackCount;
 
             dispatch_async(dispatch_get_main_queue(), ^{
+                if (generation != self->_generation) return;   // superseded by a newer rebuild
                 self->_albums = albums;
                 self->_totalTrackCount = totalTracks;
                 [self->_delegate albumDataSourceDidUpdate];

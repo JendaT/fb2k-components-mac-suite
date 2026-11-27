@@ -121,6 +121,13 @@ static inline CGFloat contentWidthForView(CGFloat viewWidth) {
 }
 
 - (void)setAlbums:(NSArray<AlbumItem *> *)albums {
+    if (_albums != albums) {
+        _selectedAlbumIndex = NSNotFound;
+        _selectedTrackIndex = NSNotFound;
+        _expandedAlbumIndex = NSNotFound;
+        _hoveredAlbumIndex = NSNotFound;
+        [self _cancelExpandTimer];
+    }
     _albums = albums;
     if (_appearsOnStartIndex != NSNotFound && _appearsOnStartIndex >= (NSInteger)albums.count) {
         _appearsOnStartIndex = NSNotFound;
@@ -841,7 +848,7 @@ typedef struct {
     if (ch == 'q' || ch == 'Q') {
         if (_selectedAlbumIndex != NSNotFound && _selectedAlbumIndex < (NSInteger)_albums.count) {
             AlbumItem *album = _albums[_selectedAlbumIndex];
-            if (_selectedTrackIndex != NSNotFound) {
+            if (_selectedTrackIndex != NSNotFound && _selectedTrackIndex < (NSInteger)album.tracks.count) {
                 [_delegate albumGridView:self wantsQueueTrack:album.tracks[_selectedTrackIndex]
                                  inAlbum:album];
             } else {
@@ -908,7 +915,9 @@ typedef struct {
             [self scrollToAlbumIndex:_selectedAlbumIndex];
         }
     } else if (ch == NSDownArrowFunctionKey) {
-        if (_expandedAlbumIndex == _selectedAlbumIndex && _selectedTrackIndex == NSNotFound) {
+        if (_selectedAlbumIndex == NSNotFound || _selectedAlbumIndex >= (NSInteger)_albums.count) {
+            // nothing selected
+        } else if (_expandedAlbumIndex == _selectedAlbumIndex && _selectedTrackIndex == NSNotFound) {
             AlbumItem *album = _albums[_selectedAlbumIndex];
             if (album.tracks.count > 0) {
                 _selectedTrackIndex = 0;

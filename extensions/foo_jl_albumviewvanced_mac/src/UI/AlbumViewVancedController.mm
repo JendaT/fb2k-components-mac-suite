@@ -116,6 +116,7 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
     NSTimer *_libraryRebuildDebounceTimer;
 
     NSString *_artistFilter;
+    NSString *_stashedSearchText;   // search text saved while an artist filter is active
 }
 
 - (void)loadView {
@@ -257,21 +258,49 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
 #pragma mark - Artist filter
 
 - (void)setArtistFilter:(nullable NSString *)name {
+    [self view];   // make sure loadView has run (search field, grid exist)
     NSString *newFilter = name.length > 0 ? [name copy] : nil;
     if ((newFilter == nil && _artistFilter == nil) || [newFilter isEqualToString:_artistFilter]) return;
+    BOOL wasFiltered = (_artistFilter != nil);
     _artistFilter = newFilter;
 
-    BOOL hadSearchText = _searchField.stringValue.length > 0;
-    _searchField.hidden = (_artistFilter != nil);
-    if (_artistFilter != nil && hadSearchText) {
-        // The search field is hidden while filtering: drop its text and reload the full library.
-        [_searchDebounceTimer invalidate];
-        _searchField.stringValue = @"";
+    if (_artistFilter != nil) {
+        BOOL needsReload = NO;
+        if (!wasFiltered) {
+            // Entering filter mode: stash the search text and restore focus away from the field.
+            NSWindow *window = _containerView.window;
+            NSResponder *fr = window.firstResponder;
+            BOOL fieldHasFocus = (fr == _searchField) ||
+                ([fr isKindOfClass:[NSText class]] && [(NSText *)fr delegate] == (id)_searchField);
+            if (fieldHasFocus) [window makeFirstResponder:_gridView];
+            [_searchDebounceTimer invalidate];
+            _stashedSearchText = _searchField.stringValue.length > 0 ? [_searchField.stringValue copy] : nil;
+            if (_stashedSearchText != nil) {
+                _searchField.stringValue = @"";
+                needsReload = YES;   // data source currently holds search-narrowed results
+            }
+            _searchField.hidden = YES;
+        }
         [self layoutAllSubviews];
-        [self performSearch];   // rebuild -> albumDataSourceDidUpdate applies the filter
+        if (needsReload) {
+            [self performSearch];   // rebuild -> albumDataSourceDidUpdate applies the filter
+            return;
+        }
+        [_gridView collapseExpandedAlbum];
+        [self applyArtistFilterToGrid];
         return;
     }
+
+    // Leaving filter mode: restore the search field and its text.
+    _searchField.hidden = NO;
+    NSString *restore = _stashedSearchText;
+    _stashedSearchText = nil;
     [self layoutAllSubviews];
+    if (restore.length > 0) {
+        _searchField.stringValue = restore;
+        [self performSearch];
+        return;
+    }
     [_gridView collapseExpandedAlbum];
     [self applyArtistFilterToGrid];
 }
@@ -335,7 +364,15 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
     if (mods != NSEventModifierFlagCommand) return NO;
     NSString *chars = event.charactersIgnoringModifiers.lowercaseString;
     if (![chars isEqualToString:@"f"] && ![chars isEqualToString:@"l"]) return NO;
-    if (_searchField.hidden || _containerView.window == nil) return NO;
+    if (_searchField.hidden || _containerView.isHiddenOrHasHiddenAncestor || _containerView.window == nil) return NO;
+    // Another pane is being typed in: leave the shortcut to it.
+    NSResponder *fr = _containerView.window.firstResponder;
+    if ([fr isKindOfClass:[NSText class]]) {
+        NSView *editor = (NSView *)fr;
+        id owner = [(NSText *)fr delegate];
+        NSView *ownerView = [owner isKindOfClass:[NSView class]] ? (NSView *)owner : editor;
+        if (![ownerView isDescendantOf:_containerView]) return NO;
+    }
     [_containerView.window makeFirstResponder:_searchField];
     return YES;
 }
