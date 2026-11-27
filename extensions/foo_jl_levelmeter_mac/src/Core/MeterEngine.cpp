@@ -4,6 +4,7 @@
 //
 
 #include "MeterEngine.h"
+#include "MeterScale.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -16,6 +17,9 @@ const double kNegInf = -std::numeric_limits<double>::infinity();
 const double kNeedleStopVu = 3.6;
 // Longest stretch idle() simulates in one go (keeps the silence buffer small).
 const double kMaxIdleStep = 0.1;
+// An RMS below this has nothing left that shows, in the bars or in the
+// true peak history.
+const float kRmsRestDb = -120.0f;
 } // namespace
 
 Snapshot::Snapshot() : momentary(kNegInf), shortTerm(kNegInf), integrated(kNegInf) {}
@@ -119,6 +123,9 @@ void MeterEngine::process(const float *lr, size_t frames, double sampleRate, int
 
 void MeterEngine::idle(double dt) {
     if (dt <= 0 || _sampleRate <= 0) return;
+    // Silence changes nothing more once the detectors are at rest; the
+    // bars fall in advance().
+    if (detectorsSettled()) return;
     dt = std::min(dt, kMaxIdleStep);
     const size_t frames = (size_t)std::lround(dt * _sampleRate);
     if (frames == 0) return;
@@ -191,6 +198,27 @@ void MeterEngine::advance(double dt) {
     _blockSample[0] = _blockSample[1] = 0.0f;
     _blockTrue[0] = _blockTrue[1] = 0.0f;
     _gotAudio = false;
+}
+
+bool MeterEngine::detectorsSettled() const {
+    if (_snap.active || !_snap.stereoSilent) return false;
+    if (std::isfinite(_snap.momentary) || std::isfinite(_snap.shortTerm)) return false;
+    // An RMS this low over 50 ms or more also leaves nothing in the true
+    // peak history, a few samples long.
+    for (const ChannelReading &r : _snap.ch) {
+        if (r.rmsDb > kRmsRestDb || r.needleDb > vu_face::kRestVu) return false;
+    }
+    return true;
+}
+
+bool MeterEngine::settled(double restDb) const {
+    if (!detectorsSettled()) return false;
+    for (const ChannelReading &r : _snap.ch) {
+        if (r.peakDb > restDb) return false;
+        // A hold kept until reset does not move.
+        if (r.holdDb > restDb && !_settings.peakHoldForever) return false;
+    }
+    return true;
 }
 
 void MeterEngine::resetPeaks() {

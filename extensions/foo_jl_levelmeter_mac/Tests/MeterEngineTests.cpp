@@ -7,6 +7,7 @@
 // TEST_DEPS: src/Core/Detectors.cpp src/Core/Loudness.cpp src/Core/TruePeak.cpp
 
 #include "TestHarness.h"
+#include "../src/Core/DisplaySettings.h"
 #include "../src/Core/MeterEngine.h"
 
 #include <cmath>
@@ -238,6 +239,78 @@ void testNonFinite() {
     CHECK(std::fabs(snap.truePeakMaxDb + 6.02f) < 0.5f, "measurement true peak");
 }
 
+// Seconds of idle frames until the engine is settled; -1 if not within `limit`.
+double secondsToSettle(MeterEngine &e, double restDb, double limit) {
+    for (int f = 1; f <= (int)std::lround(limit / kFrame); ++f) {
+        e.idle(kFrame);
+        e.advance(kFrame);
+        if (e.settled(restDb)) return f * kFrame;
+    }
+    return -1.0;
+}
+
+void testSettled() {
+    g_context = "settled";
+    const double rest = DisplaySettings().restDb();
+    CHECK_FLOAT_EQ(rest, -60.0, "digital rests at the bottom of the bars");
+    MeterEngine e;
+    e.configure(EngineSettings());
+    CHECK(e.settled(rest), "settled before any audio");
+    run(e, 2.0, 1.0, 0.8, 1000.0, 0.5);
+    CHECK(!e.settled(rest), "not settled with audio");
+    // At 4 s the hold is still on its way down the default -60 dB scale.
+    idleFor(e, 4.0);
+    CHECK(!e.settled(rest), "not settled 4 s after a stop");
+    CHECK(e.snapshot().ch[0].holdDb > -60.0f, "hold still on the scale at 4 s");
+    const double t = secondsToSettle(e, rest, 30.0);
+    // 1.5 s hold, then 60 dB at 11.8 dB/s.
+    CHECK(t > 2.0 && t < 3.0, "settles once the hold leaves the scale, 6.6 s after the stop");
+    const Snapshot &snap = e.snapshot();
+    for (int c = 0; c < 2; ++c) {
+        CHECK(snap.ch[c].peakDb <= -60.0f && snap.ch[c].holdDb <= -60.0f, "bars at rest");
+        CHECK(snap.ch[c].rmsDb <= -120.0f && snap.ch[c].needleDb <= -60.0f, "RMS and needle at rest");
+    }
+    CHECK(std::isinf(snap.momentary) && std::isinf(snap.shortTerm), "loudness at rest");
+    CHECK(snap.stereoSilent, "stereo at rest");
+    CHECK(std::isfinite(snap.integrated), "integrated kept");
+    CHECK(!e.settled(-120.0), "a deeper scale still has bars falling");
+    run(e, 0.1, 0.5, 0.5);
+    CHECK(!e.settled(rest), "audio wakes it");
+
+    g_context = "settled, analog";
+    DisplaySettings analog;
+    analog.style = MeterStyle::Analog;
+    CHECK_FLOAT_EQ(analog.restDb(), -1.0, "analog rests at the peak LED");
+    analog.peakLed = false;
+    CHECK(std::isinf(analog.restDb()), "no bars and no LED: only the needle");
+    MeterEngine a;
+    a.configure(EngineSettings());
+    run(a, 1.0, 1.0, 1.0);
+    const double ta = secondsToSettle(a, analog.restDb(), 30.0);
+    CHECK(ta > 2.5 && ta < 4.5, "settles with the loudness, about 3 s after the stop");
+
+    g_context = "settled, hold forever";
+    MeterEngine h;
+    EngineSettings hs;
+    hs.peakHoldForever = true;
+    h.configure(hs);
+    run(h, 1.0, 0.5, 0.5);
+    CHECK(secondsToSettle(h, rest, 30.0) > 0, "settles");
+    CHECK(std::fabs(h.snapshot().ch[0].holdDb + 6.02f) < 0.1f, "hold kept");
+
+    g_context = "settled, slowest settings";
+    MeterEngine s;
+    EngineSettings ss;
+    ss.peakFallDbPerSecond = 3.0;
+    ss.peakHoldSeconds = 5.0;
+    ss.needle = NeedleBallistics::PpmBbc;
+    s.configure(ss);
+    run(s, 1.0, 1.0, 1.0);
+    // 5 s hold, then 120 dB at 3 dB/s.
+    const double ts = secondsToSettle(s, -120.0, 120.0);
+    CHECK(ts > 40.0 && ts < 50.0, "settles once the slowest fall reaches the bottom");
+}
+
 } // namespace
 
 int main() {
@@ -248,5 +321,6 @@ int main() {
     testLoudnessAndStereo();
     testSampleRateChange();
     testNonFinite();
+    testSettled();
     TEST_MAIN_END();
 }

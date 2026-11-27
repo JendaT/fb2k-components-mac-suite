@@ -99,7 +99,7 @@ namespace vu_face {
 
 double fraction(double vu) {
     // Amplitude relative to +3 VU.
-    if (vu <= -60.0) return 0.0;
+    if (vu <= kRestVu) return 0.0;
     return std::pow(10.0, (vu - kTopVu) / 20.0);
 }
 

@@ -17,8 +17,6 @@
 namespace {
     // Posted on the main thread when playback moves to a new track.
     NSString *const kNewTrackNotification = @"LevelMeterNewTrack";
-    // Keep redrawing this long after the audio stops, while bars fall.
-    const double kSettleSeconds = 4.0;
 }
 
 @interface LevelMeterController () {
@@ -26,7 +24,8 @@ namespace {
     std::unique_ptr<meter::MeterEngine> _engine;
     std::vector<float> _lr;
     CFTimeInterval _lastTick;
-    double _quietTime;
+    BOOL _restShown;   // the settled picture is on screen
+    double _restDb;    // the display shows no level at or below this
     NSTimer *_timer;
     NSVisualEffectView *_glassEffectView;
 }
@@ -94,7 +93,6 @@ FB2K_SERVICE_FACTORY(levelmeter_play_callback);
     if (self) {
         _source = std::make_unique<MeterSource>();
         _engine = std::make_unique<meter::MeterEngine>();
-        _quietTime = kSettleSeconds;
     }
     return self;
 }
@@ -171,6 +169,7 @@ FB2K_SERVICE_FACTORY(levelmeter_play_callback);
 
 - (void)applySettings {
     _engine->configure(levelmeter_config::loadEngineSettings());
+    _restDb = levelmeter_config::loadDisplaySettings(true).restDb();
     [self.meterView reloadSettings];
     [self updateGlassBackground];
     [self.meterView showSnapshot:_engine->snapshot()];
@@ -246,18 +245,19 @@ FB2K_SERVICE_FACTORY(levelmeter_play_callback);
         const size_t frames = live ? _lr.size() / 2 : 0;
         if (frames > 0) {
             _engine->process(_lr.data(), frames, sampleRate, channels);
-            _quietTime = 0.0;
+        } else if (_engine->settled(_restDb)) {
+            // Everything has fallen back: nothing left to measure, and
+            // once that picture is on screen, nothing to animate.
+            if (_restShown) return;
         } else {
             _engine->idle(dt);
-            _quietTime += dt;
         }
         _engine->advance(dt);
 
-        // Once everything has fallen back there is nothing left to animate.
-        if (_quietTime > kSettleSeconds) return;
         if (self.view.isHiddenOrHasHiddenAncestor) return;
         if (!(self.view.window.occlusionState & NSWindowOcclusionStateVisible)) return;
         [self.meterView showSnapshot:_engine->snapshot()];
+        _restShown = _engine->settled(_restDb);
     }
 }
 

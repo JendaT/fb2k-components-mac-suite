@@ -46,6 +46,7 @@ private:
 namespace vu_face {
     constexpr double kSweepDegrees = 96.0;   // rest to +3 VU
     constexpr double kTopVu = 3.0;
+    constexpr double kRestVu = -60.0;   // at or below: the needle rests
 
     // Fraction of the sweep for a reading in VU (dB re the reference). Rest
     // is 0, +3 VU is 1, the end stop a little past it.
