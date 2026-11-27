@@ -48,6 +48,8 @@ static inline CGFloat contentWidthForView(CGFloat viewWidth) {
     // Drag state
     NSPoint   _mouseDownPoint;
     BOOL      _dragInitiated;
+    NSInteger _pressAlbumIndex;     // hosted mode: album pressed, opened on mouseUp
+    BOOL      _pressOnPlay;
 
     // Delayed expand/collapse (to avoid expand on double-click)
     NSTimer  *_expandTimer;
@@ -155,7 +157,7 @@ static NSInteger indexOfAlbumLike(NSArray<AlbumItem *> *albums, AlbumItem *targe
             NSInteger newExpanded = indexOfAlbumLike(albums, oldExpanded);
             _selectedAlbumIndex = newSelected;
             _expandedAlbumIndex = newExpanded;
-            _hoveredAlbumIndex = NSNotFound;
+            _hoveredAlbumIndex = [self hoverIndexAtMouseLocation];
             if (newSelected == NSNotFound) {
                 _selectedTrackIndex = NSNotFound;
             } else if (_selectedTrackIndex != NSNotFound) {
@@ -171,6 +173,16 @@ static NSInteger indexOfAlbumLike(NSArray<AlbumItem *> *albums, AlbumItem *targe
     if (_appearsOnStartIndex != NSNotFound && _appearsOnStartIndex >= (NSInteger)albums.count) {
         _appearsOnStartIndex = NSNotFound;
     }
+}
+
+- (NSInteger)hoverIndexAtMouseLocation {
+    if (!self.window || _albums.count == 0) return NSNotFound;
+    NSPoint screen = [NSEvent mouseLocation];
+    NSPoint inWindow = [self.window convertPointFromScreen:screen];
+    NSPoint p = [self convertPoint:inWindow fromView:nil];
+    if (!NSPointInRect(p, self.bounds)) return NSNotFound;
+    GridHitResult hit = [self hitTestAtPoint:p];
+    return (hit.trackIndex == NSNotFound) ? hit.albumIndex : NSNotFound;
 }
 
 - (void)setOpenAlbumHandler:(void (^)(AlbumItem *))handler {
@@ -760,6 +772,7 @@ typedef struct {
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
     _mouseDownPoint = point;
     _dragInitiated = NO;
+    _pressAlbumIndex = NSNotFound;
 
     // Double-click: cancel any pending expand and let mouseUp handle playback
     if (event.clickCount == 2) {
@@ -817,17 +830,14 @@ typedef struct {
         _selectedAlbumIndex = hit.albumIndex;
         _selectedTrackIndex = NSNotFound;
         [self setNeedsDisplay:YES];
-        AlbumItem *album = _albums[hit.albumIndex];
+        _pressAlbumIndex = hit.albumIndex;
+        _pressOnPlay = NO;
         if (hit.albumIndex == _hoveredAlbumIndex) {
             NSRect art = [self artRectForAlbumIndex:hit.albumIndex];
             CGFloat circR = art.size.width * 0.25 * 0.9;
             CGFloat dx = point.x - NSMidX(art), dy = point.y - NSMidY(art);
-            if (!NSIsEmptyRect(art) && dx * dx + dy * dy <= circR * circR) {
-                [_delegate albumGridView:self wantsPlayAlbum:album];
-                return;
-            }
+            _pressOnPlay = !NSIsEmptyRect(art) && dx * dx + dy * dy <= circR * circR;
         }
-        _openAlbumHandler(album);
         return;
     }
 
@@ -877,7 +887,21 @@ typedef struct {
 
 - (void)mouseUp:(NSEvent *)event {
     // Hosted mode: the first click already opened the album; double-click never plays.
-    if (_openAlbumHandler) return;
+    if (_openAlbumHandler) {
+        NSInteger pressed = _pressAlbumIndex;
+        _pressAlbumIndex = NSNotFound;
+        if (pressed == NSNotFound || _dragInitiated || event.clickCount != 1) return;
+        NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+        GridHitResult hit = [self hitTestAtPoint:point];
+        if (hit.albumIndex != pressed || hit.trackIndex != NSNotFound || pressed >= (NSInteger)_albums.count) return;
+        AlbumItem *album = _albums[pressed];
+        if (_pressOnPlay) {
+            [_delegate albumGridView:self wantsPlayAlbum:album];
+        } else {
+            _openAlbumHandler(album);
+        }
+        return;
+    }
     if (event.clickCount == 2) {
         NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
         GridHitResult hit = [self hitTestAtPoint:point];
