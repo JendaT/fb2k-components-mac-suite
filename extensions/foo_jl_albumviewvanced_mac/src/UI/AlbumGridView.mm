@@ -49,7 +49,7 @@ static inline CGFloat contentWidthForView(CGFloat viewWidth) {
     NSPoint   _mouseDownPoint;
     BOOL      _dragInitiated;
     NSInteger _pressAlbumIndex;     // hosted mode: album pressed, opened on mouseUp
-    BOOL      _pressOnPlay;
+    NSUInteger _openToken;          // generation token for the delayed (cancelable) open
 
     // Delayed expand/collapse (to avoid expand on double-click)
     NSTimer  *_expandTimer;
@@ -141,6 +141,7 @@ static NSInteger indexOfAlbumLike(NSArray<AlbumItem *> *albums, AlbumItem *targe
 }
 
 - (void)setAlbums:(NSArray<AlbumItem *> *)albums resetSelection:(BOOL)reset {
+    if (reset) [self _cancelPendingOpen];
     if (_albums != albums) {
         if (reset) {
             _selectedAlbumIndex = NSNotFound;
@@ -187,6 +188,7 @@ static NSInteger indexOfAlbumLike(NSArray<AlbumItem *> *albums, AlbumItem *targe
 
 - (void)setOpenAlbumHandler:(void (^)(AlbumItem *))handler {
     _openAlbumHandler = [handler copy];
+    [self _cancelPendingOpen];
     if (_openAlbumHandler) {
         [self _cancelExpandTimer];
         if (_expandedAlbumIndex != NSNotFound) [self collapseExpandedAlbum];
@@ -412,10 +414,12 @@ static const CGFloat kTrackHeaderHeight = 28.0;
                     respectFlipped:YES
                              hints:nil];
 
-                // Hover overlay: dim + play button
+                // Hover overlay: dim + play button (hosted mode: tint only)
                 if (i == _hoveredAlbumIndex) {
                     [[NSColor colorWithWhite:0.0 alpha:0.35] setFill];
                     NSRectFillUsingOperation(artRect, NSCompositingOperationSourceOver);
+                }
+                if (i == _hoveredAlbumIndex && !_openAlbumHandler) {
 
                     // Play triangle
                     CGFloat triSize = thumbSize * 0.25;
@@ -741,6 +745,20 @@ typedef struct {
 
 #pragma mark - Mouse events
 
+- (void)_cancelPendingOpen {
+    _openToken++;
+}
+
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    if (!self.window) [self _cancelPendingOpen];
+}
+
+- (void)dealloc {
+    _openToken++;
+    [_expandTimer invalidate];
+}
+
 - (void)_cancelExpandTimer {
     [_expandTimer invalidate];
     _expandTimer = nil;
@@ -773,6 +791,23 @@ typedef struct {
     _mouseDownPoint = point;
     _dragInitiated = NO;
     _pressAlbumIndex = NSNotFound;
+
+    // Any new press cancels a pending delayed open.
+    [self _cancelPendingOpen];
+
+    // Hosted mode: double-click on a card plays it (the pending open was just cancelled).
+    if (event.clickCount == 2 && _openAlbumHandler) {
+        if ([self ratingHitTestAtPoint:point].rating > 0) return;
+        GridHitResult dhit = [self hitTestAtPoint:point];
+        if (dhit.albumIndex != NSNotFound && dhit.trackIndex == NSNotFound &&
+            dhit.albumIndex < (NSInteger)_albums.count) {
+            _selectedAlbumIndex = dhit.albumIndex;
+            _selectedTrackIndex = NSNotFound;
+            [self setNeedsDisplay:YES];
+            [_delegate albumGridView:self wantsPlayAlbum:_albums[dhit.albumIndex]];
+        }
+        return;
+    }
 
     // Double-click: cancel any pending expand and let mouseUp handle playback
     if (event.clickCount == 2) {
@@ -825,19 +860,12 @@ typedef struct {
     }
 
     if (_openAlbumHandler) {
-        // Hosted mode: open through the handler immediately; the hover play button still plays.
+        // Hosted mode: select now; mouseUp schedules the open (cancelable by a double-click).
         [self _cancelExpandTimer];
         _selectedAlbumIndex = hit.albumIndex;
         _selectedTrackIndex = NSNotFound;
         [self setNeedsDisplay:YES];
         _pressAlbumIndex = hit.albumIndex;
-        _pressOnPlay = NO;
-        if (hit.albumIndex == _hoveredAlbumIndex) {
-            NSRect art = [self artRectForAlbumIndex:hit.albumIndex];
-            CGFloat circR = art.size.width * 0.25 * 0.9;
-            CGFloat dx = point.x - NSMidX(art), dy = point.y - NSMidY(art);
-            _pressOnPlay = !NSIsEmptyRect(art) && dx * dx + dy * dy <= circR * circR;
-        }
         return;
     }
 
@@ -895,11 +923,14 @@ typedef struct {
         GridHitResult hit = [self hitTestAtPoint:point];
         if (hit.albumIndex != pressed || hit.trackIndex != NSNotFound || pressed >= (NSInteger)_albums.count) return;
         AlbumItem *album = _albums[pressed];
-        if (_pressOnPlay) {
-            [_delegate albumGridView:self wantsPlayAlbum:album];
-        } else {
-            _openAlbumHandler(album);
-        }
+        NSUInteger token = ++_openToken;
+        __weak AlbumGridView *weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)([NSEvent doubleClickInterval] * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            AlbumGridView *strongSelf = weakSelf;
+            if (!strongSelf || strongSelf->_openToken != token || !strongSelf->_openAlbumHandler) return;
+            strongSelf->_openAlbumHandler(album);
+        });
         return;
     }
     if (event.clickCount == 2) {
@@ -925,6 +956,7 @@ typedef struct {
     if (sqrt(dx * dx + dy * dy) < 5.0) return;
 
     _dragInitiated = YES;
+    [self _cancelPendingOpen];
     [self startDragFromPoint:_mouseDownPoint event:event];
 }
 
