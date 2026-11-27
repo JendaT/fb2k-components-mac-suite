@@ -24,7 +24,7 @@ static const NSInteger kHeaderRowIndex   = 0;      // the list starts with the Y
 static const CGFloat kArtistPhotoSize    = 32.0;
 static const CGFloat kHomeTopMargin     = 8.0;    // space above the pinned Albums row
 static const CGFloat kHomeGap           = 12.0;   // space between it and "Your Library"
-static const CGFloat kHomeAreaHeight     = kHomeTopMargin + 28.0 + kHomeGap;
+static const CGFloat kHomeScrollHeight   = kHomeTopMargin + 28.0 + 2.0;   // the Albums row and its row gap
 
 #pragma mark - Model
 
@@ -464,6 +464,7 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
 @implementation ShellSidebarController {
     SVSidebarTableView *_table;
     NSScrollView *_scroll;
+    NSVisualEffectView *_homeBackdrop;   // opaque sidebar-material strip behind the pinned row; also covers the list's top padding
     NSScrollView *_homeScroll;       // fixed "Albums" row above the list; never scrolls
     SVSidebarTableView *_homeTable;  // one-row source list, so it looks and selects exactly like the list rows
     NSArray<SVSidebarItem *> *_items;
@@ -549,7 +550,7 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
                                                  name:NSViewBoundsDidChangeNotification object:_scroll.contentView];
     [root addSubview:_scroll];
 
-    _homeScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 220, kHomeAreaHeight)];
+    _homeScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 220, kHomeScrollHeight)];
     _homeScroll.hasVerticalScroller = NO;
     _homeScroll.hasHorizontalScroller = NO;
     _homeScroll.verticalScrollElasticity = NSScrollElasticityNone;
@@ -576,7 +577,12 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     _homeTable.delegate = self;
     _homeTable.keyHandler = ^BOOL(NSEvent *event) { return [weakSelf handleHomeKey:event]; };
     _homeScroll.documentView = _homeTable;
-    [root addSubview:_homeScroll];
+    _homeBackdrop = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 220, kHomeScrollHeight)];
+    _homeBackdrop.material = NSVisualEffectMaterialSidebar;
+    _homeBackdrop.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+    _homeBackdrop.state = NSVisualEffectStateFollowsWindowActiveState;
+    [_homeBackdrop addSubview:_homeScroll];
+    [root addSubview:_homeBackdrop];   // above the list: nothing scrolls into view between it and the sticky header
     self.view = root;
 
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(artistLibraryDidChange:)
@@ -593,8 +599,14 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     // Pinned Albums row on top (below any title-bar safe area), the list fills the rest.
     const NSRect b = self.view.bounds;
     const CGFloat top = self.view.safeAreaInsets.top;
-    const CGFloat homeH = kHomeAreaHeight;
-    _homeScroll.frame = NSMakeRect(0, NSMaxY(b) - top - homeH, NSWidth(b), homeH);
+    // The list pads its first row (the Your Library header) from the top; the backdrop reaches over that
+    // padding so the header sits flush under it, and the pinned area is shortened to keep a kHomeGap look.
+    const CGFloat listPad = NSMinY([_table rectOfRow:0]);
+    const CGFloat homeH = MAX(kHomeScrollHeight, kHomeTopMargin + 28.0 + kHomeGap - listPad);
+    const CGFloat coverH = homeH + listPad;
+    _scroll.contentInsets = NSEdgeInsetsZero;
+    _homeBackdrop.frame = NSMakeRect(0, NSMaxY(b) - top - coverH, NSWidth(b), coverH);
+    _homeScroll.frame = NSMakeRect(0, coverH - kHomeScrollHeight, NSWidth(b), kHomeScrollHeight);
     _scroll.frame = NSMakeRect(0, 0, NSWidth(b), MAX(0, NSHeight(b) - top - homeH));
     [_homeTable sizeLastColumnToFit];
     // The source-list table pads its first row by an amount of its own: place row 0 exactly kHomeTopMargin
