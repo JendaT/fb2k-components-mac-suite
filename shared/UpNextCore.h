@@ -21,7 +21,9 @@ enum class Action { PlayNext, AddToQueue };
 struct PlaybackState {
     bool playing = false;               // playing or paused
     bool playingFromNowPlaying = false;
-    size_t playingIndex = 0;            // index in the playing playlist (valid if playing)
+    size_t playingIndex = 0;            // index in the playing playlist (valid if playing && playingIndexKnown)
+    bool playingIndexKnown = true;      // false: playing, but position in its playlist could not be resolved
+    size_t playingPlaylist = static_cast<size_t>(-1); // playing playlist index (SDK-side bookkeeping)
     size_t playingPlaylistCount = 0;    // item count of the playing playlist
     size_t nowPlayingCount = 0;
     std::optional<size_t> nowPlayingFocus; // used when stopped
@@ -49,7 +51,8 @@ inline EditPlan planEdit(Action action, const PlaybackState& s) {
 
     if (s.playingFromNowPlaying) {
         if (next) {
-            p.insertAt = std::min(s.playingIndex + 1, s.nowPlayingCount);
+            // Unknown position: never follow user focus while playing; go to the front.
+            p.insertAt = s.playingIndexKnown ? std::min(s.playingIndex + 1, s.nowPlayingCount) : 0;
             p.useFoobarQueue = s.shuffle;
         } else {
             p.insertAt = s.nowPlayingCount;
@@ -89,6 +92,14 @@ inline std::string trim(std::string_view v) {
 inline bool isShuffleOrderName(std::string_view name) {
     std::string l = detail::lower(name);
     return l.find("shuffle") != std::string::npos || l.find("random") != std::string::npos;
+}
+
+// Picks the playing index: the SDK's location wins, else the index found by
+// handle lookup, else unknown (nullopt).
+inline std::optional<size_t> resolvePlayingIndex(bool locationKnown, size_t locationIndex,
+                                                 std::optional<size_t> foundIndex) {
+    if (locationKnown) return locationIndex;
+    return foundIndex;
 }
 
 struct UpNextSections { bool showCurrent; size_t nextFrom; size_t nextCount; };

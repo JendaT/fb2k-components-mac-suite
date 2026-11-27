@@ -43,6 +43,15 @@ int main() {
       p = planEdit(Action::PlayNext, s);
       CHECK_EQ(p.insertAt, 0, "no focus"); CHECK(!p.copyRemainder, "no copy"); }
 
+    g_context = "unknown playing index";
+    { PlaybackState s = fromNP(); s.playingIndexKnown = false; s.nowPlayingFocus = 7;
+      EditPlan p = planEdit(Action::PlayNext, s);
+      CHECK_EQ(p.insertAt, 0, "front, not focus"); CHECK(!p.copyRemainder, "no copy");
+      p = planEdit(Action::AddToQueue, s); CHECK_EQ(p.insertAt, 10, "append"); }
+    { auto r = resolvePlayingIndex(true, 4, 9); CHECK(r && *r == 4, "location wins"); }
+    { auto r = resolvePlayingIndex(false, 0, 9); CHECK(r && *r == 9, "found"); }
+    { auto r = resolvePlayingIndex(false, 0, std::nullopt); CHECK(!r, "unknown"); }
+
     g_context = "isShuffleOrderName";
     CHECK(!isShuffleOrderName("Default"), "Default");
     CHECK(!isShuffleOrderName("Repeat (playlist)"), "Repeat playlist");

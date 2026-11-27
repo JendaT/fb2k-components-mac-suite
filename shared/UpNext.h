@@ -26,7 +26,6 @@ inline t_size findOrCreateNowPlaying() {
 }
 
 inline void setSourceLabel(const char* label) {
-    auto pm = playlist_manager::get();
     t_size np = findOrCreateNowPlaying();
     pfc::string8 s(label ? label : "");
     pfc::array_t<uint8_t> bytes;
@@ -61,12 +60,40 @@ inline PlaybackState currentPlaybackState() {
         if (focus != pfc_infinite) s.nowPlayingFocus = (size_t)focus;
     }
 
-    t_size pl = pfc_infinite, idx = pfc_infinite;
-    if (pc->is_playing() && pm->get_playing_item_location(&pl, &idx)) {
+    if (pc->is_playing()) {
         s.playing = true;
-        s.playingIndex = idx;
-        s.playingPlaylistCount = pm->playlist_get_item_count(pl);
-        s.playingFromNowPlaying = (np != pfc_infinite && pl == np);
+        t_size pl = pfc_infinite, idx = pfc_infinite;
+        const bool located = pm->get_playing_item_location(&pl, &idx);
+        std::optional<size_t> found;
+        if (!located) {
+            // Location is unknown (e.g. right after set_playing_playlist):
+            // look the now-playing handle up by identity.
+            metadb_handle_ptr cur;
+            if (pc->get_now_playing(cur) && cur.is_valid()) {
+                t_size candidates[2] = { np, pm->get_playing_playlist() };
+                for (t_size c : candidates) {
+                    if (c == pfc_infinite) continue;
+                    metadb_handle_list all;
+                    pm->playlist_get_all_items(c, all);
+                    for (t_size i = 0; i < all.get_count(); ++i) {
+                        if (all[i] == cur) { pl = c; found = i; break; }
+                    }
+                    if (found) break;
+                }
+            }
+        }
+        auto resolved = resolvePlayingIndex(located, idx, found);
+        if (resolved && pl != pfc_infinite) {
+            s.playingIndex = *resolved;
+            s.playingPlaylist = pl;
+            s.playingPlaylistCount = pm->playlist_get_item_count(pl);
+            s.playingFromNowPlaying = (np != pfc_infinite && pl == np);
+        } else {
+            // Playing something we cannot place: treat as playing from Now
+            // Playing at an unknown position (Play Next goes to the front).
+            s.playingIndexKnown = false;
+            s.playingFromNowPlaying = true;
+        }
     }
 
     t_size order = pm->playback_order_get_active();
@@ -84,11 +111,12 @@ inline void insertAt(t_size np, t_size at, metadb_handle_list_cref items) {
 inline void apply(Action action, metadb_handle_list_cref items) {
     auto pm = playlist_manager::get();
     t_size np = findOrCreateNowPlaying();
-    EditPlan plan = planEdit(action, currentPlaybackState());
+    const PlaybackState state = currentPlaybackState();
+    EditPlan plan = planEdit(action, state);
 
     if (plan.copyRemainder) {
-        t_size pl = pfc_infinite, idx = pfc_infinite;
-        if (pm->get_playing_item_location(&pl, &idx) && pl != np) {
+        t_size pl = state.playingPlaylist;
+        if (pl != pfc_infinite && pl != np) {
             pfc::string8 name;
             pm->playlist_get_name(pl, name);
             metadb_handle_list all;
@@ -130,7 +158,11 @@ inline void playNow(metadb_handle_list_cref items, t_size startIndex, const char
     if (items.get_count() == 0) return;
     if (startIndex >= items.get_count()) startIndex = 0;
     pm->playlist_set_focus_item(np, startIndex);
-    pm->playlist_execute_default_action(np, startIndex);
+    if (!pm->playlist_execute_default_action(np, startIndex)) {
+        pm->set_playing_playlist(np);
+        pm->playlist_set_focus_item(np, startIndex);
+        playback_control::get()->start(playback_control::track_command_settrack);
+    }
 }
 
 // Copies a playlist into Now Playing and plays from startRow.

@@ -18,7 +18,18 @@ int main() {
     CHECK(splitArtists("Xydur") == (V{"Xydur"}), "Xydur");
     CHECK(splitArtists("Vulkan") == (V{"Vulkan"}), "Vulkan");
 
+    g_context = "splitArtists guards";
+    CHECK(splitArtists("Florence and the Machine") == (V{"Florence and the Machine"}), "and");
+    CHECK(splitArtists("Mumford and Sons") == (V{"Mumford and Sons"}), "and 2");
+    CHECK(splitArtists("AT&T") == (V{"AT&T"}), "AT&T");
+    CHECK(splitArtists("Drum&Bass") == (V{"Drum&Bass"}), "Drum&Bass");
+    CHECK(splitArtists("Sunn O)))") == (V{"Sunn O)))"}), "Sunn O");
+    CHECK(splitArtists("Malcolm X") == (V{"Malcolm X"}), "Malcolm X");
+    CHECK(splitArtists("Project X") == (V{"Project X"}), "Project X");
+    CHECK(splitArtists("A,B") == (V{"A,B"}), "bare comma");
+
     g_context = "isVariousArtists";
+    CHECK(!isVariousArtists("Various"), "Various alone");
     CHECK(isVariousArtists("Various Artists"), "VA full");
     CHECK(isVariousArtists("various artists"), "lower");
     CHECK(isVariousArtists("VA"), "VA");
@@ -32,6 +43,11 @@ int main() {
     CHECK(artistKey("D.o.c.") == artistKey("doc"), "punct");
     CHECK(artistKey("Alice D") != artistKey("Alice DJ"), "D vs DJ");
     CHECK(artistKey("\xC5\x81\xC3\xB3" "d\xC5\xBA") == artistKey("lodz"), "ext-A");
+
+    CHECK(artistKey("Beyonce\xCC\x81") == artistKey("beyonce"), "NFD acute");
+    CHECK(artistKey("Beyonc\xC3\xA9") == artistKey("Beyonce\xCC\x81"), "NFC==NFD");
+    CHECK(artistKey("Guns N\xE2\x80\x99 Roses") == artistKey("Guns N' Roses"), "curly apostrophe");
+    CHECK(artistKey("a\xE2\x80\x93" "b") == artistKey("ab"), "en dash");
 
     TEST_MAIN_END();
 }

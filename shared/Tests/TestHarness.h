@@ -1,10 +1,10 @@
 //
 //  TestHarness.h
-//  foo_simplaylist_mac
+//  shared
 //
 //  Shared check macros, counters and pass/fail epilogue for the standalone
-//  Core unit tests. Plain C++ except the NSArray helper, so the same header
-//  works for both the Objective-C++ suites and ReorderPlannerTests.cpp.
+//  unit tests of header-only shared code (copied from the simplaylist
+//  harness). Plain C++ except the NSArray helper under __OBJC__.
 //
 
 #pragma once
