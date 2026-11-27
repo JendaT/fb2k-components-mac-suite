@@ -131,6 +131,12 @@ inline std::string albumKeyYear(const std::string& key) {
     return q == std::string::npos ? std::string() : key.substr(q + 1);
 }
 
+// True when the key has the third (year) part, even if it is empty.
+inline bool albumKeyHasYear(const std::string& key) {
+    size_t p = key.find(kAlbumKeySeparator);
+    return p != std::string::npos && key.find(kAlbumKeySeparator, p + 1) != std::string::npos;
+}
+
 // "2024-02-26" -> "2024"; anything not starting with four digits is returned trimmed as is.
 inline std::string albumYear(const std::string& date) {
     size_t b = 0;

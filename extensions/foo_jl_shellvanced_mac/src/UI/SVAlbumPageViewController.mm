@@ -325,18 +325,23 @@ static NSImage *SVDecodeThumbnail(NSData *data, CGFloat maxPixels) {
 - (void)showAlbumKey:(NSString *)key info:(NSDictionary<NSString *, id> *)info {
     [self view];   // make sure the UI exists
     if (key.length == 0) return;
-    const NSUInteger token = [self bumpToken];
-
     NSString *title = [info[@"title"] isKindOfClass:[NSString class]] ? info[@"title"] : nil;
     NSString *artist = [info[@"artist"] isKindOfClass:[NSString class]] ? info[@"artist"] : nil;
     NSString *year = [info[@"year"] isKindOfClass:[NSString class]] ? info[@"year"] : nil;
     NSArray *paths = [info[@"paths"] isKindOfClass:[NSArray class]] ? info[@"paths"] : nil;
     if (!title) title = SVToNS(shellcore::albumKeyTitle(SVToStd(key)));
     if (!artist) artist = SVToNS(shellcore::albumKeyArtist(SVToStd(key)));
-    if (!year) year = SVToNS(shellcore::albumKeyYear(SVToStd(key)));   // old-format keys: unknown (empty)
+    // A year (even an empty one) from the card or a three-part key is exact; only old two-part keys mean "any date".
+    const BOOL exactYear = year != nil || shellcore::albumKeyHasYear(SVToStd(key));
+    if (!year) year = SVToNS(shellcore::albumKeyYear(SVToStd(key)));
 
-    // Same album (same edition) already shown: nothing to reload.
-    if ([_key isEqualToString:key] && _handles.get_count() > 0) return;
+    // Same album (same edition) already shown: nothing to reload, but a cover dropped by a
+    // token bump (page left mid-load) is fetched again.
+    if ([_key isEqualToString:key] && _handles.get_count() > 0) {
+        if (!_cover.image) [self loadCoverForHandle:_handles[0] token:[self bumpToken]];
+        return;
+    }
+    const NSUInteger token = [self bumpToken];
 
     _key = [key copy];
     [self clearTracks];
@@ -357,11 +362,11 @@ static NSImage *SVDecodeThumbnail(NSData *data, CGFloat maxPixels) {
             return;
         }
     }
-    [self scanLibraryForKey:key title:title artist:artist year:year token:token];
+    [self scanLibraryForKey:key title:title artist:artist year:year exactYear:exactYear token:token];
 }
 
 // No usable paths (relaunch, back/forward after a library change): find the album in the library.
-- (void)scanLibraryForKey:(NSString *)key title:(NSString *)title artist:(NSString *)artist year:(NSString *)year token:(NSUInteger)token {
+- (void)scanLibraryForKey:(NSString *)key title:(NSString *)title artist:(NSString *)artist year:(NSString *)year exactYear:(BOOL)exactYear token:(NSUInteger)token {
     metadb_handle_list all;
     try { library_manager::get()->get_all_items(all); } catch (...) {}
     if (all.get_count() == 0) { [self reportUnresolved:key token:token]; return; }
@@ -390,7 +395,7 @@ static NSImage *SVDecodeThumbnail(NSData *data, CGFloat maxPixels) {
                     else parts[field].push_back(*p);
                 }
                 if (parts[1] != wantTitle) continue;
-                if (!wantYear.empty() && parts[4] != wantYear) continue;   // the card's %date% text
+                if ((exactYear || !wantYear.empty()) && parts[4] != wantYear) continue;   // the card's %date% text
                 hits.push_back({i, parts[0], parts[4]});
                 albumArtists.insert(parts[0]);
             }

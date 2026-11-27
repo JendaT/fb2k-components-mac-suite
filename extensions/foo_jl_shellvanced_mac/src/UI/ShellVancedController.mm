@@ -498,9 +498,10 @@ static NSView *SVMakePlaceholder(NSString *text) {
     if (!_albumInfo) _albumInfo = [NSMutableDictionary dictionary];
     if (_albumInfo.count >= 64) [_albumInfo removeAllObjects];   // small session cache
     _albumInfo[key] = [album copy];
+    NSString *shownBefore = _albumPage.albumKey;
     [self navigateTo:Destination{DestKind::Album, SVToStd(key)}];
     // Keep the keyboard with the page (Return / Q work on the track list).
-    [_albumPage selectFirstTrack];
+    if (![shownBefore isEqualToString:_albumPage.albumKey]) [_albumPage selectFirstTrack];
     [self.view.window makeFirstResponder:_albumPage.tableView];
 }
 

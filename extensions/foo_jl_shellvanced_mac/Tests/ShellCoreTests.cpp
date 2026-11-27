@@ -188,6 +188,7 @@ static void testAlbumDestination() {
     CHECK(albumKeyArtist(ky) == "Daft Punk" && albumKeyTitle(ky) == "Discovery" && albumKeyYear(ky) == "2001", "key with year");
     CHECK(ky != albumKey("Daft Punk", "Discovery", "2021"), "editions differ by year");
     CHECK(albumKeyYear(albumKey("A", "B")) == "", "empty year");
+    CHECK(albumKeyHasYear(albumKey("A", "B")) && !albumKeyHasYear("A\x1f" "B") && albumKeyHasYear(ky), "year part present vs old two-part key");
     const std::string old = std::string("Daft Punk") + kAlbumKeySeparator + "Discovery";
     CHECK(albumKeyTitle(old) == "Discovery" && albumKeyYear(old) == "", "old-format key: title ok, year unknown");
     Destination a{DestKind::Album, k};
