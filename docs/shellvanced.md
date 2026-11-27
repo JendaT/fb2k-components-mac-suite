@@ -6,11 +6,14 @@ A Spotify-style shell element: a sidebar with "Your Library" (playlists and arti
 
 | Page | Hosted element | Notes |
 |------|----------------|-------|
-| Albums | AlbumViewVanced | ⌘F / ⌘L focus its search field |
+| Albums | AlbumViewVanced | ⌘F / ⌘L focus its search field. Click a card opens the Album page (after the double-click interval); double-click plays; cards stay draggable |
+| Album | Album page (tracks of one edition: artist + title + year) | Opened from a card; restores after relaunch by scanning the library |
 | Playlist | SimPlaylist with `vanced=1` | Selecting a playlist makes it the active playlist (SimPlaylist shows the active playlist) |
 | Artist | AlbumViewVanced with `setArtistFilter:` + artist header | Header: artist photo (Deezer, optionally Spotify; or round album-cover fallback), counts, Play / Shuffle |
 
 Missing components show a placeholder instead of the page.
+
+The **Albums** item is pinned above the scrolling library list. 🔍 in the "Your Library" header filters playlists and artists as you type (↓ moves into the results, Esc closes).
 
 ## Shortcuts
 
