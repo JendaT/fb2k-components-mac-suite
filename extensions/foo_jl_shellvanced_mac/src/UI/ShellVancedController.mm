@@ -1,15 +1,21 @@
 #import "ShellVancedController.h"
+#import <objc/message.h>
 #import "ShellSidebarController.h"
 #import "../Integration/ElementHost.h"
 #import "../Integration/ShellPlaylistCallbacks.h"
 #include "../Integration/ShellPlaylists.h"
-#include "../Core/ShellConfig.h"
+#include "../Integration/ShellConfig.h"
 #include "../Core/ShellCore.h"
+#include "../fb2k_sdk.h"
+#include "../../../../shared/UpNext.h"   // after the SDK include
+#import "../Artists/SVArtistLibrary.h"
+#import "../Artists/SVArtistHeaderView.h"
 
 using shellcore::DestKind;
 using shellcore::Destination;
 
 static const CGFloat kNavBarHeight = 38.0;
+static const CGFloat kArtistHeaderHeight = 176.0;   // 128 pt photo + 2 x 24 pt padding (SVArtistHeaderView)
 
 #pragma mark - Root view
 
@@ -41,6 +47,23 @@ static NSSearchField *SVFirstVisibleSearchField(NSView *view) {
     if ([view isKindOfClass:[NSSearchField class]] && ((NSSearchField *)view).isEnabled) return (NSSearchField *)view;
     for (NSView *sub in view.subviews) {
         if (NSSearchField *found = SVFirstVisibleSearchField(sub)) return found;
+    }
+    return nil;
+}
+
+// AlbumViewVanced lives in another dylib: no header, so call by selector.
+static void SVSetArtistFilter(id vc, NSString *name) {
+    SEL sel = NSSelectorFromString(@"setArtistFilter:");
+    if (![vc respondsToSelector:sel]) return;
+    ((void (*)(id, SEL, NSString *))objc_msgSend)(vc, sel, name);
+}
+
+// First visible view that can take keyboard focus (the hosted grid / list).
+static NSView *SVFirstFocusableView(NSView *view) {
+    if (view.isHidden) return nil;
+    if (view.acceptsFirstResponder) return view;
+    for (NSView *sub in view.subviews) {
+        if (NSView *found = SVFirstFocusableView(sub)) return found;
     }
     return nil;
 }
@@ -92,6 +115,12 @@ static NSView *SVMakePlaceholder(NSString *text) {
     NSView *_albumsView;
     NSViewController *_playlistVC;
     NSView *_playlistView;
+
+    // Artist page: header above the shared AlbumViewVanced, which gets the artist filter.
+    SVArtistHeaderView *_artistHeader;
+    NSString *_filteredArtist;        // artist currently applied to AlbumViewVanced (nil = none)
+    NSString *_pendingArtistRestore;  // saved artist waiting for the library index to finish
+    BOOL _userNavigated;
 
     shellcore::NavHistory _history;
 
@@ -161,6 +190,8 @@ static NSView *SVMakePlaceholder(NSString *text) {
                name:SVPlaylistRenamedNotification object:nil];
     [nc addObserver:self selector:@selector(activePlaylistDidChange:)
                name:SVActivePlaylistDidChangeNotification object:nil];
+    [nc addObserver:self selector:@selector(artistLibraryDidChange:)
+               name:SVArtistLibraryDidChangeNotification object:nil];
     SVPlaylistCallbacksRetain();
     _callbacksRetained = YES;
 
@@ -328,16 +359,104 @@ static NSView *SVMakePlaceholder(NSString *text) {
 
 - (void)showHostView:(NSView *)target {
     NSWindow *window = self.view.window;
+    BOOL focusLost = NO;
     for (NSView *v in _hostContainer.subviews) {
+        if (v == _artistHeader) continue;   // shown/hidden by -applyArtistPage:
         BOOL hide = (v != target);
         if (hide && !v.hidden) {
             // Don't leave keyboard focus inside a view that is about to hide.
             id fr = window.firstResponder;
-            if ([fr isKindOfClass:[NSView class]] && [(NSView *)fr isDescendantOf:v]) {
-                [window makeFirstResponder:_sidebar.tableView];
-            }
+            if ([fr isKindOfClass:[NSView class]] && [(NSView *)fr isDescendantOf:v]) focusLost = YES;
         }
         v.hidden = hide;
+    }
+    if (!focusLost) return;
+    // Prefer the sidebar list, but not while the sidebar is collapsed (hidden).
+    BOOL sidebarUsable = !_sidebarItem.isCollapsed && !_sidebar.tableView.isHiddenOrHasHiddenAncestor;
+    if (sidebarUsable && [window makeFirstResponder:_sidebar.tableView]) return;
+    NSView *focusTarget = SVFirstFocusableView(target);
+    if (focusTarget && [window makeFirstResponder:focusTarget]) return;
+    [window makeFirstResponder:nil];   // window itself, so keys never go to a hidden view
+}
+
+#pragma mark Artist page
+
+- (void)playArtist:(NSString *)name shuffled:(BOOL)shuffled {
+    if (name.length == 0) return;
+    try {
+        metadb_handle_list handles = [[SVArtistLibrary shared] handlesForArtist:name];
+        if (handles.get_count() == 0) return;
+        if (shuffled) {
+            std::vector<t_size> order(handles.get_count());
+            for (t_size i = 0; i < order.size(); i++) order[i] = i;
+            for (t_size i = order.size(); i > 1; i--) std::swap(order[i - 1], order[arc4random_uniform((uint32_t)i)]);
+            metadb_handle_list copy;
+            for (t_size idx : order) copy.add_item(handles[idx]);
+            handles = copy;
+        }
+        pfc::string8 label("Next from: ");
+        label << name.UTF8String;
+        upnext::fb::playNow(handles, 0, label.c_str());   // only Now Playing changes
+    } catch (...) {
+        console::info("[ShellVanced] play artist failed");
+    }
+}
+
+- (SVArtistHeaderView *)artistHeader {
+    if (!_artistHeader) {
+        _artistHeader = [[SVArtistHeaderView alloc] initWithFrame:NSMakeRect(0, 0, NSWidth(_hostContainer.bounds), kArtistHeaderHeight)];
+        _artistHeader.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;   // pinned to the top
+        _artistHeader.hidden = YES;
+        __weak ShellVancedController *weakSelf = self;
+        _artistHeader.onPlay = ^{
+            ShellVancedController *s = weakSelf;
+            if (s) [s playArtist:s->_artistHeader.artistName shuffled:NO];
+        };
+        _artistHeader.onShuffle = ^{
+            ShellVancedController *s = weakSelf;
+            if (s) [s playArtist:s->_artistHeader.artistName shuffled:YES];
+        };
+        [_hostContainer addSubview:_artistHeader];
+    }
+    return _artistHeader;
+}
+
+// Shows the artist header and filter for `name`, or clears both when nil. The
+// AlbumViewVanced instance is shared with the Albums page, so every page switch
+// goes through here and the filter is only touched when it actually changes.
+- (void)applyArtistPage:(nullable NSString *)name {
+    NSView *albums = _albumsView;
+    id albumsVC = _albumsVC;
+    BOOL filterable = albumsVC && [albumsVC respondsToSelector:@selector(setArtistFilter:)];
+
+    if (name.length > 0) {
+        SVArtistHeaderView *header = [self artistHeader];
+        if (![header.artistName isEqualToString:name]) header.artistName = name;
+        header.frame = NSMakeRect(0, NSHeight(_hostContainer.bounds) - kArtistHeaderHeight,
+                                  NSWidth(_hostContainer.bounds), kArtistHeaderHeight);
+        header.hidden = NO;
+        albums.frame = NSMakeRect(0, 0, NSWidth(_hostContainer.bounds),
+                                  MAX(0, NSHeight(_hostContainer.bounds) - kArtistHeaderHeight));
+        if (filterable && ![_filteredArtist isEqualToString:name]) SVSetArtistFilter(albumsVC, name);
+        _filteredArtist = [name copy];
+        return;
+    }
+
+    if (!_filteredArtist && (!_artistHeader || _artistHeader.isHidden)) return;
+    if (filterable) SVSetArtistFilter(albumsVC, nil);   // restores the search text
+    _filteredArtist = nil;
+    _artistHeader.hidden = YES;
+    albums.frame = _hostContainer.bounds;
+}
+
+- (void)artistLibraryDidChange:(NSNotification *)note {
+    if (!_pendingArtistRestore) return;
+    NSArray<NSString *> *names = [SVArtistLibrary shared].artistNames;
+    if (names.count == 0) return;   // still empty (empty library or not built yet)
+    NSString *pending = _pendingArtistRestore;
+    _pendingArtistRestore = nil;
+    if (!_userNavigated && [names containsObject:pending]) {
+        [self navigateTo:Destination{DestKind::Artist, SVToStd(pending)}];
     }
 }
 
@@ -350,11 +469,24 @@ static NSView *SVMakePlaceholder(NSString *text) {
     if (kind == (int64_t)DestKind::Playlist && SVFindPlaylistExact(name) != pfc_infinite) {
         d = {DestKind::Playlist, name};
     }
-    // Artist destinations restore once the artist page exists (Step 8).
+    if (kind == (int64_t)DestKind::Artist && !name.empty()) {
+        NSString *artist = SVToNS(name);
+        NSArray<NSString *> *names = [SVArtistLibrary shared].artistNames;
+        if ([names containsObject:artist]) {
+            d = {DestKind::Artist, name};
+        } else if (names.count == 0) {
+            // The artist index builds in the background: open Albums now and
+            // jump to the artist when it arrives (unless the user navigates first).
+            _pendingArtistRestore = artist;
+        }
+    }
     [self navigateTo:d];
+    _userNavigated = NO;   // restoring is not the user navigating
 }
 
 - (void)navigateTo:(const Destination &)d {
+    _userNavigated = YES;
+    _pendingArtistRestore = nil;
     _history.push(d);
     [self showCurrent];
 }
@@ -386,13 +518,27 @@ static NSView *SVMakePlaceholder(NSString *text) {
                 auto pm = playlist_manager::get();
                 if (pm->get_active_playlist() != idx) pm->set_active_playlist(idx);
             } catch (...) {}
+            [self applyArtistPage:nil];
             [self showHostView:[self playlistHostView]];
             break;
         }
-        case DestKind::Artist:
-            // Step 8: header + setArtistFilter: on the AlbumViewVanced instance.
+        case DestKind::Artist: {
+            NSArray<NSString *> *names = [SVArtistLibrary shared].artistNames;
+            NSString *artist = SVToNS(d.name);
+            if (names.count > 0 && ![names containsObject:artist]) {
+                // The artist is no longer in the library (index is built: it isn't just loading).
+                _history.remove(d);
+                _history.push({DestKind::Albums, ""});
+                [self showCurrent];
+                return;
+            }
+            [self showHostView:[self albumsHostView]];
+            [self applyArtistPage:artist];
+            break;
+        }
         case DestKind::Albums:
             [self showHostView:[self albumsHostView]];
+            [self applyArtistPage:nil];
             break;
     }
 

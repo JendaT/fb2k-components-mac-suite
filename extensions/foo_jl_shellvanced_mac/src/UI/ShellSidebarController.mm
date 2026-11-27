@@ -2,8 +2,10 @@
 #include "../fb2k_sdk.h"
 #include "../../../../shared/UpNext.h"   // after the SDK include
 #import "../../../../shared/UIStyles.h"
-#include "../Core/ShellConfig.h"
+#include "../Integration/ShellConfig.h"
 #include "../Integration/ShellPlaylists.h"
+#import "../Artists/SVArtistLibrary.h"
+#import "../Artists/SVArtistImageProvider.h"
 
 using shellcore::DestKind;
 using shellcore::Destination;
@@ -26,7 +28,7 @@ typedef NS_ENUM(NSInteger, SVRowKind) {
     SVRowKindSection,        // small "Playlists" / "Artists" label
     SVRowKindPlaylist,
     SVRowKindArtist,
-    SVRowKindNote,           // non-selectable hint ("Artists coming soon")
+    SVRowKindNote,           // non-selectable hint ("No artists found")
 };
 
 @interface SVSidebarItem : NSObject
@@ -245,8 +247,8 @@ typedef NS_ENUM(NSInteger, SVRowKind) {
 }
 @end
 
-// 32 px round photo + name. Used by Task 9's artist rows (photos load from
-// SVArtistImageProvider); until then only the placeholder silhouette shows.
+// 32 pt round photo + name. The silhouette shows until SVArtistImageProvider
+// delivers the photo.
 @interface SVArtistCellView : NSTableCellView
 @property (nonatomic, copy, nullable) NSString *artistName;
 @end
@@ -458,7 +460,18 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     [root addSubview:_scroll];
     self.view = root;
 
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(artistLibraryDidChange:)
+                                                 name:SVArtistLibraryDidChangeNotification object:nil];
+
     [self rebuildItemsReloading:YES];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)artistLibraryDidChange:(NSNotification *)note {
+    [self reloadPlaylists];   // rebuilds every section; deferred while a rename is typed
 }
 
 #pragma mark Items
@@ -499,10 +512,16 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     return items;
 }
 
-// Step 8 (Task 9) replaces the stub with one SVRowKindArtist item per
-// [SVArtistLibrary shared].artistNames entry (see task-7-report.md).
 - (void)appendArtistItems:(NSMutableArray<SVSidebarItem *> *)items {
-    [items addObject:[SVSidebarItem itemWithKind:SVRowKindNote title:@"Artists coming soon"]];
+    // First touch of the singleton happens here, from UI creation (not static init).
+    NSArray<NSString *> *names = [SVArtistLibrary shared].artistNames;
+    for (NSString *name in names) {
+        [items addObject:[SVSidebarItem itemWithKind:SVRowKindArtist title:name]];
+    }
+    if (names.count == 0) {
+        // The index builds in the background; this row is replaced when it arrives.
+        [items addObject:[SVSidebarItem itemWithKind:SVRowKindNote title:@"No artists found"]];
+    }
 }
 
 - (void)rebuildItemsReloading:(BOOL)forceReload {
@@ -626,6 +645,16 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     return item ? SVFindPlaylistExact(SVToStd(item.title), item.playlistIndex) : pfc_infinite;
 }
 
+// Context-menu actions carry the playlist name; the row is looked up at action
+// time because the list can change while the menu is open.
+- (NSInteger)rowForPlaylistNamed:(NSString *)name {
+    if (![name isKindOfClass:[NSString class]]) return -1;
+    for (NSUInteger i = 0; i < _items.count; i++) {
+        if (_items[i].kind == SVRowKindPlaylist && [_items[i].title isEqualToString:name]) return (NSInteger)i;
+    }
+    return -1;
+}
+
 - (void)playRow:(NSInteger)row {
     SVSidebarItem *item = [self playlistItemAtRow:row];
     t_size idx = [self resolveItem:item];
@@ -646,12 +675,13 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = [NSString stringWithFormat:@"Delete “%@”?", name];
     alert.informativeText = @"The playlist is removed from foobar2000. Your music files are not affected.";
+    // Cancel is the first (default) button, so Return cancels; Delete must be clicked.
+    [alert addButtonWithTitle:@"Cancel"];
     NSButton *del = [alert addButtonWithTitle:@"Delete"];
     if (@available(macOS 11.0, *)) del.hasDestructiveAction = YES;
-    [alert addButtonWithTitle:@"Cancel"];
 
     void (^confirm)(NSModalResponse) = ^(NSModalResponse response) {
-        if (response != NSAlertFirstButtonReturn) return;
+        if (response != NSAlertSecondButtonReturn) return;
         t_size idx = SVFindPlaylistExact(SVToStd(name), hint);
         if (idx == pfc_infinite) return;
         try {
@@ -786,14 +816,14 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     if (item) {
         NSMenuItem *play = [menu addItemWithTitle:@"Play" action:@selector(menuPlay:) keyEquivalent:@""];
         play.target = self;
-        play.tag = row;
+        play.representedObject = item.title;
         [menu addItem:[NSMenuItem separatorItem]];
         NSMenuItem *rename = [menu addItemWithTitle:@"Rename" action:@selector(menuRename:) keyEquivalent:@""];
         rename.target = self;
-        rename.tag = row;
+        rename.representedObject = item.title;
         NSMenuItem *del = [menu addItemWithTitle:@"Delete…" action:@selector(menuDelete:) keyEquivalent:@""];
         del.target = self;
-        del.tag = row;
+        del.representedObject = item.title;
         [menu addItem:[NSMenuItem separatorItem]];
     }
     NSMenuItem *add = [menu addItemWithTitle:@"New Playlist" action:@selector(addClicked:) keyEquivalent:@""];
@@ -802,14 +832,14 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
 
 - (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
     if (menuItem.action == @selector(menuPlay:)) {
-        return [self playlistItemAtRow:menuItem.tag].itemCount > 0;
+        return [self playlistItemAtRow:[self rowForPlaylistNamed:menuItem.representedObject]].itemCount > 0;
     }
     return YES;
 }
 
-- (void)menuPlay:(NSMenuItem *)sender   { [self playRow:sender.tag]; }
-- (void)menuRename:(NSMenuItem *)sender { [self beginRenameAtRow:sender.tag]; }
-- (void)menuDelete:(NSMenuItem *)sender { [self deleteRow:sender.tag]; }
+- (void)menuPlay:(NSMenuItem *)sender   { [self playRow:[self rowForPlaylistNamed:sender.representedObject]]; }
+- (void)menuRename:(NSMenuItem *)sender { [self beginRenameAtRow:[self rowForPlaylistNamed:sender.representedObject]]; }
+- (void)menuDelete:(NSMenuItem *)sender { [self deleteRow:[self rowForPlaylistNamed:sender.representedObject]]; }
 
 #pragma mark NSTableViewDataSource / Delegate
 
@@ -903,8 +933,15 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
             v.textField.stringValue = item.title;
             v.imageView.image = [SVArtistCellView placeholderPhoto];
             v.imageView.contentTintColor = [NSColor tertiaryLabelColor];
-            // Step 8: request the photo from SVArtistImageProvider here and
-            // apply it only if v.artistName still equals item.title.
+            NSString *name = item.title;
+            __weak SVArtistCellView *weakCell = v;
+            [[SVArtistImageProvider shared] imageForArtist:name size:kArtistPhotoSize completion:^(NSImage *image) {
+                SVArtistCellView *cell = weakCell;
+                // The cell may have been reused for another artist meanwhile.
+                if (!image || !cell || ![cell.artistName isEqualToString:name]) return;
+                cell.imageView.image = image;
+                cell.imageView.contentTintColor = nil;
+            }];
             return v;
         }
         case SVRowKindHome:

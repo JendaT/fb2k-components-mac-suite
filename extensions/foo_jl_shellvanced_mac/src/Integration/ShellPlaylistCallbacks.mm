@@ -11,12 +11,29 @@ namespace {
 bool g_changePending = false;
 bool g_activePending = false;
 
+// Renames wait here and are posted, in order, right before the next
+// structure-change post (same turn), so the shell never sees a stale change
+// first and mistakes a renamed playlist for a deleted one.
+NSMutableArray<NSDictionary*>* g_pendingRenames = nil;
+
+void drainRenames() {
+    if (g_pendingRenames.count == 0) return;
+    NSArray<NSDictionary*>* renames = [g_pendingRenames copy];
+    [g_pendingRenames removeAllObjects];
+    for (NSDictionary* info in renames) {
+        [[NSNotificationCenter defaultCenter] postNotificationName:SVPlaylistRenamedNotification
+                                                            object:nil
+                                                          userInfo:info];
+    }
+}
+
 void schedulePost(bool& pending, NSNotificationName name) {
     if (pending) return;
     pending = true;
     bool* flag = &pending;
     dispatch_async(dispatch_get_main_queue(), ^{
         *flag = false;
+        if ([name isEqualToString:SVPlaylistsDidChangeNotification]) drainRenames();
         [[NSNotificationCenter defaultCenter] postNotificationName:name object:nil];
     });
 }
@@ -57,13 +74,10 @@ public:
         std::string newName(p_new_name, strnlen(p_new_name, p_new_name_len));
         if (!oldName.empty() && oldName != newName) {
             NSDictionary* info = @{ @"old": toNS(oldName), @"new": toNS(newName) };
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [[NSNotificationCenter defaultCenter] postNotificationName:SVPlaylistRenamedNotification
-                                                                    object:nil
-                                                                  userInfo:info];
-            });
+            if (!g_pendingRenames) g_pendingRenames = [NSMutableArray array];
+            [g_pendingRenames addObject:info];
         }
-        structureChanged();
+        structureChanged();   // always follows, so the queued rename is drained before it posts
     }
 
 private:

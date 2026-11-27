@@ -36,6 +36,7 @@ uuid_src_group = generate_uuid
 uuid_core_group = generate_uuid
 uuid_ui_group = generate_uuid
 uuid_integration_group = generate_uuid
+uuid_artists_group = generate_uuid
 uuid_resources_group = generate_uuid
 
 uuid_cocoa_framework = generate_uuid
@@ -66,12 +67,13 @@ uuid_pfc_lib_ref = generate_uuid
 core_files = Dir.glob("src/Core/*.{cpp,h,mm}").map { |f| File.basename(f) }
 ui_files = Dir.glob("src/UI/*.{cpp,h,mm}").map { |f| File.basename(f) }
 integration_files = Dir.glob("src/Integration/*.{cpp,h,mm}").map { |f| File.basename(f) }
+artists_files = Dir.glob("src/Artists/*.{cpp,h,mm}").map { |f| File.basename(f) }
 resource_files = Dir.glob("Resources/*.xib").map { |f| File.basename(f) }
 
 file_uuids = {}
 file_ref_uuids = {}
 
-[core_files, ui_files, integration_files].flatten.each do |file|
+[core_files, ui_files, integration_files, artists_files].flatten.each do |file|
   file_uuids[file] = generate_uuid
   file_ref_uuids[file] = generate_uuid
 end
@@ -87,6 +89,7 @@ puts "Generating Xcode project structure..."
 puts "  Core files: #{core_files.join(', ')}"
 puts "  UI files: #{ui_files.join(', ')}"
 puts "  Integration files: #{integration_files.join(', ')}"
+puts "  Artists files: #{artists_files.join(', ')}"
 puts "  Resource files: #{resource_files.join(', ')}"
 
 FileUtils.mkdir_p("#{PROJECT_NAME}.xcodeproj")
@@ -103,7 +106,7 @@ pbxproj_content = <<~PBXPROJ
 /* Begin PBXBuildFile section */
 PBXPROJ
 
-[['Core', core_files], ['UI', ui_files], ['Integration', integration_files]].each do |group, files|
+[['Core', core_files], ['UI', ui_files], ['Integration', integration_files], ['Artists', artists_files]].each do |group, files|
   files.each do |file|
     next if file.end_with?('.h')
     pbxproj_content += "\t\t#{file_uuids[file]} /* #{file} in Sources */ = {isa = PBXBuildFile; fileRef = #{file_ref_uuids[file]} /* #{file} */; };\n"
@@ -133,7 +136,7 @@ pbxproj_content += <<~PBXPROJ
 /* Begin PBXFileReference section */
 PBXPROJ
 
-[['Core', core_files], ['UI', ui_files], ['Integration', integration_files]].each do |group, files|
+[['Core', core_files], ['UI', ui_files], ['Integration', integration_files], ['Artists', artists_files]].each do |group, files|
   files.each do |file|
     file_type = if file.end_with?('.h')
       'sourcecode.c.h'
@@ -209,6 +212,7 @@ pbxproj_content += <<~PBXPROJ
 				#{uuid_core_group} /* Core */,
 				#{uuid_ui_group} /* UI */,
 				#{uuid_integration_group} /* Integration */,
+				#{uuid_artists_group} /* Artists */,
 			);
 			path = src;
 			sourceTree = "<group>";
@@ -253,6 +257,20 @@ end
 pbxproj_content += <<~PBXPROJ
 			);
 			path = Integration;
+			sourceTree = "<group>";
+		};
+		#{uuid_artists_group} /* Artists */ = {
+			isa = PBXGroup;
+			children = (
+PBXPROJ
+
+artists_files.each do |file|
+  pbxproj_content += "\t\t\t\t#{file_ref_uuids[file]} /* #{file} */,\n"
+end
+
+pbxproj_content += <<~PBXPROJ
+			);
+			path = Artists;
 			sourceTree = "<group>";
 		};
 		#{uuid_resources_group} /* Resources */ = {
@@ -372,7 +390,7 @@ pbxproj_content += <<~PBXPROJ
 			files = (
 PBXPROJ
 
-[['Core', core_files], ['UI', ui_files], ['Integration', integration_files]].each do |group, files|
+[['Core', core_files], ['UI', ui_files], ['Integration', integration_files], ['Artists', artists_files]].each do |group, files|
   files.each do |file|
     next if file.end_with?('.h')
     pbxproj_content += "\t\t\t\t#{file_uuids[file]} /* #{file} in Sources */,\n"
