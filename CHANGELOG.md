@@ -985,6 +985,12 @@ First release, contributed by @Scannou (#45).
 
 ## Level Meter
 
+### [Unreleased]
+
+#### Fixed
+- **Non-finite samples**: A NaN or infinite sample is read as silence instead of freezing the readouts until restart (@Scannou, #63).
+- **Clip light at full scale**: Samples at exactly 0 dBFS light the clip light (@Scannou, #63).
+
 ### [0.1.0] - 2026-11-17
 
 First release, contributed by @Scannou (#56).
