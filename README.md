@@ -8,15 +8,15 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 
 | Extension | Description | Version | Docs |
 |-----------|-------------|---------|------|
-| [SimPlaylist](#simplaylist) | Lightweight playlist viewer with album art and grouping | 1.5.1 | [📖](docs/simplaylist.md) |
+| [SimPlaylist](#simplaylist) | Lightweight playlist viewer with album art and grouping | 1.6.0 | [📖](docs/simplaylist.md) |
 | [Playlist Organizer](#playlist-organizer) | Tree-based playlist management | 1.5.0 | [📖](docs/plorg.md) |
 | [Waveform Seekbar](#waveform-seekbar) | Audio visualization seekbar with effects | 1.2.0 | [📖](docs/waveform.md) |
 | [Album Art (Extended)](#album-art-extended) | Multi-type album art viewer with selection support | 1.0.1 | [📖](docs/albumart.md) |
 | [Queue Manager](#queue-manager) | Visual playback queue management | 1.1.2 | [📖](docs/queuemanager.md) |
-| [AlbumViewVanced](#albumviewvanced) | Album grid library browser with cover art | 1.0.0 | [📖](extensions/foo_jl_albumviewvanced_mac/README.md) |
+| [AlbumViewVanced](#albumviewvanced) | Album grid library browser with cover art | 1.1.0 | [📖](extensions/foo_jl_albumviewvanced_mac/README.md) |
 | [LibVanced](#libvanced) | Hierarchical tree library browser | 1.0.0 | [📖](extensions/foo_jl_libvanced_mac/README.md) |
-| [PlayVanced](#playvanced) | Now Playing bar with transport controls | 1.0.0 | [📖](extensions/foo_jl_playvanced_mac/README.md) |
-| [ShellVanced](#shellvanced) | Streaming-style shell hosting the library components (WIP) | 0.1.0 | [📖](extensions/foo_jl_shellvanced_mac/README.md) |
+| [PlayVanced](#playvanced) | Now Playing bar with transport controls | 1.1.0 | [📖](extensions/foo_jl_playvanced_mac/README.md) |
+| [ShellVanced](#shellvanced) | Streaming-style shell: sidebar library, artist pages, hosted album/playlist views | 0.1.0 | [📖](extensions/foo_jl_shellvanced_mac/README.md) |
 | [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.4.0 | – |
 | [Effects DSP](#effects-dsp) | 11 audio effects (echo, reverb, pitch shift, etc.) | 1.0.0 | – |
 
@@ -126,11 +126,13 @@ Album grid browser for your local library, with expandable track lists and cover
 - Album/track actions from keyboard and mouse
 - Search/filter with foobar2000 library query syntax
 - Drag & drop to SimPlaylist, Queue Manager, PlayVanced, or Finder
-- Right-click context menu for play/queue actions
+- Play / Play Next / Add to Queue through the single Now Playing up-next list
+- Artist filter with an "Appears on" section (used by ShellVanced)
 
 **Main shortcuts:**
 - **Enter** — play selected album/track
-- **Q** — queue selected album/track
+- **Q** — add selected album/track to the up-next list
+- **⌘F / ⌘L** — focus search
 - **Space** — play/pause
 - **Esc** — collapse expanded album
 
@@ -162,16 +164,19 @@ Now Playing bar with transport controls, progress, volume, and album art.
 - Previous / Play-Pause / Next / Stop controls
 - Shuffle toggle and repeat cycle controls
 - Progress seek and volume slider
-- Accepts drag & drop from library panels/Finder to queue tracks quickly
+- Up Next popover (list button): now playing, queued, next from the playing source; reorder, remove, clear
+- Accepts drag & drop from library panels/Finder to add tracks to the up-next list
 
-**Main shortcut:**
+**Main shortcuts:**
 - **Space** — play/pause
+- **⌘← / ⌘→** — previous / next, **⌘↑ / ⌘↓** — volume
+- **⌘S** — shuffle, **⌘R** — repeat, **⌥⌘U** — Up Next
 
 ---
 
 ### ShellVanced
 
-Streaming-style shell that hosts other components (AlbumViewVanced, SimPlaylist) inside one layout element. Early work in progress.
+Spotify-style shell in one layout element: a "Your Library" sidebar (playlists and artists), hosted AlbumViewVanced and SimPlaylist pages, artist pages with Deezer photos, and back/forward navigation. See [docs/shellvanced.md](docs/shellvanced.md) for the recommended layout and shortcuts.
 
 ---
 

@@ -583,7 +583,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### [Unreleased]
 
 #### Fixed
-- **Component GUID**: No longer collides with another component's GUID
+- **Component GUID**: No longer collides with another component's GUID; re-add the element to existing layouts
 
 ### [0.1.0] - 2025-12-30
 
@@ -606,7 +606,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Standalone unit-test suite (425 checks, 11 binaries, ASan+UBSan) gating every build via `Scripts/run_tests.sh`
 
 #### Fixed
-- **Preferences GUID**: No longer collides with another component's
+- **Preferences GUID**: No longer collides with another component's; existing layouts referencing it may need re-adding
 - Decoder open failures now log the chosen decoder and the exception instead of silently skipping the track
 - Debug-logging preference honored after restart (cache was only synced on toggle)
 - Static-destructor logging can no longer touch torn-down fb2k services
@@ -684,3 +684,14 @@ Fixes the long-standing "playback stops until restart" cascade and restores drag
 
 #### Changed
 - **Drop on bar**: Adds to the up-next queue instead of the active playlist
+
+## ShellVanced
+
+### [0.1.0] - Unreleased
+
+#### Added
+- **Shell element**: Spotify-style sidebar ("Your Library": playlists, artists) hosting AlbumViewVanced and SimPlaylist pages
+- **Playlists**: Open, play into Now Playing, create (⌘N), rename, delete, drop to append
+- **Artists**: Artist page with Deezer photo header, Play / Shuffle, albums plus "Appears on"
+- **Navigation**: Back/forward history, collapsible sidebar, last page restored
+- **Shortcuts**: ⌘F/⌘L search, ⌘[ / ⌘] back/forward, ⌘1 Albums, ⌘N new playlist, ⌃⌘S sidebar

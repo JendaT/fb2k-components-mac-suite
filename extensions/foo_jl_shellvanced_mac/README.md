@@ -6,7 +6,7 @@
 
 ---
 
-Streaming-style shell for foobar2000 macOS. Hosts other components' UI elements (AlbumViewVanced, SimPlaylist) inside a single layout element. Early work in progress.
+Spotify-style shell for foobar2000 macOS: a "Your Library" sidebar with playlists and artists, hosted AlbumViewVanced and SimPlaylist pages, artist pages with Deezer photos, and back/forward navigation. Recommended layout, shortcuts and privacy notes: [docs/shellvanced.md](../../docs/shellvanced.md).
 
 ## Usage
 
@@ -21,7 +21,8 @@ Accepted layout names:
 
 - foobar2000 v2.x for macOS
 - macOS 12.0 or later
-- AlbumViewVanced installed (otherwise a placeholder is shown)
+- AlbumViewVanced 1.1+ and SimPlaylist 1.6+ installed (otherwise a placeholder is shown)
+- PlayVanced 1.1+ recommended (Up Next popover)
 
 ## Building
 
