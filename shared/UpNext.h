@@ -161,7 +161,7 @@ inline void playNow(metadb_handle_list_cref items, t_size startIndex, const char
     if (!pm->playlist_execute_default_action(np, startIndex)) {
         pm->set_playing_playlist(np);
         pm->playlist_set_focus_item(np, startIndex);
-        playback_control::get()->start(playback_control::track_command_settrack);
+        playback_control::get()->start(playback_control::track_command_play);
     }
 }
 
