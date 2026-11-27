@@ -5,11 +5,37 @@
 #import "../fb2k_sdk.h"
 #import "../../../../shared/PreferencesCommon.h"
 #import "../../../../shared/UIStyles.h"
+#import "../../../../shared/UpNext.h"   // must come after fb2k_sdk.h
+#import "../../../../shared/ArtistNames.h"
 #include <algorithm>
+#include <string>
 #include <vector>
 
-namespace albumviewvanced_config {
-static const char* const kStableNowPlayingPlaylistName = "Now Playing";
+/// Container that lets the controller handle Cmd+F / Cmd+L while its window is key.
+@interface AVVContainerView : NSVisualEffectView
+@property (nonatomic, copy, nullable) BOOL (^keyEquivalentHandler)(NSEvent *event);
+@end
+
+@implementation AVVContainerView
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+    if (self.window.isKeyWindow && self.keyEquivalentHandler && self.keyEquivalentHandler(event)) {
+        return YES;
+    }
+    return [super performKeyEquivalent:event];
+}
+@end
+
+static std::string avvUTF8(NSString *s) {
+    return s ? std::string(s.UTF8String ?: "") : std::string();
+}
+
+/// True if any collaboration part of `name` has the same folded key as `key`.
+static BOOL artistNameMatchesKey(NSString *name, const std::string &key) {
+    if (name.length == 0 || key.empty()) return NO;
+    for (const std::string &part : artistnames::splitArtists(avvUTF8(name))) {
+        if (artistnames::artistKey(part) == key) return YES;
+    }
+    return NO;
 }
 
 static const CGFloat kSearchFieldHeight = 24.0;
@@ -72,7 +98,7 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
 @end
 
 @implementation AlbumViewVancedController {
-    NSVisualEffectView *_containerView;
+    AVVContainerView   *_containerView;
     NSSearchField      *_searchField;
     NSScrollView       *_scrollView;
     AlbumGridView      *_gridView;
@@ -89,10 +115,15 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
     NSTimer *_searchDebounceTimer;
     NSTimer *_libraryRebuildDebounceTimer;
 
+    NSString *_artistFilter;
 }
 
 - (void)loadView {
-    _containerView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 400, 500)];
+    _containerView = [[AVVContainerView alloc] initWithFrame:NSMakeRect(0, 0, 400, 500)];
+    __weak AlbumViewVancedController *weakSelf = self;
+    _containerView.keyEquivalentHandler = ^BOOL(NSEvent *event) {
+        return [weakSelf handleFocusSearchKeyEquivalent:event];
+    };
     _containerView.material = NSVisualEffectMaterialSidebar;
     _containerView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     _containerView.state = NSVisualEffectStateActive;
@@ -188,7 +219,7 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
     _statusLabel.frame = NSMakeRect(kPadding, statusY, w - kPadding * 2, kStatusBarHeight);
 
     CGFloat scrollBottom = statusY + kStatusBarHeight;
-    CGFloat scrollTop = searchY - kSearchScrollGap;
+    CGFloat scrollTop = _searchField.hidden ? h - kSearchScrollGap : searchY - kSearchScrollGap;
     CGFloat scrollHeight = scrollTop - scrollBottom;
     if (scrollHeight < 0) scrollHeight = 0;
     _scrollView.frame = NSMakeRect(0, scrollBottom, w, scrollHeight);
@@ -220,19 +251,93 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
 }
 
 - (void)albumDataSourceDidUpdate {
-    _gridView.albums = _dataSource.albums;
-    [_gridView reloadData];
-    [self updateStatusText];
+    [self applyArtistFilterToGrid];
 }
 
-- (void)updateStatusText {
-    NSUInteger albumCount = _dataSource.albums.count;
-    NSUInteger trackCount = _dataSource.totalTrackCount;
+#pragma mark - Artist filter
+
+- (void)setArtistFilter:(nullable NSString *)name {
+    NSString *newFilter = name.length > 0 ? [name copy] : nil;
+    if ((newFilter == nil && _artistFilter == nil) || [newFilter isEqualToString:_artistFilter]) return;
+    _artistFilter = newFilter;
+
+    BOOL hadSearchText = _searchField.stringValue.length > 0;
+    _searchField.hidden = (_artistFilter != nil);
+    if (_artistFilter != nil && hadSearchText) {
+        // The search field is hidden while filtering: drop its text and reload the full library.
+        [_searchDebounceTimer invalidate];
+        _searchField.stringValue = @"";
+        [self layoutAllSubviews];
+        [self performSearch];   // rebuild -> albumDataSourceDidUpdate applies the filter
+        return;
+    }
+    [self layoutAllSubviews];
+    [_gridView collapseExpandedAlbum];
+    [self applyArtistFilterToGrid];
+}
+
+/// Pushes the data source's albums to the grid, applying the artist filter if one is set.
+- (void)applyArtistFilterToGrid {
+    NSArray<AlbumItem *> *all = _dataSource.albums;
+    NSArray<AlbumItem *> *shown = all;
+    NSInteger appearsOnStart = NSNotFound;
+
+    if (_artistFilter != nil) {
+        const std::string key = artistnames::artistKey(avvUTF8(_artistFilter));
+        NSMutableArray<AlbumItem *> *owned = [NSMutableArray array];
+        NSMutableArray<AlbumItem *> *appearsOn = [NSMutableArray array];
+        for (AlbumItem *album in all) {
+            BOOL isOwned = NO;
+            if (!artistnames::isVariousArtists(avvUTF8(album.artistName))) {
+                isOwned = artistNameMatchesKey(album.artistName, key);
+            }
+            if (isOwned) {
+                [owned addObject:album];
+                continue;
+            }
+            for (AlbumTrack *track in album.tracks) {
+                if (artistNameMatchesKey(track.artistName, key)) {
+                    [appearsOn addObject:album];
+                    break;
+                }
+            }
+        }
+        NSMutableArray<AlbumItem *> *combined = [NSMutableArray arrayWithArray:owned];
+        if (appearsOn.count > 0) {
+            appearsOnStart = (NSInteger)combined.count;
+            [combined addObjectsFromArray:appearsOn];
+        }
+        shown = combined;
+    }
+
+    _gridView.albums = shown;
+    _gridView.appearsOnStartIndex = appearsOnStart;
+    [_gridView reloadData];
+    [self updateStatusTextForAlbums:shown];
+}
+
+- (void)updateStatusTextForAlbums:(NSArray<AlbumItem *> *)albums {
+    NSUInteger albumCount = albums.count;
+    NSUInteger trackCount = 0;
+    for (AlbumItem *a in albums) trackCount += a.trackCount;
     _statusLabel.stringValue = [NSString stringWithFormat:@"%lu %@, %lu %@",
                                 (unsigned long)albumCount,
                                 albumCount == 1 ? @"album" : @"albums",
                                 (unsigned long)trackCount,
                                 trackCount == 1 ? @"track" : @"tracks"];
+}
+
+#pragma mark - Cmd+F / Cmd+L
+
+- (BOOL)handleFocusSearchKeyEquivalent:(NSEvent *)event {
+    if (event.type != NSEventTypeKeyDown) return NO;
+    NSEventModifierFlags mods = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+    if (mods != NSEventModifierFlagCommand) return NO;
+    NSString *chars = event.charactersIgnoringModifiers.lowercaseString;
+    if (![chars isEqualToString:@"f"] && ![chars isEqualToString:@"l"]) return NO;
+    if (_searchField.hidden || _containerView.window == nil) return NO;
+    [_containerView.window makeFirstResponder:_searchField];
+    return YES;
 }
 
 #pragma mark - NSSearchFieldDelegate
@@ -283,7 +388,7 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
 }
 
 - (void)executeLibraryRebuild {
-    NSString *query = _searchField.stringValue;
+    NSString *query = _artistFilter != nil ? nil : _searchField.stringValue;
     if (query.length == 0) query = nil;
     [_dataSource rebuildWithFilter:query];
 }
@@ -291,30 +396,30 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
 #pragma mark - AlbumGridViewDelegate
 
 - (void)albumGridView:(id)gridView wantsPlayAlbum:(AlbumItem *)album {
-    [self playPaths:[album allTrackPaths] startIndex:0];
+    [self playPaths:[album allTrackPaths] startIndex:0 sourceLabel:album.albumName];
 }
 
 - (void)albumGridView:(id)gridView wantsPlayTrack:(AlbumTrack *)track inAlbum:(AlbumItem *)album {
     NSArray *paths = [album allTrackPaths];
     NSUInteger idx = [paths indexOfObject:track.path];
-    [self playPaths:paths startIndex:(idx != NSNotFound) ? idx : 0];
+    [self playPaths:paths startIndex:(idx != NSNotFound) ? idx : 0 sourceLabel:album.albumName];
 }
 
 - (void)albumGridView:(id)gridView wantsQueueAlbum:(AlbumItem *)album {
-    [self queuePathsDirectlyInternal:[album allTrackPaths]];
+    [self addPathsToQueue:[album allTrackPaths]];
 }
 
 - (void)albumGridView:(id)gridView wantsQueueTrack:(AlbumTrack *)track inAlbum:(AlbumItem *)album {
-    [self queuePathsDirectlyInternal:@[track.path]];
+    [self addPathsToQueue:@[track.path]];
 }
 
 - (void)albumGridView:(id)gridView requestsContextMenuForAlbum:(AlbumItem *)album atPoint:(NSPoint)screenPoint {
-    [self showContextMenuForPaths:[album allTrackPaths] atScreenPoint:screenPoint];
+    [self showContextMenuForPaths:[album allTrackPaths] sourceLabel:album.albumName atScreenPoint:screenPoint];
 }
 
 - (void)albumGridView:(id)gridView requestsContextMenuForTrack:(AlbumTrack *)track
                inAlbum:(AlbumItem *)album atPoint:(NSPoint)screenPoint {
-    [self showContextMenuForPaths:@[track.path] atScreenPoint:screenPoint];
+    [self showContextMenuForPaths:@[track.path] sourceLabel:album.albumName atScreenPoint:screenPoint];
 }
 
 - (void)albumGridView:(id)gridView wantsSetRating:(NSInteger)rating forAlbum:(AlbumItem *)album {
@@ -371,75 +476,44 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
     }
 }
 
-/// Replace the stable Now Playing playlist and start playback from startIndex
-- (void)playPaths:(NSArray<NSString *> *)paths startIndex:(NSUInteger)startIndex {
+/// Replace "Now Playing" with the given tracks and start playback at startIndex.
+- (void)playPaths:(NSArray<NSString *> *)paths startIndex:(NSUInteger)startIndex sourceLabel:(nullable NSString *)label {
     if (paths.count == 0) return;
-
     try {
-        auto plMgr = playlist_manager::get();
-        auto pbCtrl = playback_control::get();
-
         metadb_handle_list items;
-        auto db = metadb::get();
-        for (NSString *path in paths) {
-            auto handle = db->handle_create([path UTF8String], 0);
-            if (handle.is_valid()) items.add_item(handle);
-        }
-        if (items.get_count() == 0) return;
+        if (![self handlesFromPaths:paths into:items]) return;
         if (startIndex >= items.get_count()) startIndex = 0;
-
-        if (plMgr->queue_get_count() > 0) {
-            plMgr->queue_flush();
-        }
-
-        t_size playlistIndex = [self nowPlayingPlaylistOrCreate];
-        plMgr->set_active_playlist(playlistIndex);
-        plMgr->playlist_clear(playlistIndex);
-        plMgr->playlist_insert_items(playlistIndex, 0, items, pfc::bit_array_false());
-        plMgr->playlist_set_focus_item(playlistIndex, startIndex);
-
-        pbCtrl->start(playback_control::track_command_play);
+        upnext::fb::playNow(items, startIndex, label.length > 0 ? label.UTF8String : "");
     } catch (...) {
         FB2K_console_formatter() << "[AlbumViewVanced] Error starting playback";
     }
 }
 
-- (void)addPathsToQueue:(NSArray<NSString *> *)paths {
-    [self queuePathsDirectlyInternal:paths];
+- (void)playNextPaths:(NSArray<NSString *> *)paths {
+    if (paths.count == 0) return;
+    try {
+        metadb_handle_list items;
+        if (![self handlesFromPaths:paths into:items]) return;
+        upnext::fb::playNext(items);
+    } catch (...) {
+        FB2K_console_formatter() << "[AlbumViewVanced] Error adding tracks to play next";
+    }
 }
 
-- (void)queuePathsDirectlyInternal:(NSArray<NSString *> *)paths {
+- (void)addPathsToQueue:(NSArray<NSString *> *)paths {
     if (paths.count == 0) return;
-
     try {
-        auto plMgr = playlist_manager::get();
-        t_size active = plMgr->get_active_playlist();
-        if (active == pfc::infinite_size) {
-            active = plMgr->create_playlist_autoname(0);
-            plMgr->set_active_playlist(active);
-        }
-
         metadb_handle_list items;
-        auto db = metadb::get();
-        for (NSString *path in paths) {
-            auto handle = db->handle_create([path UTF8String], 0);
-            if (handle.is_valid()) items.add_item(handle);
-        }
-
-        if (items.get_count() == 0) return;
-
-        t_size baseIndex = plMgr->playlist_get_item_count(active);
-        plMgr->playlist_add_items(active, items, bit_array_false());
-
-        for (t_size i = 0; i < items.get_count(); i++) {
-            plMgr->queue_add_item_playlist(active, baseIndex + i);
-        }
+        if (![self handlesFromPaths:paths into:items]) return;
+        upnext::fb::addToQueue(items);
     } catch (...) {
         FB2K_console_formatter() << "[AlbumViewVanced] Error adding tracks to queue";
     }
 }
 
-- (void)showContextMenuForPaths:(NSArray<NSString *> *)paths atScreenPoint:(NSPoint)screenPoint {
+- (void)showContextMenuForPaths:(NSArray<NSString *> *)paths
+                   sourceLabel:(nullable NSString *)sourceLabel
+                 atScreenPoint:(NSPoint)screenPoint {
     if (paths.count == 0) return;
 
     @try {
@@ -464,25 +538,24 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
              keyEquivalent:@"\r"];
         playItem.target = self;
         playItem.keyEquivalentModifierMask = 0;
-        playItem.representedObject = paths;
+        playItem.representedObject = @{ @"paths": paths, @"label": sourceLabel ?: @"" };
         [menu addItem:playItem];
 
+        NSMenuItem *playNextItem = [[NSMenuItem alloc]
+            initWithTitle:@"Play Next"
+                   action:@selector(contextPlayNext:)
+            keyEquivalent:@""];
+        playNextItem.target = self;
+        playNextItem.representedObject = paths;
+        [menu addItem:playNextItem];
+
         NSMenuItem *addToQueueItem = [[NSMenuItem alloc]
-            initWithTitle:@"Add to Playback Queue"
+            initWithTitle:@"Add to Queue"
                    action:@selector(contextAddToQueue:)
-               keyEquivalent:@"q"];
+            keyEquivalent:@"q"];
         addToQueueItem.target = self;
         addToQueueItem.keyEquivalentModifierMask = 0;
         addToQueueItem.representedObject = paths;
-
-        NSMenuItem *addToNowPlayingItem = [[NSMenuItem alloc]
-            initWithTitle:@"Add to Now Playing"
-                   action:@selector(contextAddToNowPlayingPlaylist:)
-            keyEquivalent:@""];
-        addToNowPlayingItem.target = self;
-        addToNowPlayingItem.representedObject = paths;
-
-        [menu addItem:addToNowPlayingItem];
         [menu addItem:addToQueueItem];
 
         NSMenuItem *addToPlaylistItem = [[NSMenuItem alloc]
@@ -589,6 +662,7 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
             [menu addItem:[NSMenuItem separatorItem]];
         } else if (child->isCommand()) {
             const char *itemName = child->name();
+            if (itemName && upnext::isDuplicateFoobarMenuItem(itemName)) continue;
             NSString *title = itemName ? [NSString stringWithUTF8String:itemName] : @"";
             NSMenuItem *menuItem = [[NSMenuItem alloc]
                 initWithTitle:title
@@ -622,18 +696,18 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
 }
 
 - (void)contextPlay:(NSMenuItem *)sender {
-    NSArray<NSString *> *paths = sender.representedObject;
-    [self playPaths:paths startIndex:0];
+    NSDictionary *info = sender.representedObject;
+    NSString *label = info[@"label"];
+    [self playPaths:info[@"paths"] startIndex:0 sourceLabel:label];
+}
+
+- (void)contextPlayNext:(NSMenuItem *)sender {
+    [self playNextPaths:sender.representedObject];
 }
 
 - (void)contextAddToQueue:(NSMenuItem *)sender {
     NSArray<NSString *> *paths = sender.representedObject;
     [self addPathsToQueue:paths];
-}
-
-- (void)contextAddToNowPlayingPlaylist:(NSMenuItem *)sender {
-    NSArray<NSString *> *paths = sender.representedObject;
-    [self appendPaths:paths toPlaylistIndex:[self nowPlayingPlaylistOrCreate]];
 }
 
 - (void)contextAddToCurrentPlaylist:(NSMenuItem *)sender {
@@ -665,16 +739,6 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
     auto plMgr = playlist_manager::get();
     t_size playlist = plMgr->create_playlist_autoname(0);
     plMgr->set_active_playlist(playlist);
-    return playlist;
-}
-
-- (t_size)nowPlayingPlaylistOrCreate {
-    auto plMgr = playlist_manager::get();
-    const char *playlistName = albumviewvanced_config::kStableNowPlayingPlaylistName;
-    t_size playlist = plMgr->find_playlist(playlistName, pfc_infinite);
-    if (playlist == pfc_infinite) {
-        playlist = plMgr->create_playlist(playlistName, SIZE_MAX, SIZE_MAX);
-    }
     return playlist;
 }
 

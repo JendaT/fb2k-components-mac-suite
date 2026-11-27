@@ -31,6 +31,8 @@ static inline CGFloat cellWidth(CGFloat viewWidth, NSInteger cols) {
     return floor((viewWidth - kCellPadding * (cols - 1)) / cols);
 }
 
+static const CGFloat kSectionHeaderHeight = 28.0;
+
 static inline CGFloat contentWidthForView(CGFloat viewWidth) {
     return MAX(1.0, viewWidth - kContentInsetLeft - kContentInsetRight);
 }
@@ -63,6 +65,7 @@ static inline CGFloat contentWidthForView(CGFloat viewWidth) {
         _hoveredAlbumIndex = NSNotFound;
         _pendingExpandAlbumIndex = NSNotFound;
         _albums = @[];
+        _appearsOnStartIndex = NSNotFound;
         self.wantsLayer = YES;
     }
     return self;
@@ -101,6 +104,33 @@ static inline CGFloat contentWidthForView(CGFloat viewWidth) {
 
 - (NSInteger)expandedAlbumIndex { return _expandedAlbumIndex; }
 
+#pragma mark - Section helpers
+
+/// End (exclusive) of the row starting at rowStart; rows never span the "Appears on" boundary.
+- (NSInteger)rowEndForStart:(NSInteger)rowStart cols:(NSInteger)cols count:(NSInteger)count {
+    NSInteger end = MIN(rowStart + cols, count);
+    if (_appearsOnStartIndex != NSNotFound && rowStart < _appearsOnStartIndex) {
+        end = MIN(end, _appearsOnStartIndex);
+    }
+    return end;
+}
+
+/// Height of the section label drawn before the row starting at rowStart (0 if none).
+- (CGFloat)sectionHeaderHeightBeforeRow:(NSInteger)rowStart {
+    return (_appearsOnStartIndex != NSNotFound && rowStart == _appearsOnStartIndex) ? kSectionHeaderHeight : 0;
+}
+
+- (void)setAlbums:(NSArray<AlbumItem *> *)albums {
+    _albums = albums;
+    if (_appearsOnStartIndex != NSNotFound && _appearsOnStartIndex >= (NSInteger)albums.count) {
+        _appearsOnStartIndex = NSNotFound;
+    }
+}
+
+- (void)setAppearsOnStartIndex:(NSInteger)index {
+    _appearsOnStartIndex = (index != NSNotFound && index < (NSInteger)_albums.count) ? index : NSNotFound;
+}
+
 - (void)reloadData {
     [self recalcFrameHeight];
     [self setNeedsDisplay:YES];
@@ -138,20 +168,17 @@ static inline CGFloat contentWidthForView(CGFloat viewWidth) {
     CGFloat ch = cellTotalHeight(cw);
 
     CGFloat totalHeight = 0;
-    NSInteger row = 0;
-    for (NSInteger i = 0; i < albumCount; i += cols) {
+    for (NSInteger rowStart = 0, rowEnd; rowStart < albumCount; rowStart = rowEnd) {
+        rowEnd = [self rowEndForStart:rowStart cols:cols count:albumCount];
+        totalHeight += [self sectionHeaderHeightBeforeRow:rowStart];
         totalHeight += ch;
 
         // If expanded album is in this row, add track list height
-        if (_expandedAlbumIndex != NSNotFound) {
-            NSInteger rowStart = i;
-            NSInteger rowEnd = MIN(i + cols, albumCount);
-            if (_expandedAlbumIndex >= rowStart && _expandedAlbumIndex < rowEnd) {
-                AlbumItem *expanded = _albums[_expandedAlbumIndex];
-                totalHeight += [self trackListHeightForAlbum:expanded width:w];
-            }
+        if (_expandedAlbumIndex != NSNotFound &&
+            _expandedAlbumIndex >= rowStart && _expandedAlbumIndex < rowEnd) {
+            AlbumItem *expanded = _albums[_expandedAlbumIndex];
+            totalHeight += [self trackListHeightForAlbum:expanded width:w];
         }
-        row++;
     }
 
     totalHeight += kCellPadding;
@@ -243,8 +270,20 @@ static const CGFloat kTrackHeaderHeight = 28.0;
     NSInteger albumCount = (NSInteger)_albums.count;
     CGFloat y = 0;
 
-    for (NSInteger rowStart = 0; rowStart < albumCount; rowStart += cols) {
-        NSInteger rowEnd = MIN(rowStart + cols, albumCount);
+    for (NSInteger rowStart = 0, rowEnd; rowStart < albumCount; rowStart = rowEnd) {
+        rowEnd = [self rowEndForStart:rowStart cols:cols count:albumCount];
+
+        CGFloat headerH = [self sectionHeaderHeightBeforeRow:rowStart];
+        if (headerH > 0) {
+            NSRect headerRect = NSMakeRect(kContentInsetLeft, y + 6, w - kContentInsetLeft - kContentInsetRight, headerH - 8);
+            if (NSIntersectsRect(headerRect, dirtyRect)) {
+                [@"Appears on" drawWithRect:headerRect
+                                    options:NSStringDrawingUsesLineFragmentOrigin
+                                 attributes:@{NSFontAttributeName: [NSFont systemFontOfSize:12.0 weight:NSFontWeightSemibold],
+                                              NSForegroundColorAttributeName: secondaryText}];
+            }
+            y += headerH;
+        }
 
         for (NSInteger i = rowStart; i < rowEnd; i++) {
             NSInteger col = i - rowStart;
@@ -496,8 +535,13 @@ typedef struct {
     NSInteger albumCount = (NSInteger)_albums.count;
 
     CGFloat y = 0;
-    for (NSInteger rowStart = 0; rowStart < albumCount; rowStart += cols) {
-        NSInteger rowEnd = MIN(rowStart + cols, albumCount);
+    for (NSInteger rowStart = 0, rowEnd; rowStart < albumCount; rowStart = rowEnd) {
+        rowEnd = [self rowEndForStart:rowStart cols:cols count:albumCount];
+        CGFloat headerH = [self sectionHeaderHeightBeforeRow:rowStart];
+        if (headerH > 0) {
+            if (point.y >= y && point.y < y + headerH) return result;
+            y += headerH;
+        }
         CGFloat rowBottom = y + ch;
 
         if (point.y >= y && point.y < rowBottom) {
@@ -560,8 +604,9 @@ typedef struct {
     NSInteger albumCount = (NSInteger)_albums.count;
 
     CGFloat y = 0;
-    for (NSInteger rowStart = 0; rowStart < albumCount; rowStart += cols) {
-        NSInteger rowEnd = MIN(rowStart + cols, albumCount);
+    for (NSInteger rowStart = 0, rowEnd; rowStart < albumCount; rowStart = rowEnd) {
+        rowEnd = [self rowEndForStart:rowStart cols:cols count:albumCount];
+        y += [self sectionHeaderHeightBeforeRow:rowStart];
 
         for (NSInteger i = rowStart; i < rowEnd; i++) {
             NSInteger col = i - rowStart;
@@ -715,8 +760,9 @@ typedef struct {
     NSInteger albumCount = (NSInteger)_albums.count;
 
     CGFloat y = 0;
-    for (NSInteger rowStart = 0; rowStart < albumCount; rowStart += cols) {
-        NSInteger rowEnd = MIN(rowStart + cols, albumCount);
+    for (NSInteger rowStart = 0, rowEnd; rowStart < albumCount; rowStart = rowEnd) {
+        rowEnd = [self rowEndForStart:rowStart cols:cols count:albumCount];
+        y += [self sectionHeaderHeightBeforeRow:rowStart];
         y += ch;
         if (_expandedAlbumIndex >= rowStart && _expandedAlbumIndex < rowEnd) {
             AlbumItem *expanded = _albums[_expandedAlbumIndex];
@@ -893,8 +939,14 @@ typedef struct {
     CGFloat cw = cellWidth(w, cols);
     CGFloat ch = cellTotalHeight(cw);
 
-    NSInteger row = index / cols;
-    CGFloat y = row * ch;
+    NSInteger albumCount = (NSInteger)_albums.count;
+    CGFloat y = 0;
+    for (NSInteger rowStart = 0, rowEnd; rowStart < albumCount; rowStart = rowEnd) {
+        rowEnd = [self rowEndForStart:rowStart cols:cols count:albumCount];
+        y += [self sectionHeaderHeightBeforeRow:rowStart];
+        if (index >= rowStart && index < rowEnd) break;
+        y += ch;
+    }
     [self scrollRectToVisible:NSMakeRect(0, y, w, ch)];
 }
 

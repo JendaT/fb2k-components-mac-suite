@@ -11,6 +11,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)handleLibraryItemsRemoved;
 - (void)handleLibraryItemsModified;
 
+/// Show only albums by (and appearing-on for) this artist; nil restores everything.
+/// Hides the search field while set. Called by the ShellVanced panel.
+- (void)setArtistFilter:(nullable NSString *)name;
+
 @end
 
 NS_ASSUME_NONNULL_END

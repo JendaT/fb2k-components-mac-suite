@@ -28,6 +28,10 @@ extern NSPasteboardType const AlbumViewVancedPasteboardType;
 @property (nonatomic, strong, nullable) NSArray<AlbumItem *> *albums;
 @property (nonatomic, assign) CGFloat thumbnailSize;
 
+/// Index of the first album shown under the "Appears on" label, or NSNotFound for no section.
+/// Set after `albums`.
+@property (nonatomic, assign) NSInteger appearsOnStartIndex;
+
 /// Index of the album whose track list is expanded, or NSNotFound.
 @property (nonatomic, assign, readonly) NSInteger expandedAlbumIndex;
 
