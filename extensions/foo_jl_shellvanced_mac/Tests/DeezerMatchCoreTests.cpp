@@ -134,9 +134,13 @@ int main() {
         CHECK(spmatch::confirmed(V{"ubuntu"}, V{"ubuntu", "interlude"}, RT{V{"ubuntu"}, V{"ubuntu"}}), "album vs album/single: accepted");
         CHECK(!spmatch::confirmed(V{"ubuntu"}, V{"ubuntu"}, RT{V{}, V{"ubuntu"}}), "album vs appears_on only: single rejected");
         CHECK(!spmatch::confirmed(V{"home"}, V{"home"}, RT{V{"home"}, V{"home"}}), "short single title: rejected");
-        CHECK(spmatch::confirmed(V{"ubuntu"}, V{"ubuntu", "interlude"}, RT{V{}, V{"interlude", "ubuntu"}}), "two distinct matches (any groups): accepted");
-        CHECK(spmatch::confirmed(V{}, V{"night drive", "blue hour"}, RT{V{}, V{"night drive", "blue hour"}}), "two track matches: accepted");
+        CHECK(spmatch::confirmed(V{"ubuntu"}, V{"ubuntu", "interlude"}, RT{V{"interlude"}, V{"interlude", "ubuntu"}}), "album vs any group + track vs primary: accepted");
+        CHECK(spmatch::confirmed(V{}, V{"night drive", "blue hour"}, RT{V{"night drive", "blue hour"}, V{"night drive", "blue hour"}}), "two track matches vs primary: accepted");
         CHECK(!spmatch::confirmed(V{}, V{"replication"}, RT{V{"replication"}, V{"replication"}}), "one track only: rejected");
+        CHECK(!spmatch::confirmed(V{}, V{"paradise", "sunrise"}, RT{V{}, V{"paradise beach chillout", "sunrise yoga vol 2"}}), "tracks vs appears_on containment: rejected");
+        CHECK(!spmatch::confirmed(V{}, V{"paradise", "sunrise"}, RT{V{}, V{"paradise", "sunrise"}}), "tracks vs appears_on exact: rejected");
+        CHECK(spmatch::confirmed(V{}, V{"paradise", "sunrise"}, RT{V{"paradise", "sunrise"}, V{"paradise", "sunrise"}}), "tracks vs exact album/single: accepted");
+        CHECK(spmatch::confirmed(V{"paradise", "sunrise"}, V{"paradise", "sunrise"}, RT{V{}, V{"paradise", "sunrise"}}), "albums vs appears_on exact: accepted");
         CHECK_EQ(spmatch::chooseConfirmed(V{"ubuntu"}, V{"ubuntu"}, {RT{V{"x"}, V{"x"}}, RT{V{"ubuntu"}, V{"ubuntu"}}}), 1, "choose confirmed");
         CHECK_EQ(spmatch::chooseConfirmed(V{"ubuntu"}, V{"ubuntu"}, {RT{V{"ubuntu"}, V{"ubuntu"}}, RT{V{"ubuntu"}, V{"ubuntu"}}}), -1, "ambiguous");
         CHECK_EQ(spmatch::chooseConfirmed(V{"ubuntu"}, V{"ubuntu"}, {RT{V{"x"}, V{"x"}}}), -1, "none");

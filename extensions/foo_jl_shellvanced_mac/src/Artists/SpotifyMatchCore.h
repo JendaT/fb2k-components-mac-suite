@@ -52,12 +52,23 @@ struct RemoteTitles {
     std::vector<std::string> primary, all;
 };
 
-// Spotify always needs title overlap (no small-discography shortcut). >= 2 distinct matching titles
-// (any local title vs any Spotify group), or exactly one strong (exact, >= 6 chars) match that is
-// one of the user's ALBUM titles against a Spotify album/single.
+// Spotify always needs title overlap (no small-discography shortcut):
+//  - >= 2 distinct EXACT title equalities (no containment). A user ALBUM title may equal any Spotify
+//    title; a user TRACK-only title may equal only a Spotify album/single (primary) title, so
+//    appears_on/compilation names never confirm tracks.
+//  - or exactly one strong (exact, >= 6 chars) user ALBUM title vs a Spotify album/single.
 inline bool confirmed(const std::vector<std::string>& userAlbums, const std::vector<std::string>& userAll,
                       const RemoteTitles& remote) {
-    if (deezermatch::scoreOverlap(userAll, remote.all).distinct >= 2) return true;
+    auto has = [](const std::vector<std::string>& v, const std::string& t) {
+        return std::find(v.begin(), v.end(), t) != v.end();
+    };
+    std::vector<std::string> seen;
+    for (const std::string& u : userAll) {
+        if (u.empty() || has(seen, u)) continue;
+        const bool isAlbum = has(userAlbums, u);
+        if (has(isAlbum ? remote.all : remote.primary, u)) seen.push_back(u);
+    }
+    if (seen.size() >= 2) return true;
     const deezermatch::OverlapScore sc = deezermatch::scoreOverlap(userAlbums, remote.primary);
     return sc.distinct == 1 && sc.strongSingle;
 }

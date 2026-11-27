@@ -109,9 +109,9 @@
     }];
 }
 
-// Applies a credentials change. The rate-limit block survives unless the Client ID itself changed.
-- (void)applyChangeIdChanged:(BOOL)idChanged {
-    [[SVSpotifyClient shared] credentialsChangedClearingBlock:idChanged];
+// Applies a credentials change. The rate-limit block survives unless a new Client ID differs from the blocked one.
+- (void)applyChangeWithNewClientId:(NSString *)newId {
+    [[SVSpotifyClient shared] credentialsChangedWithNewClientId:newId];
     [[SVArtistImageProvider shared] spotifyCredentialsDidChange];
 }
 
@@ -130,7 +130,7 @@
     BOOL ok = [SVSpotifyCredentials saveClientId:cid secret:secret];
     [self refreshSecretPlaceholder];
     [self setStatus:ok ? @"Saved" : @"Keychain write failed"];
-    if (ok) [self applyChangeIdChanged:idChanged];
+    if (ok) [self applyChangeWithNewClientId:cid];
 }
 
 - (void)remove:(id)sender {
@@ -139,7 +139,7 @@
     _idField.stringValue = @"";
     [self refreshSecretPlaceholder];
     [self setStatus:@"Removed"];
-    if (had) [self applyChangeIdChanged:YES];
+    if (had) [self applyChangeWithNewClientId:nil];
 }
 
 @end

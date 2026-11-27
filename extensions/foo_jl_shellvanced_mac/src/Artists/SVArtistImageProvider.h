@@ -36,8 +36,8 @@ extern NSNotificationName const SVArtistImagesDidChangeNotification;
             completion:(void (^)(NSImage *image))completion;
 
 /// Main thread. Call after the Spotify credentials changed: clears Spotify negatives and cover-like
-/// Deezer pictures, drops memory caches and posts SVArtistLibraryDidChangeNotification so visible
-/// artists are looked up again.
+/// Deezer pictures, drops memory caches and posts SVArtistImagesDidChangeNotification so visible
+/// artist images are requested again.
 - (void)spotifyCredentialsDidChange;
 
 @end

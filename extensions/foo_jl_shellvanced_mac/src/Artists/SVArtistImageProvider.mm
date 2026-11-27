@@ -167,7 +167,7 @@ static const NSUInteger kMaxTransientEntries = 2000;
     BOOL _negativeSavePending;                               // _diskQueue only
     NSMutableSet<NSString *> *_spotifyInFlight;     // main thread only: keys with a background Spotify lookup
     NSString *_headerKey;                           // main thread: artist page header's key (Spotify priority)
-    NSString *_latestKey;                           // main thread: most recently requested key
+    NSMutableSet<NSString *> *_upgraded;            // main thread: keys whose Spotify photo has landed
     NSMutableDictionary<NSString *, SVTransientResult *> *_transient;  // main thread only; no images
     NSCache<NSString *, NSImage *> *_transientCovers;   // 60 s covers, cost-limited
     NSCache<NSString *, NSImage *> *_transientRounds;   // rounded images for transient hits, cost-limited
@@ -188,6 +188,7 @@ static const NSUInteger kMaxTransientEntries = 2000;
         _roundCache.totalCostLimit = 32 * 1024 * 1024;
         _transient = [NSMutableDictionary dictionary];
         _spotifyInFlight = [NSMutableSet set];
+        _upgraded = [NSMutableSet set];
         _transientCovers = [[NSCache alloc] init];
         _transientCovers.totalCostLimit = 16 * 1024 * 1024;
         _transientRounds = [[NSCache alloc] init];
@@ -335,7 +336,6 @@ static NSString *SHA1Hex(NSString *s) {
     NSString *key = [NSString stringWithUTF8String:artistnames::artistKey(stdName).c_str()] ?: @"";
     if (key.length == 0) { completion(RoundImage(nil, name, points)); return; }
     if (priority) _headerKey = key;
-    _latestKey = key;
 
     NSString *roundKey = [NSString stringWithFormat:@"%@|%g", key, points];
     NSImage *cached = [_roundCache objectForKey:roundKey];
@@ -379,6 +379,10 @@ static NSString *SHA1Hex(NSString *s) {
 // With cache NO the result is remembered for kRetryDelay only (transient failure); with cache YES
 // and no image (no photo, no cover) it is remembered for the session.
 - (void)finishKey:(NSString *)key name:(NSString *)name source:(NSImage *)source cache:(BOOL)cache {
+    if ([_upgraded containsObject:key]) {  // a later fallback must not overwrite the landed Spotify photo
+        NSImage *up = [_sourceCache objectForKey:key];
+        if (up) { source = up; cache = YES; }
+    }
     if (source && cache) {
         [_sourceCache setObject:source forKey:key cost:CostOf(source)];
         [_transient removeObjectForKey:key];
@@ -647,7 +651,7 @@ typedef NS_ENUM(NSInteger, SVPickPersist) { SVPickPersistNone, SVPickPersistNorm
 }
 
 - (BOOL)isUrgentKey:(NSString *)key {
-    return [key isEqualToString:_headerKey] || [key isEqualToString:_latestKey];
+    return [key isEqualToString:_headerKey];  // only the artist page header jumps the Spotify queue
 }
 
 // Source order: reached for a Deezer miss (pick nil) or a cover-like Deezer picture (pick). The UI is
@@ -702,6 +706,7 @@ typedef NS_ENUM(NSInteger, SVPickPersist) { SVPickPersistNone, SVPickPersistNorm
 
 // A verified Spotify photo arrived after the fallback was shown: swap it in and tell observers.
 - (void)upgradeKey:(NSString *)key toImage:(NSImage *)img {
+    [_upgraded addObject:key];
     [_sourceCache setObject:img forKey:key cost:CostOf(img)];
     [_transient removeObjectForKey:key];
     [_transientCovers removeObjectForKey:key];
@@ -721,6 +726,9 @@ typedef NS_ENUM(NSInteger, SVPickPersist) { SVPickPersistNone, SVPickPersistNorm
             std::vector<spmatch::Candidate> use;
             for (size_t i : spmatch::exactCandidates(name.UTF8String ?: "", cands)) use.push_back(cands[i]);
             if (use.empty() || use.size() > 4) { completion(nil, SVSpotifyStatusOK); return; }
+            BOOL anyImage = NO;
+            for (const auto &c : use) if (!c.imageUrl.empty()) anyImage = YES;
+            if (!anyImage) { completion(nil, SVSpotifyStatusOK); return; }  // nothing to show: no album fetches
             std::vector<std::string> userAll = NormalizedUserTitles(name), userAlbums;
             for (NSString *t in [[SVArtistLibrary shared] albumTitlesForArtist:name])
                 userAlbums.push_back(deezermatch::normalizeTitle(t.UTF8String ?: ""));
@@ -774,6 +782,7 @@ typedef NS_ENUM(NSInteger, SVPickPersist) { SVPickPersistNone, SVPickPersistNorm
             [self->_sourceCache removeAllObjects];
             [self->_roundCache removeAllObjects];
             [self->_spotifyInFlight removeAllObjects];
+            [self->_upgraded removeAllObjects];
             [self clearTransient];
             [[NSNotificationCenter defaultCenter] postNotificationName:SVArtistImagesDidChangeNotification object:nil];
         });

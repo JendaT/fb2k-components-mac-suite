@@ -37,6 +37,7 @@ static std::string Str(id v) {
     NSDate *_tokenExpiry;          // _stateLock
     NSDate *_lastRequestEnd;       // worker only
     NSTimeInterval _blockUntil;    // _stateLock
+    NSString *_blockClientId;      // _stateLock: the Client ID whose requests were rate limited
     BOOL _authFailed;              // _stateLock
     BOOL _sessionDisabled;         // _stateLock: too many consecutive failures
     spmatch::FailureTracker _failures;  // _stateLock
@@ -65,6 +66,8 @@ static std::string Str(id v) {
         id json = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
         if ([json isKindOfClass:[NSDictionary class]] && [json[@"until"] isKindOfClass:[NSNumber class]])
             _blockUntil = spmatch::clampBlockUntil([json[@"until"] doubleValue], [NSDate date].timeIntervalSince1970);
+        if ([json isKindOfClass:[NSDictionary class]] && [json[@"id"] isKindOfClass:[NSString class]])
+            _blockClientId = json[@"id"];
     }
     return self;
 }
@@ -92,17 +95,22 @@ static std::string Str(id v) {
 
 - (void)blockForSeconds:(long)seconds {
     NSTimeInterval until = [NSDate date].timeIntervalSince1970 + seconds;
-    @synchronized (_stateLock) { _blockUntil = until; }
-    NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"until": @(until)} options:0 error:nil];
+    NSString *cid = [SVSpotifyCredentials clientId] ?: @"";
+    @synchronized (_stateLock) { _blockUntil = until; _blockClientId = cid; }
+    NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"until": @(until), @"id": cid} options:0 error:nil];
     [data writeToURL:BlockFileURL() atomically:YES];
 }
 
-- (void)credentialsChangedClearingBlock:(BOOL)clearBlock {
+- (void)credentialsChangedWithNewClientId:(NSString *)newClientId {
+    BOOL clearBlock = NO;
+    @synchronized (_stateLock) {
+        clearBlock = newClientId.length > 0 && ![newClientId isEqualToString:_blockClientId ?: @""];
+    }
     @synchronized (_stateLock) {
         _generation++;
         _token = nil; _tokenExpiry = nil;
         _authFailed = NO; _sessionDisabled = NO; _failures = spmatch::FailureTracker();
-        if (clearBlock) _blockUntil = 0;
+        if (clearBlock) { _blockUntil = 0; _blockClientId = nil; }
     }
     if (clearBlock) [[NSFileManager defaultManager] removeItemAtURL:BlockFileURL() error:nil];
 }
@@ -170,7 +178,7 @@ static std::string Str(id v) {
 }
 
 // Token request. On failure `message` describes it (never contains credentials).
-- (SVSpotifyStatus)fetchTokenId:(NSString *)cid secret:(NSString *)secret
+- (SVSpotifyStatus)fetchTokenId:(NSString *)cid secret:(NSString *)secret recordBlock:(BOOL)recordBlock
                           token:(NSString **)outToken expiry:(NSDate **)outExpiry message:(NSString **)message {
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:kTokenURL]];
     req.HTTPMethod = @"POST";
@@ -183,7 +191,7 @@ static std::string Str(id v) {
     if (!data) { if (message) *message = @"Network error"; return SVSpotifyStatusFailed; }
     id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     if (resp.statusCode == 429) {
-        [self noteRateLimit:resp];
+        if (recordBlock) [self noteRateLimit:resp];  // a Test of an unsaved ID stays local to its result
         if (message) *message = @"Rate limited by Spotify";
         return SVSpotifyStatusBlocked;
     }
@@ -228,7 +236,7 @@ static std::string Str(id v) {
         }
         if (!token) {
             NSString *tok = nil; NSDate *exp = nil;
-            SVSpotifyStatus st = [self fetchTokenId:cid secret:secret token:&tok expiry:&exp message:nil];
+            SVSpotifyStatus st = [self fetchTokenId:cid secret:secret recordBlock:YES token:&tok expiry:&exp message:nil];
             if (st != SVSpotifyStatusOK) {
                 if (st == SVSpotifyStatusAuthFailed) {
                     @synchronized (_stateLock) { if (gen == _generation) _authFailed = YES; }
@@ -361,7 +369,7 @@ static std::string Str(id v) {
     if ([self isBlocked]) { completion(NO, @"Spotify is rate-limiting this app; try again later"); return; }
     [self schedule:^{
         NSString *msg = nil;
-        SVSpotifyStatus st = [self fetchTokenId:clientId secret:secret token:nil expiry:nil message:&msg];
+        SVSpotifyStatus st = [self fetchTokenId:clientId secret:secret recordBlock:NO token:nil expiry:nil message:&msg];
         completion(st == SVSpotifyStatusOK, st == SVSpotifyStatusOK ? @"OK" : (msg ?: @"Failed"));
     } urgent:YES];
 }

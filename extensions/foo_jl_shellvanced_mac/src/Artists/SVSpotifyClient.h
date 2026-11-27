@@ -58,8 +58,9 @@ typedef NS_ENUM(NSInteger, SVSpotifyStatus) {
           completion:(void (^)(BOOL ok, NSString *message))completion;
 
 /// Applied immediately: drops the cached token, auth-failed/session-disabled flags and bumps `generation`.
-/// `clearBlock` also drops the persisted rate-limit block (only when the Client ID actually changed).
-- (void)credentialsChangedClearingBlock:(BOOL)clearBlock;
+/// The persisted rate-limit block is cleared only when `newClientId` is non-empty and differs from the
+/// Client ID that caused the block (so Remove, or a secret-only change, keeps it).
+- (void)credentialsChangedWithNewClientId:(nullable NSString *)newClientId;
 
 /// Incremented by every credentialsChanged; pipelines started under an older value must not persist
 /// Spotify negatives / cover-like files.
