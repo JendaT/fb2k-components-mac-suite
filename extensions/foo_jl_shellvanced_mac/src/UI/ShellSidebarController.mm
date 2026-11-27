@@ -20,13 +20,13 @@ static const CGFloat kArtistRowHeight    = 40.0;
 static const CGFloat kSectionRowHeight   = 24.0;
 static const CGFloat kHeaderRowHeight    = 72.0;
 static const CGFloat kSearchExtraHeight  = 30.0;   // header grows by this while the search field is open
-static const NSInteger kHeaderRowIndex   = 1;      // Albums, then the Your Library header
+static const NSInteger kHeaderRowIndex   = 0;      // the list starts with the Your Library header (Albums is pinned above it)
 static const CGFloat kArtistPhotoSize    = 32.0;
+static const CGFloat kHomeAreaHeight     = 32.0;   // pinned Albums row (28) + the 2 pt row gap + 2 pt breathing room
 
 #pragma mark - Model
 
 typedef NS_ENUM(NSInteger, SVRowKind) {
-    SVRowKindHome,           // "Albums"
     SVRowKindLibraryHeader,  // "Your Library" + chips (group row, floats)
     SVRowKindSection,        // small "Playlists" / "Artists" label
     SVRowKindPlaylist,
@@ -52,7 +52,7 @@ typedef NS_ENUM(NSInteger, SVRowKind) {
     return item;
 }
 - (BOOL)isSelectable {
-    return _kind == SVRowKindHome || _kind == SVRowKindPlaylist || _kind == SVRowKindArtist;
+    return _kind == SVRowKindPlaylist || _kind == SVRowKindArtist;
 }
 - (BOOL)sameRowAs:(SVSidebarItem *)other {
     return other && other.kind == _kind && [other.title isEqualToString:_title];
@@ -462,6 +462,8 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
 @implementation ShellSidebarController {
     SVSidebarTableView *_table;
     NSScrollView *_scroll;
+    NSScrollView *_homeScroll;       // fixed "Albums" row above the list; never scrolls
+    SVSidebarTableView *_homeTable;  // one-row source list, so it looks and selects exactly like the list rows
     NSArray<SVSidebarItem *> *_items;
     LibraryFilter _filter;
     Destination _reflected;
@@ -506,7 +508,6 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     root.state = NSVisualEffectStateFollowsWindowActiveState;
 
     _scroll = [[NSScrollView alloc] initWithFrame:root.bounds];
-    _scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     _scroll.hasVerticalScroller = YES;
     _scroll.autohidesScrollers = YES;
     _scroll.borderType = NSNoBorder;
@@ -545,6 +546,32 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(sidebarScrolled:)
                                                  name:NSViewBoundsDidChangeNotification object:_scroll.contentView];
     [root addSubview:_scroll];
+
+    _homeScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 220, kHomeAreaHeight)];
+    _homeScroll.hasVerticalScroller = NO;
+    _homeScroll.hasHorizontalScroller = NO;
+    _homeScroll.verticalScrollElasticity = NSScrollElasticityNone;
+    _homeScroll.horizontalScrollElasticity = NSScrollElasticityNone;
+    _homeScroll.borderType = NSNoBorder;
+    _homeScroll.drawsBackground = NO;
+    _homeTable = [[SVSidebarTableView alloc] initWithFrame:_homeScroll.bounds];
+    _homeTable.style = NSTableViewStyleSourceList;
+    _homeTable.backgroundColor = [NSColor clearColor];
+    _homeTable.headerView = nil;
+    _homeTable.rowSizeStyle = NSTableViewRowSizeStyleCustom;
+    _homeTable.intercellSpacing = NSMakeSize(0, 2);
+    _homeTable.allowsEmptySelection = YES;
+    _homeTable.allowsMultipleSelection = NO;
+    _homeTable.columnAutoresizingStyle = NSTableViewUniformColumnAutoresizingStyle;
+    NSTableColumn *homeCol = [[NSTableColumn alloc] initWithIdentifier:@"main"];
+    homeCol.resizingMask = NSTableColumnAutoresizingMask;
+    homeCol.width = 220;
+    [_homeTable addTableColumn:homeCol];
+    _homeTable.dataSource = self;
+    _homeTable.delegate = self;
+    _homeTable.keyHandler = ^BOOL(NSEvent *event) { return [weakSelf handleHomeKey:event]; };
+    _homeScroll.documentView = _homeTable;
+    [root addSubview:_homeScroll];
     self.view = root;
 
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(artistLibraryDidChange:)
@@ -558,6 +585,13 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
 // Keep the single column as wide as the sidebar, whatever width the splitter gives it.
 - (void)viewDidLayout {
     [super viewDidLayout];
+    // Pinned Albums row on top (below any title-bar safe area), the list fills the rest.
+    const NSRect b = self.view.bounds;
+    const CGFloat top = self.view.safeAreaInsets.top;
+    const CGFloat homeH = kHomeAreaHeight;
+    _homeScroll.frame = NSMakeRect(0, NSMaxY(b) - top - homeH, NSWidth(b), homeH);
+    _scroll.frame = NSMakeRect(0, 0, NSWidth(b), MAX(0, NSHeight(b) - top - homeH));
+    [_homeTable sizeLastColumnToFit];
     [_table sizeLastColumnToFit];
 }
 
@@ -590,7 +624,6 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
 
 - (NSArray<SVSidebarItem *> *)buildItems {
     NSMutableArray<SVSidebarItem *> *items = [NSMutableArray array];
-    [items addObject:[SVSidebarItem itemWithKind:SVRowKindHome title:@"Albums"]];
     [items addObject:[SVSidebarItem itemWithKind:SVRowKindLibraryHeader title:@"Your Library"]];
 
     const BOOL both = _filter == LibraryFilter::All;
@@ -814,7 +847,7 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     NSClipView *clip = _scroll.contentView;
     const NSPoint origin = clip.bounds.origin;
     _reflecting = YES;
-    const NSUInteger keep = (NSUInteger)kHeaderRowIndex + 1;   // Albums + Your Library header stay put
+    const NSUInteger keep = (NSUInteger)kHeaderRowIndex + 1;   // the Your Library header stays put
     const BOOL patch = !forceReload && old.count >= keep && fresh.count >= keep &&
         fresh[kHeaderRowIndex].kind == SVRowKindLibraryHeader && old[kHeaderRowIndex].kind == SVRowKindLibraryHeader;
     if (patch) {
@@ -849,8 +882,7 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
         SVSidebarItem *item = _items[i];
         switch (d.kind) {
             case DestKind::Albums:
-                if (item.kind == SVRowKindHome) return (NSInteger)i;
-                break;
+                return -1;   // the pinned Albums row lives outside the list
             case DestKind::Playlist:
                 if (item.kind == SVRowKindPlaylist && SVToStd(item.title) == d.name) return (NSInteger)i;
                 break;
@@ -873,6 +905,12 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     if (!self.isViewLoaded) return;
     NSInteger row = [self rowForDestination:destination];
     _reflecting = YES;
+    const BOOL albums = destination.kind == DestKind::Albums;
+    if (albums) {
+        if (_homeTable.selectedRow != 0) [_homeTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+    } else if (_homeTable.selectedRow >= 0) {
+        [_homeTable deselectAll:nil];
+    }
     if (row >= 0) {
         if (_table.selectedRow != row) {
             [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
@@ -1105,12 +1143,37 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
 
 #pragma mark Keyboard
 
+- (NSInteger)firstSelectableListRow {
+    for (NSUInteger i = 0; i < _items.count; i++)
+        if ([_items[i] isSelectable]) return (NSInteger)i;
+    return -1;
+}
+
+// Down from the pinned Albums row: into the first list row.
+- (BOOL)handleHomeKey:(NSEvent *)event {
+    if (event.modifierFlags & (NSEventModifierFlagCommand | NSEventModifierFlagOption |
+                               NSEventModifierFlagControl | NSEventModifierFlagShift)) return NO;
+    if (event.charactersIgnoringModifiers.length != 1 ||
+        [event.charactersIgnoringModifiers characterAtIndex:0] != NSDownArrowFunctionKey) return NO;
+    NSInteger first = [self firstSelectableListRow];
+    if (first < 0) return YES;
+    [self.view.window makeFirstResponder:_table];
+    [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)first] byExtendingSelection:NO];
+    [_table scrollRowToVisible:first];
+    return YES;
+}
+
 - (BOOL)handleTableKey:(NSEvent *)event {
     NSEventModifierFlags mods = event.modifierFlags & (NSEventModifierFlagCommand | NSEventModifierFlagOption |
                                                       NSEventModifierFlagControl | NSEventModifierFlagShift);
     if (mods != 0 || event.charactersIgnoringModifiers.length != 1) return NO;
     unichar c = [event.charactersIgnoringModifiers characterAtIndex:0];
     NSInteger row = _table.selectedRow;
+    if (c == NSUpArrowFunctionKey && row >= 0 && row == [self firstSelectableListRow]) {
+        [self.view.window makeFirstResponder:_homeTable];   // Up from the first row reaches the pinned Albums row
+        [_homeTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+        return YES;
+    }
     if (![self playlistItemAtRow:row]) return NO;
     if (c == '\r' || c == 3) {            // Return / Enter: rename (Finder convention)
         [self beginRenameAtRow:row];
@@ -1160,14 +1223,17 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
 #pragma mark NSTableViewDataSource / Delegate
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
+    if (tableView == _homeTable) return 1;
     return (NSInteger)_items.count;
 }
 
 - (BOOL)tableView:(NSTableView *)tableView isGroupRow:(NSInteger)row {
+    if (tableView == _homeTable) return NO;
     return _items[(NSUInteger)row].kind == SVRowKindLibraryHeader;
 }
 
 - (CGFloat)tableView:(NSTableView *)tableView heightOfRow:(NSInteger)row {
+    if (tableView == _homeTable) return kRowHeight;
     switch (_items[(NSUInteger)row].kind) {
         case SVRowKindLibraryHeader: return kHeaderRowHeight + (_searchOpen ? kSearchExtraHeight : 0);
         case SVRowKindSection:       return kSectionRowHeight;
@@ -1177,10 +1243,24 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
 }
 
 - (BOOL)tableView:(NSTableView *)tableView shouldSelectRow:(NSInteger)row {
+    if (tableView == _homeTable) return YES;
     return [_items[(NSUInteger)row] isSelectable];
 }
 
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
+    if (tableView == _homeTable) {
+        SVPlaylistCellView *v = [tableView makeViewWithIdentifier:@"home" owner:self];
+        if (!v) {
+            v = [[SVPlaylistCellView alloc] initWithFrame:NSZeroRect];
+            v.identifier = @"home";
+        }
+        v.imageView.image = [NSImage imageWithSystemSymbolName:@"square.grid.2x2" accessibilityDescription:nil];
+        v.textField.stringValue = @"Albums";
+        v.textField.editable = NO;
+        v.textField.selectable = NO;
+        v.countField.stringValue = @"";
+        return v;
+    }
     SVSidebarItem *item = _items[(NSUInteger)row];
     switch (item.kind) {
         case SVRowKindLibraryHeader: {
@@ -1268,20 +1348,17 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
             }];
             return v;
         }
-        case SVRowKindHome:
         case SVRowKindPlaylist: {
             SVPlaylistCellView *v = [tableView makeViewWithIdentifier:@"row" owner:self];
             if (!v) {
                 v = [[SVPlaylistCellView alloc] initWithFrame:NSZeroRect];
                 v.identifier = @"row";
             }
-            BOOL home = item.kind == SVRowKindHome;
-            NSString *symbol = home ? @"square.grid.2x2" : @"music.note.list";
-            v.imageView.image = [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:nil];
+            v.imageView.image = [NSImage imageWithSystemSymbolName:@"music.note.list" accessibilityDescription:nil];
             v.textField.stringValue = item.title;
             v.textField.editable = NO;
             v.textField.selectable = NO;
-            v.countField.stringValue = home ? @"" : (item.detail ?: @"");
+            v.countField.stringValue = item.detail ?: @"";
             return v;
         }
     }
@@ -1290,6 +1367,20 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
 
 - (void)tableViewSelectionDidChange:(NSNotification *)notification {
     if (_reflecting) return;
+    if (notification.object == _homeTable) {
+        if (_homeTable.selectedRow < 0) {
+            dispatch_async(dispatch_get_main_queue(), ^{ [self reflectDestination:self->_reflected scroll:NO]; });
+            return;
+        }
+        _reflecting = YES;
+        [_table deselectAll:nil];
+        _reflecting = NO;
+        Destination albums{DestKind::Albums, ""};
+        if (albums == _reflected) return;
+        _reflected = albums;
+        [self.delegate sidebar:self didChooseDestination:albums];
+        return;
+    }
     NSInteger row = _table.selectedRow;
     if (row < 0) {
         // Clicking empty space: keep showing what the content shows.
@@ -1297,9 +1388,13 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
         return;
     }
     SVSidebarItem *item = _items[(NSUInteger)row];
+    if (_homeTable.selectedRow >= 0) {
+        _reflecting = YES;
+        [_homeTable deselectAll:nil];
+        _reflecting = NO;
+    }
     Destination d;
     switch (item.kind) {
-        case SVRowKindHome:     d = {DestKind::Albums, ""}; break;
         case SVRowKindPlaylist: d = {DestKind::Playlist, SVToStd(item.title)}; break;
         case SVRowKindArtist:   d = {DestKind::Artist, SVToStd(item.title)}; break;
         default: return;
