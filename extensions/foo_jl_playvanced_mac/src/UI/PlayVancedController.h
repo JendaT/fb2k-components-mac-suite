@@ -17,6 +17,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)handlePlaybackOrderChanged:(NSInteger)order;
 // Now Playing / playing playlist / playback queue changed (refreshes Up Next if shown).
 - (void)handleUpNextChanged;
+// Play Next / Add to Queue inserted `count` tracks into Now Playing.
+- (void)handleUpNextItemsAdded:(NSUInteger)count playNext:(BOOL)playNext;
 
 // Actions shared by the bar buttons and the keyboard shortcuts.
 - (void)toggleShuffle;

@@ -38,8 +38,13 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, assign) BOOL upNextActive;
 // The Up Next button when visible, else nil (popover falls back to the bar).
 @property (nonatomic, readonly, nullable) NSView *upNextAnchorView;
+// Stopped only: Play has something to start (Now Playing has items).
+// Ignored while playing/paused (Play/Pause is always enabled then).
+@property (nonatomic, assign) BOOL canStartPlayback;
 
 - (void)clearDisplay;
+// Short accent pulse on the Up Next button plus a transient label beside it.
+- (void)flashUpNextFeedback:(NSString *)text;
 
 @end
 

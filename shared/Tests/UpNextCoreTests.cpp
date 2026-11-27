@@ -41,7 +41,27 @@ int main() {
       CHECK_EQ(p.insertAt, 4, "append"); CHECK(!p.copyRemainder, "no copy");
       s.nowPlayingFocus.reset();
       p = planEdit(Action::PlayNext, s);
-      CHECK_EQ(p.insertAt, 0, "no focus"); CHECK(!p.copyRemainder, "no copy"); }
+      CHECK_EQ(p.insertAt, 0, "no focus"); CHECK(!p.copyRemainder, "no copy");
+      CHECK(p.focusFirstInserted, "stopped focuses inserted");
+      p = planEdit(Action::AddToQueue, s); CHECK(p.focusFirstInserted, "stopped focuses inserted (queue)"); }
+    { PlaybackState s; // empty / missing Now Playing
+      EditPlan p = planEdit(Action::AddToQueue, s);
+      CHECK_EQ(p.insertAt, 0, "empty NP"); CHECK(p.focusFirstInserted, "empty NP focus"); }
+    CHECK(!planEdit(Action::AddToQueue, fromNP()).focusFirstInserted, "playing: no focus move");
+    CHECK(!planEdit(Action::PlayNext, fromOther()).focusFirstInserted, "playing other: no focus move");
+
+    g_context = "stoppedStartIndex";
+    CHECK(!stoppedStartIndex(0, std::nullopt), "empty");
+    CHECK(!stoppedStartIndex(0, 3), "empty with focus");
+    CHECK(*stoppedStartIndex(5, 3) == 3, "focus");
+    CHECK(*stoppedStartIndex(5, std::nullopt) == 0, "no focus");
+    CHECK(*stoppedStartIndex(5, 9) == 0, "stale focus");
+
+    g_context = "addedFeedbackText";
+    CHECK(addedFeedbackText(12, false) == "Added 12 tracks to queue", "queue plural");
+    CHECK(addedFeedbackText(1, false) == "Added 1 track to queue", "queue singular");
+    CHECK(addedFeedbackText(3, true) == "Playing 3 tracks next", "next plural");
+    CHECK(addedFeedbackText(1, true) == "Playing 1 track next", "next singular");
 
     g_context = "unknown playing index";
     { PlaybackState s = fromNP(); s.playingIndexKnown = false; s.nowPlayingFocus = 7;

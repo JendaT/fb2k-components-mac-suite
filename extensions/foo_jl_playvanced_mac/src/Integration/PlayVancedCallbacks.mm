@@ -1,7 +1,7 @@
 #import "PlayVancedCallbacks.h"
 #import "../Core/ArtworkFetcher.h"
 #import "../UI/PlayVancedController.h"
-#import "../../../../shared/UpNextCore.h"
+#import "../../../../shared/UpNext.h"
 #import <mutex>
 
 static std::mutex g_controllersMutex;
@@ -118,6 +118,15 @@ void PlayVancedCallbackManager::onUpNextChanged() {
     });
 }
 
+void PlayVancedCallbackManager::onUpNextItemsAdded(t_size count, bool playNext) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        std::lock_guard<std::mutex> lock(g_controllersMutex);
+        for (PlayVancedController *c in g_controllers) {
+            [c handleUpNextItemsAdded:(NSUInteger)count playNext:playNext];
+        }
+    });
+}
+
 metadb_handle_ptr PlayVancedCallbackManager::getCurrentPlayingTrack() const {
     std::lock_guard<std::mutex> lock(m_trackMutex);
     return m_playingTrack;
@@ -199,6 +208,7 @@ public:
                flag_on_playlist_activate |
                flag_on_playback_order_changed |
                flag_on_items_added |
+               flag_on_item_focus_change |
                flag_on_items_reordered |
                flag_on_items_removed |
                flag_on_items_modified |
@@ -220,13 +230,27 @@ public:
         PlayVancedCallbackManager::instance().onSelectionChanged();
     }
 
-    void on_items_added(t_size p, t_size, const pfc::list_base_const_t<metadb_handle_ptr>&, const bit_array&) override {
+    void on_items_added(t_size p, t_size, const pfc::list_base_const_t<metadb_handle_ptr>& data, const bit_array&) override {
         notifyUpNextIfRelevant(p);
+        try {
+            auto pm = playlist_manager::get();
+            if (pm.is_valid() && p == pm->find_playlist(upnext::kNowPlayingName)) {
+                // Set by upnext::fb only while a Play Next / Add to Queue insert runs.
+                const int kind = upnext::fb::pendingAddKind(p);
+                if (kind != 0 && data.get_count() > 0)
+                    PlayVancedCallbackManager::instance().onUpNextItemsAdded(data.get_count(), kind == 1);
+            }
+        } catch (...) {}
     }
     void on_items_reordered(t_size p, const t_size*, t_size) override { notifyUpNextIfRelevant(p); }
     void on_items_removing(t_size, const bit_array&, t_size, t_size) override {}
     void on_items_removed(t_size p, const bit_array&, t_size, t_size) override { notifyUpNextIfRelevant(p); }
-    void on_item_focus_change(t_size, t_size, t_size) override {}
+    void on_item_focus_change(t_size p, t_size, t_size) override {
+        // Now Playing's focus is what Play starts when stopped (bar shows it).
+        auto pm = playlist_manager::get();
+        if (pm.is_valid() && p == pm->find_playlist(upnext::kNowPlayingName))
+            PlayVancedCallbackManager::instance().onUpNextChanged();
+    }
     void on_items_modified(t_size p, const bit_array&) override { notifyUpNextIfRelevant(p); }
     void on_items_modified_fromplayback(t_size, const bit_array&, play_control::t_display_level) override {}
     void on_items_replaced(t_size p, const bit_array&, const pfc::list_base_const_t<t_on_items_replaced_entry>&) override {

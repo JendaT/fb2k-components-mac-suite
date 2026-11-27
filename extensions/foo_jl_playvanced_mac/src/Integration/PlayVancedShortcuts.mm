@@ -3,7 +3,8 @@
 //  App-wide playback shortcuts via a local key-down monitor, scoped to the
 //  window that hosts a PlayVanced bar (and its Up Next popover).
 //
-//    Space        play / pause   (not while a text field has focus)
+//    Space        play / pause; when stopped, starts "Now Playing" at its
+//                 focus (not while a text field has focus)
 //    ⌘→ / ⌘←      next / previous (not while a text field has focus)
 //    ⌘↑ / ⌘↓      volume up / down (not while a text field has focus)
 //    ⌘S           toggle shuffle
@@ -14,6 +15,7 @@
 #import "PlayVancedShortcuts.h"
 #import "PlayVancedCallbacks.h"
 #import "../UI/PlayVancedController.h"
+#import "../../../../shared/UpNext.h"
 
 static id g_keyMonitor = nil;
 
@@ -101,7 +103,10 @@ BOOL handleKeyDown(NSEvent *event) {
     if (mods == 0 && [event.charactersIgnoringModifiers isEqualToString:@" "]) {
         if (inText || controlHasFocus(window)) return NO;
         if (event.isARepeat) return YES;
-        return runPlayback([](auto &pc) { pc->play_or_pause(); });
+        // Stopped + non-empty Now Playing: start Now Playing at its focus.
+        return runPlayback([](auto &pc) {
+            if (!upnext::fb::startNowPlayingIfStopped()) pc->play_or_pause();
+        });
     }
 
     if (mods == NSEventModifierFlagCommand) {

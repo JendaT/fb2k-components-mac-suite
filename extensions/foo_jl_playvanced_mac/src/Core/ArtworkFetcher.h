@@ -25,6 +25,7 @@ public:
     void onSelectionChanged();
     void onPlaybackOrderChanged(t_size order);
     void onUpNextChanged();
+    void onUpNextItemsAdded(t_size count, bool playNext);
 
     metadb_handle_ptr getCurrentPlayingTrack() const;
 

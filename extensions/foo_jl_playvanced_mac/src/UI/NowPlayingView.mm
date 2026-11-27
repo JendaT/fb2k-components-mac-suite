@@ -32,7 +32,8 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
 @property (nonatomic, strong) NSTextField *elapsedLabel;
 @property (nonatomic, strong) NSTextField *remainingLabel;
 @property (nonatomic, strong) NSSlider *volumeSlider;
-@property (nonatomic, strong) NSTextField *idleLabel;
+@property (nonatomic, strong) NSTextField *upNextToastLabel;
+@property (nonatomic, assign) NSUInteger upNextFeedbackToken;
 @property (nonatomic, assign) BOOL isSeeking;
 @property (nonatomic, assign) BOOL isDragTarget;
 @property (nonatomic, strong) NSTrackingArea *trackInfoTrackingArea;
@@ -66,7 +67,7 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
 #pragma mark - Track Info Hit Area
 
 - (NSRect)trackInfoRect {
-    if (_titleLabel.isHidden) return NSZeroRect;
+    if (_titleLabel.isHidden || !_trackInfo) return NSZeroRect;
     return NSUnionRect(_titleLabel.frame, _artistLabel.frame);
 }
 
@@ -198,13 +199,16 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
     _volumeSlider.continuous = YES;
     [self addSubview:_volumeSlider];
 
-    // Idle label
-    _idleLabel = [self makeLabel];
-    _idleLabel.font = [NSFont systemFontOfSize:12.0 weight:NSFontWeightLight];
-    _idleLabel.textColor = [fb2k_ui::secondaryTextColor() colorWithAlphaComponent:0.5];
-    _idleLabel.stringValue = @"Not playing";
-    _idleLabel.alignment = NSTextAlignmentCenter;
-    [self addSubview:_idleLabel];
+    // Transient "Added N to queue" label next to the Up Next button
+    _upNextToastLabel = [self makeLabel];
+    _upNextToastLabel.font = [NSFont systemFontOfSize:11.0 weight:NSFontWeightMedium];
+    _upNextToastLabel.textColor = [NSColor controlAccentColor];
+    _upNextToastLabel.alignment = NSTextAlignmentRight;
+    _upNextToastLabel.drawsBackground = YES;
+    _upNextToastLabel.backgroundColor = [NSColor windowBackgroundColor];
+    _upNextToastLabel.alphaValue = 0.0;
+    _upNextToastLabel.hidden = YES;
+    [self addSubview:_upNextToastLabel];
 
     [self registerForDraggedTypes:@[kSimPlaylistPBType, NSPasteboardTypeFileURL]];
 
@@ -262,6 +266,10 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
 
 #pragma mark - Layout
 
+static CGFloat controlsXForToast(BOOL showSecondary, CGFloat rightX, CGFloat baseControlsX) {
+    return showSecondary ? baseControlsX : rightX;
+}
+
 - (void)layout {
     [super layout];
 
@@ -269,32 +277,12 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
     CGFloat h = self.bounds.size.height;
     CGFloat midY = h / 2.0;
 
-    BOOL hasTrack = self.isPlaying || self.isPaused || self.trackInfo != nil;
-
+    // The full layout is always shown; stopped only changes enabled states
+    // and what the track area displays.
     BOOL showSecondary = (w >= 500);
-
-    _idleLabel.hidden = hasTrack;
-    _artworkView.hidden = !hasTrack;
-    _titleLabel.hidden = !hasTrack;
-    _artistLabel.hidden = !hasTrack;
-    _ratingLabel.hidden = !hasTrack;
-    _prevButton.hidden = !hasTrack;
-    _playPauseButton.hidden = !hasTrack;
-    _nextButton.hidden = !hasTrack;
-    _stopButton.hidden = !hasTrack;
-    _shuffleButton.hidden = !hasTrack || !showSecondary;
-    _repeatButton.hidden = !hasTrack || !showSecondary;
-    _upNextButton.hidden = !hasTrack;
-    _muteButton.hidden = !hasTrack;
-    _progressSlider.hidden = !hasTrack;
-    _elapsedLabel.hidden = !hasTrack;
-    _remainingLabel.hidden = !hasTrack;
-    _volumeSlider.hidden = !hasTrack;
-
-    if (!hasTrack) {
-        _idleLabel.frame = NSMakeRect(0, midY - 8, w, 16);
-        return;
-    }
+    _shuffleButton.hidden = !showSecondary;
+    _repeatButton.hidden = !showSecondary;
+    [self updateTransportEnabledStates];
 
     CGFloat x = kPadding;
 
@@ -351,6 +339,13 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
 
     _upNextButton.hidden = !showUpNext;
     _upNextButton.frame = NSMakeRect(upNextX, smallBtnY, kSmallButtonSize, kSmallButtonSize);
+    {
+        // Toast ends just left of Up Next (or of the right-side controls).
+        CGFloat toastRight = (showUpNext ? upNextX : controlsXForToast(showSecondary, rightX, baseControlsX)) - kButtonSpacing * 2;
+        CGFloat toastWidth = 170.0;
+        _upNextToastLabel.frame = NSMakeRect(MAX(x, toastRight - toastWidth), midY - 8,
+                                             MIN(toastWidth, MAX(0.0, toastRight - x)), 16);
+    }
     CGFloat controlsX = showUpNext ? upNextControlsX : baseControlsX;
 
     // Rating sits after the track bar and before the right-side controls.
@@ -510,6 +505,7 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
 - (void)setArtworkImage:(NSImage *)artworkImage {
     _artworkImage = artworkImage;
     _artworkView.image = artworkImage ?: [ArtworkFetcher placeholderImageOfSize:kArtSize];
+    [self updatePlaceholderState];
 }
 
 - (void)setTrackInfo:(TrackInfo *)trackInfo {
@@ -523,7 +519,80 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
         _artistLabel.stringValue = @"";
         [self updateRatingDisplayWithRating:0];
     }
+    [self updatePlaceholderState];
     [self setNeedsLayout:YES];
+}
+
+// No track to show (stopped, Now Playing empty): muted placeholder art and
+// "Nothing queued" in the track area.
+- (void)updatePlaceholderState {
+    const BOOL placeholder = (_trackInfo == nil && !_isPlaying);
+    if (placeholder) {
+        _titleLabel.stringValue = @"Nothing queued";
+        _titleLabel.textColor = [fb2k_ui::secondaryTextColor() colorWithAlphaComponent:0.6];
+        _titleLabel.font = [NSFont systemFontOfSize:12.0 weight:NSFontWeightRegular];
+        _artistLabel.stringValue = @"";
+        if (!_artworkImage) _artworkView.image = [ArtworkFetcher placeholderImageOfSize:kArtSize];
+        _artworkView.alphaValue = 0.45;
+    } else {
+        if (!_isTrackInfoHovering) _titleLabel.textColor = fb2k_ui::textColor();
+        _titleLabel.font = [NSFont systemFontOfSize:12.0 weight:NSFontWeightSemibold];
+        _artworkView.alphaValue = 1.0;
+    }
+}
+
+- (void)updateTransportEnabledStates {
+    // isPlaying covers playing and paused.
+    _playPauseButton.enabled = _isPlaying || _canStartPlayback;
+    _prevButton.enabled = _isPlaying;
+    _nextButton.enabled = _isPlaying;
+    _stopButton.enabled = _isPlaying;
+    _progressSlider.enabled = _isPlaying;
+}
+
+- (void)setCanStartPlayback:(BOOL)canStartPlayback {
+    _canStartPlayback = canStartPlayback;
+    [self updateTransportEnabledStates];
+}
+
+- (void)flashUpNextFeedback:(NSString *)text {
+    const NSUInteger token = ++_upNextFeedbackToken;
+
+    // Pulse: accent tint on the Up Next button, then back to its normal tint.
+    _upNextButton.contentTintColor = [NSColor controlAccentColor];
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+        ctx.duration = 0.15;
+        self->_upNextButton.animator.alphaValue = 0.35;
+    } completionHandler:^{
+        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+            ctx.duration = 0.3;
+            self->_upNextButton.animator.alphaValue = 1.0;
+        } completionHandler:nil];
+    }];
+
+    _upNextToastLabel.stringValue = text ?: @"";
+    _upNextToastLabel.textColor = [NSColor controlAccentColor];
+    _upNextToastLabel.hidden = NO;
+    _upNextToastLabel.alphaValue = 1.0;
+    [self setNeedsLayout:YES];
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) s = weakSelf;
+        if (!s || s->_upNextFeedbackToken != token) return;
+        if (!s->_upNextActive) s->_upNextButton.contentTintColor = fb2k_ui::textColor();
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) s = weakSelf;
+        if (!s || s->_upNextFeedbackToken != token) return;
+        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+            ctx.duration = 0.4;
+            s->_upNextToastLabel.animator.alphaValue = 0.0;
+        } completionHandler:^{
+            __strong typeof(weakSelf) s2 = weakSelf;
+            if (s2 && s2->_upNextFeedbackToken == token) s2->_upNextToastLabel.hidden = YES;
+        }];
+    });
 }
 
 - (void)setPlaybackPosition:(double)playbackPosition {
@@ -538,6 +607,8 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
 - (void)setIsPlaying:(BOOL)isPlaying {
     _isPlaying = isPlaying;
     [self updatePlayPauseIcon];
+    [self updateTransportEnabledStates];
+    [self updatePlaceholderState];
     [self setNeedsLayout:YES];
 }
 
@@ -614,11 +685,13 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
     _artworkView.image = nil;
     _titleLabel.stringValue = @"";
     _artistLabel.stringValue = @"";
-    _ratingLabel.stringValue = @"";
+    [self updateRatingDisplayWithRating:0];
     _progressSlider.doubleValue = 0;
     _elapsedLabel.stringValue = @"0:00";
     _remainingLabel.stringValue = @"0:00";
     [self updatePlayPauseIcon];
+    [self updateTransportEnabledStates];
+    [self updatePlaceholderState];
     [self setNeedsLayout:YES];
 }
 
@@ -754,7 +827,8 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
 - (void)keyDown:(NSEvent *)event {
     NSString *chars = event.charactersIgnoringModifiers;
     if (chars.length > 0 && [chars characterAtIndex:0] == ' ') {
-        playback_control::get()->toggle_pause();
+        // Same path as the Play button (stopped → starts Now Playing).
+        [self.delegate nowPlayingViewDidPressPlayPause];
         return;
     }
     [super keyDown:event];

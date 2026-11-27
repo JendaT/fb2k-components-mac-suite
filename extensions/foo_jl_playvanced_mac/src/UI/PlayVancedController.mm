@@ -135,6 +135,8 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
         if (pbCtrl->get_now_playing(track) && track.is_valid()) {
             [self handleNewTrack:track];
         }
+    } else {
+        [self refreshStoppedDisplay];
     }
 }
 
@@ -143,39 +145,10 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
 - (void)handleNewTrack:(metadb_handle_ptr)track {
     if (!track.is_valid()) return;
 
-    _currentTrack = track;
-    NSString *path = [NSString stringWithUTF8String:track->get_path()];
-    _currentPath = path;
-
     _barView.isPlaying = YES;
     _barView.isPaused = playback_control::get()->is_paused();
     _barView.playbackPosition = 0;
-    _barView.trackDuration = track->get_length();
-
-    metadb_handle_ptr trackCopy = track;
-    __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        @autoreleasepool {
-            __strong typeof(weakSelf) strongSelf = weakSelf;
-            if (!strongSelf) return;
-
-            TrackInfo *info = [strongSelf extractInfoFromHandle:trackCopy];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                __strong typeof(weakSelf) innerSelf = weakSelf;
-                if (!innerSelf) return;
-                innerSelf->_barView.trackInfo = info;
-            });
-        }
-    });
-
-    __weak typeof(self) weakSelfArtwork = self;
-    [[ArtworkFetcher sharedFetcher] fetchArtworkForPath:path completion:^(NSImage *image) {
-        __strong typeof(weakSelfArtwork) strongSelf = weakSelfArtwork;
-        if (!strongSelf) return;
-        if ([strongSelf->_currentPath isEqualToString:path]) {
-            strongSelf->_barView.artworkImage = image;
-        }
-    }];
+    [self showTrackInfoForHandle:track];
 
     [_upNext setNeedsReload];
 }
@@ -184,6 +157,7 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
     _currentTrack.release();
     _currentPath = nil;
     [_barView clearDisplay];
+    [self refreshStoppedDisplay];   // no-op if another track is already starting
     [_upNext setNeedsReload];
 }
 
@@ -200,22 +174,54 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
 }
 
 - (void)handleSelectionChanged {
-    auto pbCtrl = playback_control::get();
-    if (pbCtrl.is_valid() && pbCtrl->is_playing()) return;
+    // Stopped: the bar shows what Play will start (Now Playing's focus), not
+    // the selection in whatever playlist page is active.
+    [self refreshStoppedDisplay];
+}
 
-    metadb_handle_ptr selected = [self getSelectedTrack];
-    if (!selected.is_valid()) return;
+// Stopped only: shows Now Playing's focused item (what Play starts) with its
+// art, or the "Nothing queued" placeholder when Now Playing is empty.
+- (void)refreshStoppedDisplay {
+    metadb_handle_ptr next;
+    try {
+        auto pc = playback_control::get();
+        if (!pc.is_valid() || pc->is_playing()) return;
+        auto pm = playlist_manager::get();
+        const t_size np = pm->find_playlist(upnext::kNowPlayingName);
+        if (np != pfc_infinite) {
+            const t_size count = pm->playlist_get_item_count(np);
+            const t_size focus = pm->playlist_get_focus_item(np);
+            auto start = upnext::stoppedStartIndex(count, focus == pfc_infinite ? std::nullopt
+                                                                                : std::optional<size_t>(focus));
+            if (start) pm->playlist_get_item_handle(next, np, (t_size)*start);
+        }
+    } catch (...) { return; }
 
-    _currentTrack = selected;
-    NSString *path = [NSString stringWithUTF8String:selected->get_path()];
-    _currentPath = path;
-
+    _barView.canStartPlayback = next.is_valid();
     _barView.isPlaying = NO;
     _barView.isPaused = NO;
-    _barView.playbackPosition = 0;
-    _barView.trackDuration = selected->get_length();
 
-    metadb_handle_ptr trackCopy = selected;
+    if (!next.is_valid()) {
+        if (_currentTrack.is_valid() || _barView.trackInfo) {
+            _currentTrack.release();
+            _currentPath = nil;
+            [_barView clearDisplay];
+        }
+        return;
+    }
+    if (_currentTrack == next && _barView.trackInfo) return;   // already shown
+    [self showTrackInfoForHandle:next];
+    _barView.playbackPosition = 0;
+}
+
+// Loads title/artist/rating and art for `track` into the bar (async).
+- (void)showTrackInfoForHandle:(metadb_handle_ptr)track {
+    _currentTrack = track;
+    NSString *path = [NSString stringWithUTF8String:track->get_path()];
+    _currentPath = path;
+    _barView.trackDuration = track->get_length();
+
+    metadb_handle_ptr trackCopy = track;
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         @autoreleasepool {
@@ -225,7 +231,7 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
             TrackInfo *info = [strongSelf extractInfoFromHandle:trackCopy];
             dispatch_async(dispatch_get_main_queue(), ^{
                 __strong typeof(weakSelf) innerSelf = weakSelf;
-                if (!innerSelf) return;
+                if (!innerSelf || innerSelf->_currentTrack != trackCopy) return;
                 innerSelf->_barView.trackInfo = info;
             });
         }
@@ -252,6 +258,14 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
 
 - (void)handleUpNextChanged {
     [_upNext setNeedsReload];
+    [self refreshStoppedDisplay];
+}
+
+- (void)handleUpNextItemsAdded:(NSUInteger)count playNext:(BOOL)playNext {
+    if (count == 0) return;
+    const std::string text = upnext::addedFeedbackText(count, playNext);
+    [_barView flashUpNextFeedback:[NSString stringWithUTF8String:text.c_str()] ?: @""];
+    [self refreshStoppedDisplay];
 }
 
 #pragma mark - Up Next
@@ -290,8 +304,10 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
 
 - (void)nowPlayingViewDidPressPlayPause {
     try {
-        auto pc = playback_control::get();
-        pc->play_or_pause();
+        // Stopped with a non-empty Now Playing: start it at its focus (never
+        // the active playlist page). Otherwise the usual play/pause.
+        if (upnext::fb::startNowPlayingIfStopped()) return;
+        playback_control::get()->play_or_pause();
     } catch (...) {}
 }
 
@@ -513,23 +529,6 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
     pfc::string8 result;
     handle->format_title(nullptr, result, tf, nullptr);
     return [NSString stringWithUTF8String:result.c_str()];
-}
-
-- (metadb_handle_ptr)getSelectedTrack {
-    try {
-        auto pm = playlist_manager::get();
-        t_size active = pm->get_active_playlist();
-        if (active == pfc::infinite_size) return metadb_handle_ptr();
-
-        t_size focus = pm->playlist_get_focus_item(active);
-        if (focus == pfc::infinite_size) return metadb_handle_ptr();
-
-        metadb_handle_ptr handle;
-        if (pm->playlist_get_item_handle(handle, active, focus)) {
-            return handle;
-        }
-    } catch (...) {}
-    return metadb_handle_ptr();
 }
 
 - (void)dealloc {

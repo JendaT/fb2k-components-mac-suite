@@ -36,6 +36,7 @@ struct EditPlan {
     bool switchPlayingToNowPlaying = false;
     bool useFoobarQueue = false;         // PlayNext under shuffle
     size_t insertAt = 0;                 // NP index after any copy
+    bool focusFirstInserted = false;     // stopped: the inserted items are what Play starts next
 };
 
 inline EditPlan planEdit(Action action, const PlaybackState& s) {
@@ -46,6 +47,7 @@ inline EditPlan planEdit(Action action, const PlaybackState& s) {
         p.insertAt = next ? (s.nowPlayingFocus ? *s.nowPlayingFocus + 1 : 0)
                           : s.nowPlayingCount;
         p.insertAt = std::min(p.insertAt, s.nowPlayingCount);
+        p.focusFirstInserted = true;
         return p;
     }
 
@@ -108,6 +110,22 @@ inline UpNextSections buildSections(bool playing, size_t playingIndex, size_t pl
     if (!playing) return {false, 0, playlistCount};
     const size_t from = playingIndex + 1;
     return {true, from, playlistCount > from ? playlistCount - from : 0};
+}
+
+// Transient bar feedback after Play Next / Add to Queue added `count` tracks.
+inline std::string addedFeedbackText(size_t count, bool playNext) {
+    const std::string n = std::to_string(count);
+    const char* noun = count == 1 ? " track" : " tracks";
+    return playNext ? "Playing " + n + noun + " next"
+                    : "Added " + n + noun + " to queue";
+}
+
+// Item Play starts from when stopped: Now Playing's focus, else the first item.
+// nullopt when Now Playing is empty.
+inline std::optional<size_t> stoppedStartIndex(size_t nowPlayingCount, std::optional<size_t> focus) {
+    if (nowPlayingCount == 0) return std::nullopt;
+    if (focus && *focus < nowPlayingCount) return *focus;
+    return size_t(0);
 }
 
 // Items foobar2000 already adds to its own context menu that our Up Next
