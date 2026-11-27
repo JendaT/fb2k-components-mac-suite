@@ -150,8 +150,8 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
     _nextButton = [self makeTransportButton:@"forward.fill" size:kSmallButtonSize action:@selector(nextPressed:)];
     [self addSubview:_nextButton];
 
-    _stopButton = [self makeTransportButton:@"stop.fill" size:kSmallButtonSize action:@selector(stopPressed:)];
-    [self addSubview:_stopButton];
+    // No Stop button (streaming-app style): Pause covers "stop listening", and Stop's dead
+    // stopped state only confused Space/queue. Stop stays in foobar's Playback menu.
 
     _shuffleButton = [self makeTransportButton:@"shuffle" size:kSmallButtonSize action:@selector(shufflePressed:)];
     [self addSubview:_shuffleButton];
@@ -300,7 +300,7 @@ static CGFloat controlsXForToast(BOOL showSecondary, CGFloat rightX, CGFloat bas
     _artistLabel.frame = NSMakeRect(x, midY + 2, textWidth, 14);
     x += textWidth + kPadding;
 
-    // Transport buttons: [Prev][Play/Pause][Next][Stop]
+    // Transport buttons: [Prev][Play/Pause][Next]
     CGFloat btnY = midY - kButtonSize / 2.0;
     CGFloat smallBtnY = midY - kSmallButtonSize / 2.0;
     CGFloat btnX = x;
@@ -310,8 +310,6 @@ static CGFloat controlsXForToast(BOOL showSecondary, CGFloat rightX, CGFloat bas
     _playPauseButton.frame = NSMakeRect(btnX, btnY, kButtonSize, kButtonSize);
     btnX += kButtonSize + kButtonSpacing;
     _nextButton.frame = NSMakeRect(btnX, smallBtnY, kSmallButtonSize, kSmallButtonSize);
-    btnX += kSmallButtonSize + kButtonSpacing;
-    _stopButton.frame = NSMakeRect(btnX, smallBtnY, kSmallButtonSize, kSmallButtonSize);
     btnX += kSmallButtonSize;
     x = btnX + kPadding * 2;
 
