@@ -49,6 +49,8 @@ namespace {
     FB2K_SERVICE_FACTORY(shellvanced_ui_element);
 }
 
+#import "ShellPlaylistCallbacks.h"
+
 class shellvanced_init : public initquit {
 public:
     void on_init() override {
@@ -56,6 +58,7 @@ public:
     }
 
     void on_quit() override {
+        SVPlaylistCallbacksShutdown();
     }
 };
 

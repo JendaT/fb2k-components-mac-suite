@@ -527,6 +527,7 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
 
     NSTableColumn *col = [[NSTableColumn alloc] initWithIdentifier:@"main"];
     col.resizingMask = NSTableColumnAutoresizingMask;
+    col.width = NSWidth(_scroll.bounds);   // the default 100 pt never grew, so names truncated at ~60 pt
     [_table addTableColumn:col];
 
     [_table registerForDraggedTypes:@[SVSimPlaylistRowsType, NSPasteboardTypeFileURL]];
@@ -550,6 +551,12 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
                                                  name:SVArtistLibraryDidChangeNotification object:nil];
 
     [self rebuildItemsReloading:YES];
+}
+
+// Keep the single column as wide as the sidebar, whatever width the splitter gives it.
+- (void)viewDidLayout {
+    [super viewDidLayout];
+    [_table sizeLastColumnToFit];
 }
 
 - (void)dealloc {

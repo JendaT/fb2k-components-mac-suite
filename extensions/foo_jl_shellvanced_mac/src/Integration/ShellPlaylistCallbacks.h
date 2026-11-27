@@ -19,5 +19,7 @@ extern NSNotificationName const SVActivePlaylistDidChangeNotification;
 // Main thread only. Every Retain needs a matching Release.
 void SVPlaylistCallbacksRetain(void);
 void SVPlaylistCallbacksRelease(void);
+/// Unregisters the playlist callback while foobar's services still exist (initquit::on_quit).
+void SVPlaylistCallbacksShutdown(void);
 
 NS_ASSUME_NONNULL_END

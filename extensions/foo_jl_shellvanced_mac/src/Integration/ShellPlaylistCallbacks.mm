@@ -107,15 +107,18 @@ private:
     std::vector<std::string> m_names;
 };
 
-std::unique_ptr<SVPlaylistObserver> g_observer;
+// Raw pointer, not a static unique_ptr: a static destructor runs from exit() after foobar's
+// services are gone, and the base destructor's playlist_manager::get() then crashes on quit.
+SVPlaylistObserver *g_observer = nullptr;
 int g_refs = 0;
+bool g_shutDown = false;
 
 } // namespace
 
 void SVPlaylistCallbacksRetain(void) {
-    if (g_refs++ == 0) {
+    if (g_refs++ == 0 && !g_shutDown) {
         try {
-            g_observer = std::make_unique<SVPlaylistObserver>();
+            g_observer = new SVPlaylistObserver();
         } catch (...) {
             console::info("[ShellVanced] failed to register playlist callback");
         }
@@ -125,6 +128,13 @@ void SVPlaylistCallbacksRetain(void) {
 void SVPlaylistCallbacksRelease(void) {
     if (g_refs <= 0) return;
     if (--g_refs == 0) {
-        g_observer.reset();
+        delete g_observer;
+        g_observer = nullptr;
     }
+}
+
+void SVPlaylistCallbacksShutdown(void) {
+    g_shutDown = true;
+    delete g_observer;
+    g_observer = nullptr;
 }
