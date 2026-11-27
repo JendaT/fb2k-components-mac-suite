@@ -100,26 +100,31 @@ static std::string Str(id v) {
     }];
 }
 
-- (void)albumTitlesForArtistId:(NSString *)artistId
-                    completion:(void (^)(NSArray<NSString *> *_Nullable))completion {
+- (void)albumsForArtistId:(NSString *)artistId
+               completion:(void (^)(NSArray<NSString *> *_Nullable, NSArray<NSString *> *))completion {
     // The id is interpolated into a path: accept digits only.
     NSCharacterSet *nonDigits = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
     if (artistId.length == 0 || [artistId rangeOfCharacterFromSet:nonDigits].location != NSNotFound) {
-        completion(nil);
+        completion(nil, @[]);
         return;
     }
     NSURL *url = APIURL([NSString stringWithFormat:@"/artist/%@/albums", artistId],
                         @[[NSURLQueryItem queryItemWithName:@"limit" value:@"100"]]);
     [self request:url completion:^(NSData *data) {
         NSArray *arr = DataArray(data);
-        if (!arr) { completion(nil); return; }
+        if (!arr) { completion(nil, @[]); return; }
         NSMutableArray<NSString *> *titles = [NSMutableArray array];
+        NSMutableArray<NSString *> *covers = [NSMutableArray array];
         for (id item in arr) {
             if (![item isKindOfClass:[NSDictionary class]]) continue;
-            NSString *t = ((NSDictionary *)item)[@"title"];
+            NSDictionary *d = item;
+            NSString *t = d[@"title"];
             if ([t isKindOfClass:[NSString class]] && t.length) [titles addObject:t];
+            NSString *c = [d[@"cover_small"] isKindOfClass:[NSString class]] ? d[@"cover_small"] : nil;
+            if (c.length == 0) c = [d[@"cover_medium"] isKindOfClass:[NSString class]] ? d[@"cover_medium"] : nil;
+            if (c.length && covers.count < 10 && ![covers containsObject:c]) [covers addObject:c];
         }
-        completion(titles);
+        completion(titles, covers);
     }];
 }
 

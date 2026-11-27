@@ -8,7 +8,7 @@ A Spotify-style shell element: a sidebar with "Your Library" (playlists and arti
 |------|----------------|-------|
 | Albums | AlbumViewVanced | ⌘F / ⌘L focus its search field |
 | Playlist | SimPlaylist with `vanced=1` | Selecting a playlist makes it the active playlist (SimPlaylist shows the active playlist) |
-| Artist | AlbumViewVanced with `setArtistFilter:` + artist header | Header: Deezer photo (or round album-cover fallback), counts, Play / Shuffle |
+| Artist | AlbumViewVanced with `setArtistFilter:` + artist header | Header: artist photo (Deezer, optionally Spotify; or round album-cover fallback), counts, Play / Shuffle |
 
 Missing components show a placeholder instead of the page.
 
@@ -39,9 +39,20 @@ Turn off **Playback follows cursor**. With it on, foobar plays from the focused 
 
 ## Artist photos
 
-- Only artist names and Deezer ids are sent, to `api.deezer.com`. Requests are limited to at most 8 per second and are made only when a photo is needed.
-- A photo is accepted only when the match is unambiguous: a single exact-name candidate, or the only candidate whose Deezer albums share at least two titles with your library (or one exact title of 6 or more characters). Otherwise the newest album cover is shown, cropped round, and initials if there is no cover.
-- Cache: `~/Library/Caches/foo_jl_shellvanced/artists/`. Misses are remembered for 30 days in `negative.json`. Delete the folder to refetch.
+Sources, in order:
+
+1. **Deezer** photo, when the match is unambiguous (single exact-name candidate, or the only candidate whose Deezer albums share at least two titles with your library, or one exact title of 6+ characters). A lone candidate with no title overlap is accepted only with at most 15 albums and an artist name of 5+ characters. Deezer's generic grey silhouette is detected and treated as "no photo". A picture that is really one of the artist's album covers (perceptual hash within 10 bits of any of up to 10 covers) is only a fallback.
+2. **Spotify**, only if credentials are configured and only for artists with no usable Deezer photo or a cover-like one. Same exact-name rule and the same title-overlap verification, using the Spotify albums list (titles are compared locally). Largest image up to 640 px.
+3. A cover-like Deezer picture, if any.
+4. The newest album's cover, cropped round, then initials.
+
+Setup (optional): Preferences > Display > **ShellVanced**. Create an app at developer.spotify.com/dashboard and paste its Client ID and Secret, **Test**, then **Save**. Both values live in the macOS Keychain (service `foo_jl_shellvanced.spotify`) and nowhere else. Saving clears Spotify misses and re-looks up artists without a photo.
+
+Privacy and limits:
+
+- Only artist names and Deezer/Spotify ids are sent; never track or album titles.
+- Deezer: at most 8 requests per second. Spotify: a single serialized queue with at least 2 seconds between requests. On HTTP 429 the Retry-After time is saved in `spotify-block.json` and Spotify is skipped until it passes (affected artists are retried in a later session, not remembered as misses).
+- Cache: `~/Library/Caches/foo_jl_shellvanced/artists/`. `*.jpg` are photos, `*.cl` are cover-like Deezer pictures kept as fallback (30 days). Misses are remembered for 30 days in `negative.json` (Spotify misses under `sp:` keys). The cache format is versioned (`format` file); a new version wipes photos once. Delete the folder to refetch.
 
 ## Implementation notes
 

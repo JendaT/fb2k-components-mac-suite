@@ -26,9 +26,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)searchArtist:(NSString *)name
           completion:(void (^)(std::vector<deezermatch::Candidate> candidates, BOOL ok))completion;
 
-/// artist/{id}/albums?limit=100. `titles` is nil on failure.
-- (void)albumTitlesForArtistId:(NSString *)artistId
-                    completion:(void (^)(NSArray<NSString *> *_Nullable titles))completion;
+/// artist/{id}/albums?limit=100. `titles` is nil on failure. `coverUrls` are the distinct album covers
+/// (cover_small, else cover_medium), at most 10, in list order.
+- (void)albumsForArtistId:(NSString *)artistId
+               completion:(void (^)(NSArray<NSString *> *_Nullable titles,
+                                    NSArray<NSString *> *coverUrls))completion;
 
 /// artist/{id}: nb_album. completion gets -1 on failure.
 - (void)albumCountForArtistId:(NSString *)artistId completion:(void (^)(long count))completion;

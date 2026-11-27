@@ -1,5 +1,7 @@
 #include "../../../shared/Tests/TestHarness.h"
 #include "../src/Artists/DeezerMatchCore.h"
+#include "../src/Artists/ImageHashCore.h"
+#include "../src/Artists/SpotifyMatchCore.h"
 
 using namespace deezermatch;
 
@@ -79,6 +81,59 @@ int main() {
         CHECK(looksLikePlaceholderPhoto(a.data(), W, H), "flat two-tone silhouette");
         CHECK(!looksLikePlaceholderPhoto(b.data(), W, H), "noisy grayscale gradient");
         CHECK(!looksLikePlaceholderPhoto(c.data(), W, H), "colorful");
+    }
+    g_context = "imagehash";
+    {
+        std::vector<uint8_t> a(9 * 8 * 4, 255), b, c, d;
+        for (int y = 0; y < 8; y++) for (int x = 0; x < 9; x++) {
+            uint8_t v = (uint8_t)((x * 25 + (y % 3) * 5) % 256);
+            for (int k = 0; k < 3; k++) a[(y * 9 + x) * 4 + k] = v;
+        }
+        b = a; c = a; d = a;
+        for (int y = 0; y < 8; y++) for (int x = 0; x < 9; x++) {
+            const int i = (y * 9 + x) * 4;
+            for (int k = 0; k < 3; k++) {
+                b[i + k] = (uint8_t)std::min(255, a[i + k] + 3);          // brightness shift: same hash
+                c[i + k] = (uint8_t)(((x * 7 + y) % 3 == 0) ? 255 - a[i + k] : a[i + k]);  // some bits differ
+                d[i + k] = (uint8_t)(255 - a[i + k]);                       // inverted: all differ
+            }
+        }
+        const uint64_t ha = imagehash::dHash9x8(a.data()), hb = imagehash::dHash9x8(b.data());
+        const uint64_t hc = imagehash::dHash9x8(c.data()), hd = imagehash::dHash9x8(d.data());
+        CHECK_EQ(imagehash::hammingDistance(ha, ha), 0, "identical");
+        CHECK(imagehash::hammingDistance(ha, hb) <= 2, "similar");
+        CHECK(imagehash::hammingDistance(ha, hd) > 10, "different");
+        CHECK(imagehash::isCoverLike(ha, {hd, hb}), "match among covers");
+        CHECK(!imagehash::isCoverLike(ha, {hd}), "no match");
+        CHECK(!imagehash::isCoverLike(ha, {}), "no covers");
+        (void)hc;
+        CHECK_EQ(imagehash::hammingDistance(0, ~0ull), 64, "hamming 64");
+        CHECK(imagehash::isCoverLike(0, {0x3FFull}) && !imagehash::isCoverLike(0, {0x7FFull}), "threshold 10");
+    }
+    g_context = "spotify";
+    {
+        using spmatch::Image;
+        CHECK(spmatch::pickImageUrl({{"a", 640}, {"b", 320}, {"c", 160}}) == "a", "640 chosen");
+        CHECK(spmatch::pickImageUrl({{"big", 1000}, {"m", 640}, {"s", 300}}) == "m", "largest <= 640");
+        CHECK(spmatch::pickImageUrl({{"big", 1000}, {"bigger", 1400}}) == "big", "all large: smallest");
+        CHECK(spmatch::pickImageUrl({{"u", 0}}) == "u", "unknown width");
+        CHECK(spmatch::pickImageUrl({}).empty(), "none");
+        std::vector<spmatch::Candidate> c = {{"1", "Nailik Hypnotik", "u"}, {"2", "NAILIK HYPNOTIK", ""}, {"3", "Nailik", "u"}};
+        CHECK(spmatch::exactCandidates("nailik hypnotik", c) == (std::vector<size_t>{0}), "exact w/ image only");
+        CHECK(spmatch::parseRetryAfter("120") == 120, "retry 120");
+        CHECK(spmatch::parseRetryAfter("") == 3600 && spmatch::parseRetryAfter("abc", 77) == 77, "retry fallback");
+        CHECK(spmatch::parseRetryAfter("0") == 1 && spmatch::parseRetryAfter("99999999") == 7 * 24 * 3600, "retry clamp");
+        CHECK(spmatch::base64("") == "" && spmatch::base64("f") == "Zg==" && spmatch::base64("fo") == "Zm8=" &&
+              spmatch::base64("foo") == "Zm9v" && spmatch::base64("foobar") == "Zm9vYmFy", "base64 vectors");
+        CHECK(spmatch::basicAuthValue("Aladdin", "open sesame") == "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==", "basic auth");
+        using V = std::vector<std::string>;
+        CHECK(!spmatch::acceptLone("Nala", V{"ubuntu"}, V{"other"}, 43), "lone big catalogue rejected");
+        CHECK(spmatch::acceptLone("Nailik Hypnotik", V{"x"}, V{"y"}, 9), "lone small catalogue accepted");
+        CHECK(spmatch::acceptLone("Nala", V{"replication"}, V{"replication"}, 43), "overlap accepted regardless of total");
+        CHECK(spmatch::needsSpotify(false, false, true), "no deezer photo -> spotify");
+        CHECK(spmatch::needsSpotify(true, true, true), "cover-like -> spotify");
+        CHECK(!spmatch::needsSpotify(true, false, true), "real photo -> deezer");
+        CHECK(!spmatch::needsSpotify(false, false, false) && !spmatch::needsSpotify(true, true, false), "unavailable -> no spotify");
     }
     TEST_MAIN_END();
 }
