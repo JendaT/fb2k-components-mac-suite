@@ -22,7 +22,9 @@ static const CGFloat kHeaderRowHeight    = 72.0;
 static const CGFloat kSearchExtraHeight  = 30.0;   // header grows by this while the search field is open
 static const NSInteger kHeaderRowIndex   = 0;      // the list starts with the Your Library header (Albums is pinned above it)
 static const CGFloat kArtistPhotoSize    = 32.0;
-static const CGFloat kHomeAreaHeight     = 32.0;   // pinned Albums row (28) + the 2 pt row gap + 2 pt breathing room
+static const CGFloat kHomeTopMargin     = 8.0;    // space above the pinned Albums row
+static const CGFloat kHomeGap           = 12.0;   // space between it and "Your Library"
+static const CGFloat kHomeAreaHeight     = kHomeTopMargin + 28.0 + kHomeGap;
 
 #pragma mark - Model
 
@@ -554,6 +556,9 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     _homeScroll.horizontalScrollElasticity = NSScrollElasticityNone;
     _homeScroll.borderType = NSNoBorder;
     _homeScroll.drawsBackground = NO;
+    _homeScroll.automaticallyAdjustsContentInsets = NO;
+    _homeScroll.contentInsets = NSEdgeInsetsZero;
+    _scroll.automaticallyAdjustsContentInsets = NO;
     _homeTable = [[SVSidebarTableView alloc] initWithFrame:_homeScroll.bounds];
     _homeTable.style = NSTableViewStyleSourceList;
     _homeTable.backgroundColor = [NSColor clearColor];
@@ -592,6 +597,13 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     _homeScroll.frame = NSMakeRect(0, NSMaxY(b) - top - homeH, NSWidth(b), homeH);
     _scroll.frame = NSMakeRect(0, 0, NSWidth(b), MAX(0, NSHeight(b) - top - homeH));
     [_homeTable sizeLastColumnToFit];
+    // The source-list table pads its first row by an amount of its own: place row 0 exactly kHomeTopMargin
+    // below the top of the pinned area, whatever that padding is, and never leave the view scrolled.
+    const CGFloat pad = NSMinY([_homeTable rectOfRow:0]);
+    const CGFloat inset = MAX(0, kHomeTopMargin - pad);
+    _homeScroll.contentInsets = NSEdgeInsetsMake(inset, 0, 0, 0);
+    [_homeScroll.contentView scrollToPoint:NSMakePoint(0, MAX(pad - kHomeTopMargin, 0) - inset)];
+    [_homeScroll reflectScrolledClipView:_homeScroll.contentView];
     [_table sizeLastColumnToFit];
 }
 
