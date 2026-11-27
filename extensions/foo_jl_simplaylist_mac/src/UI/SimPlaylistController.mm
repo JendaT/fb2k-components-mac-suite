@@ -22,6 +22,7 @@
 #import "../../../../shared/UIStyles.h"
 
 #include <SDK/menu_helpers.h>
+#import "../../../../shared/UpNext.h"
 #include <atomic>
 #include <numeric>
 #include <set>
@@ -2316,6 +2317,11 @@ static BOOL validCachedStringArray(NSArray *arr) {
     NSInteger playlistIndex = [view playlistIndexForRow:row];
     if (playlistIndex < 0) return;  // Header row or invalid
 
+    if (self.vancedMode) {
+        upnext::fb::playPlaylistIntoNowPlaying(activePlaylist, (t_size)playlistIndex);
+        return;
+    }
+
     bool preserveQueue = simplaylist_config::getConfigBool(
         simplaylist_config::kDoubleClickPreservesQueue,
         simplaylist_config::kDefaultDoubleClickPreservesQueue);
@@ -2431,6 +2437,7 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
         NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
         [menu setAutoenablesItems:NO];
 
+        [self prependUpNextSectionToMenu:menu];
         [self appendReloadSectionToMenu:menu];
 
         [self buildNSMenu:menu fromMenuItem:root contextManager:_contextMenuManager];
@@ -2453,6 +2460,7 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
     [menu setAutoenablesItems:NO];
 
+    [self prependUpNextSectionToMenu:menu];
     [self appendReloadSectionToMenu:menu];
 
     [self buildNSMenuFromNode:menu parentNode:root contextManager:cmm baseID:0];
@@ -2464,6 +2472,54 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
 
     NSPoint screenPoint = [view.window convertPointToScreen:[view convertPoint:point toView:nil]];
     [menu popUpMenuPositioningItem:nil atLocation:screenPoint inView:nil];
+}
+
+// Shell mode only: Play / Play Next / Add to Queue + separator at the top.
+- (void)prependUpNextSectionToMenu:(NSMenu *)menu {
+    if (!self.vancedMode) return;
+    struct { NSString *title; SEL sel; } entries[] = {
+        { @"Play", @selector(upNextPlayClicked:) },
+        { @"Play Next", @selector(upNextPlayNextClicked:) },
+        { @"Add to Queue", @selector(upNextAddToQueueClicked:) },
+    };
+    for (auto &e : entries) {
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:e.title action:e.sel keyEquivalent:@""];
+        item.target = self;
+        [menu addItem:item];
+    }
+    [menu addItem:[NSMenuItem separatorItem]];
+}
+
+- (void)upNextPlayClicked:(NSMenuItem *)sender {
+    if (_currentPlaylistIndex < 0 || _contextMenuHandles.get_count() == 0) return;
+    auto pm = playlist_manager::get();
+    t_size pl = (t_size)_currentPlaylistIndex;
+    t_size count = pm->playlist_get_item_count(pl);
+    t_size row = 0;
+    metadb_handle_ptr first;
+    for (t_size i = 0; i < count; ++i) {
+        if (pm->playlist_is_item_selected(pl, i)) { row = i; break; }
+    }
+    // Fall back to the clicked handle's position if the selection is empty
+    if (!pm->playlist_is_item_selected(pl, row) && count > 0) {
+        for (t_size i = 0; i < count; ++i) {
+            metadb_handle_ptr h;
+            if (pm->playlist_get_item_handle(h, pl, i) && h == _contextMenuHandles[0]) { row = i; break; }
+        }
+    }
+    runGuardedSDKAction("Up next play", ^{ upnext::fb::playPlaylistIntoNowPlaying(pl, row); });
+}
+
+- (void)upNextPlayNextClicked:(NSMenuItem *)sender {
+    if (_contextMenuHandles.get_count() == 0) return;
+    metadb_handle_list items = _contextMenuHandles;
+    runGuardedSDKAction("Up next play next", ^{ upnext::fb::playNext(items); });
+}
+
+- (void)upNextAddToQueueClicked:(NSMenuItem *)sender {
+    if (_contextMenuHandles.get_count() == 0) return;
+    metadb_handle_list items = _contextMenuHandles;
+    runGuardedSDKAction("Up next add to queue", ^{ upnext::fb::addToQueue(items); });
 }
 
 // Shared context-menu preamble (v2 and v1 builders): the "Reload Info" item,
@@ -2552,6 +2608,8 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
             }
 
             case menu_tree_item::itemCommand: {
+                if (self.vancedMode && cmm.is_valid() && menu.title.length == 0 &&
+                    upnext::isDuplicateFoobarMenuItem(child->name())) break;
                 // nil on invalid UTF-8 — initWithTitle:nil would throw
                 NSString *title = [NSString stringWithUTF8String:child->name()] ?: @"";
                 NSMenuItem *menuItem = [[NSMenuItem alloc] initWithTitle:title
@@ -2597,6 +2655,8 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
             }
 
             case contextmenu_item_node::TYPE_COMMAND: {
+                if (self.vancedMode && menu.title.length == 0 &&
+                    upnext::isDuplicateFoobarMenuItem(child->get_name())) break;
                 // nil on invalid UTF-8 — initWithTitle:nil would throw
                 NSString *title = [NSString stringWithUTF8String:child->get_name()] ?: @"";
                 NSMenuItem *menuItem = [[NSMenuItem alloc] initWithTitle:title
@@ -2895,6 +2955,19 @@ static BOOL isRemotePath(const char *path) {
 
 - (void)playlistView:(SimPlaylistView *)view didRequestQueueIndices:(NSIndexSet *)playlistIndices {
     if (_currentPlaylistIndex < 0 || playlistIndices.count == 0) return;
+    if (self.vancedMode) {
+        auto pm0 = playlist_manager::get();
+        t_size pl = (t_size)_currentPlaylistIndex;
+        t_size n = pm0->playlist_get_item_count(pl);
+        __block metadb_handle_list items;
+        [playlistIndices enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
+            metadb_handle_ptr h;
+            if (idx < n && pm0->playlist_get_item_handle(h, pl, (t_size)idx)) items.add_item(h);
+        }];
+        if (items.get_count() > 0)
+            runGuardedSDKAction("Up next add to queue", ^{ upnext::fb::addToQueue(items); });
+        return;
+    }
     auto pm = playlist_manager::get();
     auto pc = playback_control::get();
     bool queueWasEmpty = (pm->queue_get_count() == 0);

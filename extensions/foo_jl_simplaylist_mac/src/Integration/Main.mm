@@ -44,6 +44,12 @@ namespace {
         service_ptr instantiate(service_ptr arg) override {
             @autoreleasepool {
                 SimPlaylistController* controller = [[SimPlaylistController alloc] init];
+                // arg may be null/empty (foobar-hosted layout): standalone mode.
+                id params = fb2k::unwrapNSObject(arg);
+                if ([params isKindOfClass:[NSDictionary class]]) {
+                    id v = ((NSDictionary *)params)[@"vanced"];
+                    controller.vancedMode = [v isKindOfClass:[NSString class]] && [v isEqualToString:@"1"];
+                }
                 return fb2k::wrapNSObject(controller);
             }
         }

@@ -19,6 +19,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, readonly) SimPlaylistView *playlistView;
 
+// Opt-in "shell mode" (instantiate param vanced=1, set by the ShellVanced panel):
+// play actions target the hidden "Now Playing" up-next list. NO = standalone.
+@property (nonatomic, assign) BOOL vancedMode;
+
 // Playlist event handlers (called from PlaylistCallbacks)
 - (void)handlePlaylistSwitched;
 - (void)handleItemsAdded:(NSInteger)base count:(NSInteger)count addedHandles:(std::shared_ptr<metadb_handle_list>)handles;
