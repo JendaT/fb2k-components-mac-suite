@@ -75,7 +75,27 @@ inline unsigned foldCase(unsigned cp) {
     if (cp == 0x3C2) return 0x3C3;  // final sigma
     if (cp >= 0x410 && cp <= 0x42F) return cp + 0x20;
     if (cp >= 0x400 && cp <= 0x40F) return cp + 0x50;
+    if (cp == 0x3AA) return 0x3CA;
+    if (cp == 0x3AB) return 0x3CB;
+    if (cp == 0x4C0) return 0x4CF;
+    if (cp >= 0x4C1 && cp <= 0x4CE) return (cp & 1) ? cp + 1 : cp;  // odd uppercase
+    if ((cp >= 0x460 && cp <= 0x481) || (cp >= 0x48A && cp <= 0x4BF) || (cp >= 0x4D0 && cp <= 0x4FF))
+        return (cp & 1) ? cp : cp + 1;
     return cp;
+}
+
+// Greek base letter for lowercase accented/dialytika forms (accent-insensitive key).
+inline unsigned greekStrip(unsigned cp) {
+    switch (cp) {
+        case 0x3AC: return 0x3B1;
+        case 0x3AD: return 0x3B5;
+        case 0x3AE: return 0x3B7;
+        case 0x3AF: case 0x3CA: case 0x390: return 0x3B9;
+        case 0x3CC: return 0x3BF;
+        case 0x3CD: case 0x3CB: case 0x3B0: return 0x3C5;
+        case 0x3CE: return 0x3C9;
+        default: return cp;
+    }
 }
 
 } // namespace detail
@@ -159,7 +179,7 @@ inline std::string artistKey(std::string_view name) {
         if (len == 2) {
             if (c == 0xCC || (c == 0xCD && (unsigned char)name[i + 1] <= 0xAF)) { i += len; continue; } // U+0300-036F
             const unsigned orig = ((c & 0x1Fu) << 6) | ((unsigned char)name[i + 1] & 0x3Fu);
-            const unsigned cp = detail::foldCase(orig);
+            const unsigned cp = detail::greekStrip(detail::foldCase(orig));
             if (cp >= 0xC0 && cp <= 0xFF) { out += detail::latin1Fold(cp); i += len; continue; }
             if (cp >= 0x100 && cp <= 0x17F) { out += detail::latinExtAFold(cp); i += len; continue; }
             if (cp != orig && cp < 0x800) {

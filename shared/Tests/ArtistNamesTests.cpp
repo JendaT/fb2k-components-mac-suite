@@ -61,6 +61,12 @@ int main() {
     CHECK(artistKey("\xCE\x94\xCE\x94") != artistKey("\xCE\x94\xCE\x95"), "greek differ");
     CHECK(artistKey("\xD0\x9C\xD0\x90\xD0\xA8\xD0\x90") != artistKey("\xD0\x9C\xD0\x90\xD0\xA8"), "cyrillic differ");
     CHECK(artistKey("Armec") != artistKey("Fele"), "unrelated");
+    // Greek accents: "Ελένη" (NFC), all-caps without tonos, NFD
+    CHECK(artistKey("\xCE\x95\xCE\xBB\xCE\xAD\xCE\xBD\xCE\xB7") == artistKey("\xCE\x95\xCE\x9B\xCE\x95\xCE\x9D\xCE\x97"), "greek tonos vs caps");
+    CHECK(artistKey("\xCE\x95\xCE\xBB\xCE\xAD\xCE\xBD\xCE\xB7") == artistKey("\xCE\x95\xCE\xBB\xCE\xB5\xCC\x81\xCE\xBD\xCE\xB7"), "greek NFC==NFD");
+    CHECK(artistKey("\xCE\xAA") == artistKey("\xCF\x8A"), "dialytika case");
+    CHECK(artistKey("\xCF\x8A") == artistKey("\xCE\xB9"), "dialytika vs iota");
+    CHECK(artistKey("\xD2\x90") == artistKey("\xD2\x91"), "cyrillic ghe upturn");
 
     TEST_MAIN_END();
 }
