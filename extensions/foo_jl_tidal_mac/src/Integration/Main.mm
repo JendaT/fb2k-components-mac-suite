@@ -96,9 +96,9 @@ FB2K_SERVICE_FACTORY(TidalInit);
 namespace {
 
 // Preferences page GUID
-// {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
+// {742645A7-DBE1-4636-AFEC-F11C558FC982}
 static const GUID g_guid_tidal_prefs =
-    {0xa1b2c3d4, 0xe5f6, 0x7890, {0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90}};
+    {0x742645a7, 0xdbe1, 0x4636, {0xaf, 0xec, 0xf1, 0x1c, 0x55, 0x8f, 0xc9, 0x82}};
 
 class tidal_preferences_page : public preferences_page {
 public:

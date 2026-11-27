@@ -16,6 +16,7 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 | [AlbumViewVanced](#albumviewvanced) | Album grid library browser with cover art | 1.0.0 | [📖](extensions/foo_jl_albumviewvanced_mac/README.md) |
 | [LibVanced](#libvanced) | Hierarchical tree library browser | 1.0.0 | [📖](extensions/foo_jl_libvanced_mac/README.md) |
 | [PlayVanced](#playvanced) | Now Playing bar with transport controls | 1.0.0 | [📖](extensions/foo_jl_playvanced_mac/README.md) |
+| [ShellVanced](#shellvanced) | Streaming-style shell hosting the library components (WIP) | 0.1.0 | [📖](extensions/foo_jl_shellvanced_mac/README.md) |
 | [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.4.0 | – |
 | [Effects DSP](#effects-dsp) | 11 audio effects (echo, reverb, pitch shift, etc.) | 1.0.0 | – |
 
@@ -168,6 +169,12 @@ Now Playing bar with transport controls, progress, volume, and album art.
 
 ---
 
+### ShellVanced
+
+Streaming-style shell that hosts other components (AlbumViewVanced, SimPlaylist) inside one layout element. Early work in progress.
+
+---
+
 ### Last.fm Scrobbler
 
 Last.fm integration for scrobbling and now-playing updates. An absolute necesity for us, who celebrated 20 years of last.fm scrobbling this year.
@@ -218,7 +225,7 @@ Each effect registers as a separate DSP in foobar2000's chain (Preferences > Pla
 ## Requirements
 
 - foobar2000 v2.6+ for macOS
-- macOS 11 "Big Sur" or newer
+- macOS 12 "Monterey" or newer
 - Intel or Apple Silicon processor
 
 ## Building from Source

@@ -60,9 +60,9 @@ FB2K_SERVICE_FACTORY(PlaybackControlsInitQuit);
 namespace {
 
 // UI Element GUID
-// {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
+// {3AF0067B-A0D7-4965-BB79-CA7D97082E0A}
 static const GUID g_guid_playback_controls =
-    {0xa1b2c3d4, 0xe5f6, 0x7890, {0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90}};
+    {0x3af0067b, 0xa0d7, 0x4965, {0xbb, 0x79, 0xca, 0x7d, 0x97, 0x08, 0x2e, 0x0a}};
 
 class playback_controls_ui_element : public ui_element_mac {
 public:
