@@ -1,0 +1,116 @@
+#import "ShellPlaylistCallbacks.h"
+#include "../fb2k_sdk.h"
+#include "../Core/ShellCore.h"
+
+NSNotificationName const SVPlaylistsDidChangeNotification      = @"SVPlaylistsDidChangeNotification";
+NSNotificationName const SVPlaylistRenamedNotification         = @"SVPlaylistRenamedNotification";
+NSNotificationName const SVActivePlaylistDidChangeNotification = @"SVActivePlaylistDidChangeNotification";
+
+namespace {
+
+bool g_changePending = false;
+bool g_activePending = false;
+
+void schedulePost(bool& pending, NSNotificationName name) {
+    if (pending) return;
+    pending = true;
+    bool* flag = &pending;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        *flag = false;
+        [[NSNotificationCenter defaultCenter] postNotificationName:name object:nil];
+    });
+}
+
+NSString* toNS(const std::string& s) {
+    return [NSString stringWithUTF8String:s.c_str()] ?: @"";
+}
+
+// One shared observer for every shell instance. Keeps a snapshot of playlist
+// names so renames can report the old name and item-count changes on the
+// hidden "Now Playing" playlist (which churns on every play action) are
+// ignored.
+class SVPlaylistObserver : public playlist_callback_impl_base {
+public:
+    SVPlaylistObserver()
+        : playlist_callback_impl_base(flag_on_items_added | flag_on_items_removed |
+                                      flag_on_playlist_activate | flag_on_playlist_created |
+                                      flag_on_playlists_reorder | flag_on_playlists_removed |
+                                      flag_on_playlist_renamed) {
+        snapshot();
+    }
+
+    void on_items_added(t_size p_playlist, t_size, metadb_handle_list_cref, const bit_array&) override {
+        countChanged(p_playlist);
+    }
+    void on_items_removed(t_size p_playlist, const bit_array&, t_size, t_size) override {
+        countChanged(p_playlist);
+    }
+    void on_playlist_activate(t_size, t_size) override {
+        schedulePost(g_activePending, SVActivePlaylistDidChangeNotification);
+    }
+    void on_playlist_created(t_size, const char*, t_size) override { structureChanged(); }
+    void on_playlists_reorder(const t_size*, t_size) override { structureChanged(); }
+    void on_playlists_removed(const bit_array&, t_size, t_size) override { structureChanged(); }
+
+    void on_playlist_renamed(t_size p_index, const char* p_new_name, t_size p_new_name_len) override {
+        std::string oldName = p_index < m_names.size() ? m_names[p_index] : std::string();
+        std::string newName(p_new_name, strnlen(p_new_name, p_new_name_len));
+        if (!oldName.empty() && oldName != newName) {
+            NSDictionary* info = @{ @"old": toNS(oldName), @"new": toNS(newName) };
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[NSNotificationCenter defaultCenter] postNotificationName:SVPlaylistRenamedNotification
+                                                                    object:nil
+                                                                  userInfo:info];
+            });
+        }
+        structureChanged();
+    }
+
+private:
+    void snapshot() {
+        auto pm = playlist_manager::get();
+        const t_size n = pm->get_playlist_count();
+        m_names.clear();
+        m_names.reserve(n);
+        pfc::string8 name;
+        for (t_size i = 0; i < n; ++i) {
+            name.reset();
+            pm->playlist_get_name(i, name);
+            m_names.emplace_back(name.c_str());
+        }
+    }
+
+    void structureChanged() {
+        snapshot();
+        schedulePost(g_changePending, SVPlaylistsDidChangeNotification);
+    }
+
+    void countChanged(t_size playlist) {
+        if (playlist < m_names.size() && m_names[playlist] == shellcore::kNowPlayingPlaylistName) return;
+        schedulePost(g_changePending, SVPlaylistsDidChangeNotification);
+    }
+
+    std::vector<std::string> m_names;
+};
+
+std::unique_ptr<SVPlaylistObserver> g_observer;
+int g_refs = 0;
+
+} // namespace
+
+void SVPlaylistCallbacksRetain(void) {
+    if (g_refs++ == 0) {
+        try {
+            g_observer = std::make_unique<SVPlaylistObserver>();
+        } catch (...) {
+            console::info("[ShellVanced] failed to register playlist callback");
+        }
+    }
+}
+
+void SVPlaylistCallbacksRelease(void) {
+    if (g_refs <= 0) return;
+    if (--g_refs == 0) {
+        g_observer.reset();
+    }
+}
