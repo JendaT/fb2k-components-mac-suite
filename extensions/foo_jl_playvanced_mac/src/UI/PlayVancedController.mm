@@ -5,6 +5,7 @@
 #import "../Core/ArtworkFetcher.h"
 #import "../Integration/PlayVancedCallbacks.h"
 #import "../../../../shared/UIStyles.h"
+#import "../../../../shared/UpNext.h"
 
 @interface PlayVancedController () <NowPlayingViewDelegate>
 @end
@@ -461,15 +462,8 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
 - (void)nowPlayingViewDidReceiveDroppedPaths:(NSArray<NSString *> *)paths {
     if (paths.count == 0) return;
     try {
-        auto plMgr = playlist_manager::get();
-        auto pbCtrl = playback_control::get();
-
-        t_size active = plMgr->get_active_playlist();
-        if (active == pfc::infinite_size) {
-            active = plMgr->create_playlist_autoname(0);
-            plMgr->set_active_playlist(active);
-        }
-
+        // Single up-next model: dropped tracks go to "Now Playing" (never the
+        // user's playlists); start playback if idle with an empty Now Playing.
         metadb_handle_list items;
         auto db = metadb::get();
         for (NSString *path in paths) {
@@ -478,19 +472,18 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
         }
         if (items.get_count() == 0) return;
 
-        t_size baseIndex = plMgr->playlist_get_item_count(active);
-        plMgr->playlist_add_items(active, items, bit_array_false());
+        auto pm = playlist_manager::get();
+        const bool playing = playback_control::get()->is_playing();
+        const t_size np = pm->find_playlist(upnext::kNowPlayingName);
+        const bool npEmpty = (np == pfc_infinite) || pm->playlist_get_item_count(np) == 0;
 
-        bool queueWasEmpty = (plMgr->queue_get_count() == 0);
-        for (t_size i = 0; i < items.get_count(); i++) {
-            plMgr->queue_add_item_playlist(active, baseIndex + i);
-        }
-
-        if (queueWasEmpty && !pbCtrl->is_playing()) {
-            pbCtrl->start(playback_control::track_command_play);
+        if (!playing && npEmpty) {
+            upnext::fb::playNow(items, 0, upnext::kNowPlayingName);
+        } else {
+            upnext::fb::addToQueue(items);
         }
     } catch (...) {
-        FB2K_console_formatter() << "[PlayVanced] Error adding dropped tracks to queue";
+        FB2K_console_formatter() << "[PlayVanced] Error adding dropped tracks to Up Next";
     }
 }
 

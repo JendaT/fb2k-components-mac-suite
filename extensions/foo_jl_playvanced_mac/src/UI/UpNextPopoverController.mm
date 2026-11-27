@@ -746,13 +746,24 @@ static NSNumber *selectionKey(Section section, size_t index) {
         auto pm = playlist_manager::get();
 
         if (queueRows.count) {
-            t_size qCount = pm->queue_get_count();
+            // Re-read the queue and match rows by handle (prefer the same slot):
+            // it may have advanced since the last reload.
+            pfc::list_t<t_playback_queue_item> queue;
+            pm->queue_get_contents(queue);
+            const t_size qCount = queue.get_count();
             pfc::bit_array_bittable mask(qCount);
+            std::vector<bool> used(qCount, false);
+            bool any = false;
             FOR_EACH_INDEX(queueRows, row) {
-                size_t qi = _rows[row].index;
-                if (qi < qCount) mask.set(qi, true);
+                const UpNextRow &r = _rows[row];
+                t_size hit = pfc_infinite;
+                if (r.index < qCount && !used[r.index] && queue[r.index].m_handle == r.handle) hit = r.index;
+                for (t_size i = 0; hit == pfc_infinite && i < qCount; ++i) {
+                    if (!used[i] && queue[i].m_handle == r.handle) hit = i;
+                }
+                if (hit != pfc_infinite) { used[hit] = true; mask.set(hit, true); any = true; }
             }
-            pm->queue_remove_mask(mask);
+            if (any) pm->queue_remove_mask(mask);
         }
 
         if (npRows.count) {
@@ -790,14 +801,33 @@ static NSNumber *selectionKey(Section section, size_t index) {
 - (void)clearPressed:(id)sender {
     if (!_nextEditable || _nextCount == 0) return;
     try {
+        // Recompute from live state: the track may have advanced since the
+        // last (coalesced) reload, and the playing item must never be removed.
         auto pm = playlist_manager::get();
         t_size np = pm->find_playlist(upnext::kNowPlayingName);
-        if (np == pfc_infinite || np != _nowPlayingIndex) { [self reloadNow]; return; }
-        t_size count = pm->playlist_get_item_count(np);
-        if (_nextFrom >= count) { [self reloadNow]; return; }
-        pfc::bit_array_range mask(_nextFrom, count - _nextFrom);
-        pm->playlist_undo_backup(np);
-        pm->playlist_remove_items(np, mask);
+        if (np == pfc_infinite) { [self reloadNow]; return; }
+        const upnext::PlaybackState st = upnext::fb::currentPlaybackState();
+        const t_size count = pm->playlist_get_item_count(np);
+        bool playingKnown = st.playing && st.playingIndexKnown && st.playingPlaylist != (size_t)-1;
+        if (st.playing && (!playingKnown || st.playingPlaylist != (size_t)np)) {
+            // Playing from elsewhere (or position unknown): nothing safe to clear.
+            [self reloadNow];
+            return;
+        }
+        if (playingKnown) {
+            metadb_handle_ptr cur, atIdx;
+            if (!playback_control::get()->get_now_playing(cur) ||
+                !pm->playlist_get_item_handle(atIdx, np, st.playingIndex) || atIdx != cur) {
+                [self reloadNow];
+                return;
+            }
+        }
+        const upnext::UpNextSections sec = upnext::buildSections(playingKnown, playingKnown ? st.playingIndex : 0, count);
+        if (sec.nextCount > 0 && sec.nextFrom < count) {
+            pfc::bit_array_range mask(sec.nextFrom, sec.nextCount);
+            pm->playlist_undo_backup(np);
+            pm->playlist_remove_items(np, mask);
+        }
     } catch (...) {}
     [self reloadNow];
 }

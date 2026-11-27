@@ -24,6 +24,10 @@ enum : unsigned short {
     kKeyRight = 124,
     kKeyDown  = 125,
     kKeyUp    = 126,
+    // Physical key positions (ANSI), so non-Latin layouts work too.
+    kKeyS     = 1,
+    kKeyR     = 15,
+    kKeyU     = 32,
 };
 
 PlayVancedController *controllerForWindow(NSWindow *window) {
@@ -34,10 +38,24 @@ PlayVancedController *controllerForWindow(NSWindow *window) {
     return nil;
 }
 
+// Focus is somewhere keys mean typing or activating a control.
 bool textHasFocus(NSWindow *window) {
     NSResponder *fr = window.firstResponder;
     // NSText covers field editors (NSTextView) used by NSTextField / NSSearchField.
-    return [fr isKindOfClass:[NSText class]];
+    if ([fr isKindOfClass:[NSText class]]) return true;
+    if ([fr conformsToProtocol:@protocol(NSTextInputClient)] &&
+        ![fr isKindOfClass:[NSTableView class]] &&
+        ![fr isKindOfClass:[NSCollectionView class]]) {   // NSOutlineView is an NSTableView
+        return true;
+    }
+    return false;
+}
+
+bool controlHasFocus(NSWindow *window) {
+    NSResponder *fr = window.firstResponder;
+    return [fr isKindOfClass:[NSButton class]] ||        // includes NSPopUpButton, checkboxes
+           [fr isKindOfClass:[NSPopUpButton class]] ||
+           [fr isKindOfClass:[NSSegmentedControl class]];
 }
 
 template <typename F>
@@ -62,12 +80,11 @@ BOOL handleKeyDown(NSEvent *event) {
         (NSEventModifierFlagCommand | NSEventModifierFlagOption |
          NSEventModifierFlagControl | NSEventModifierFlagShift);
     const unsigned short keyCode = event.keyCode;
-    NSString *chars = event.charactersIgnoringModifiers.lowercaseString ?: @"";
     const bool inText = textHasFocus(window);
 
     // Space: play / pause (starts playback when stopped).
     if (mods == 0 && [event.charactersIgnoringModifiers isEqualToString:@" "]) {
-        if (inText) return NO;
+        if (inText || controlHasFocus(window)) return NO;
         if (event.isARepeat) return YES;
         return runPlayback([](auto &pc) { pc->play_or_pause(); });
     }
@@ -77,9 +94,11 @@ BOOL handleKeyDown(NSEvent *event) {
         switch (keyCode) {
             case kKeyRight:
                 if (inText) return NO;
+                if (event.isARepeat) return YES;   // holding must not skip many tracks
                 return runPlayback([](auto &pc) { pc->start(playback_control::track_command_next); });
             case kKeyLeft:
                 if (inText) return NO;
+                if (event.isARepeat) return YES;
                 return runPlayback([](auto &pc) { pc->start(playback_control::track_command_prev); });
             case kKeyUp:
                 if (inText) return NO;
@@ -91,14 +110,14 @@ BOOL handleKeyDown(NSEvent *event) {
                 break;
         }
         if (event.isARepeat) return NO;
-        if ([chars isEqualToString:@"s"]) { [controller toggleShuffle]; return YES; }
-        if ([chars isEqualToString:@"r"]) { [controller cycleRepeat]; return YES; }
+        if (keyCode == kKeyS) { [controller toggleShuffle]; return YES; }
+        if (keyCode == kKeyR) { [controller cycleRepeat]; return YES; }
         return NO;
     }
 
     if (mods == (NSEventModifierFlagCommand | NSEventModifierFlagOption)) {
         if (event.isARepeat) return NO;
-        if ([chars isEqualToString:@"u"]) {
+        if (keyCode == kKeyU) {
             [controller toggleUpNextPopover];
             return YES;
         }
