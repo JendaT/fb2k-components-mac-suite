@@ -1,5 +1,6 @@
 #import "PlayVancedController.h"
 #import "NowPlayingView.h"
+#import "UpNextPopoverController.h"
 #import "../Core/TrackInfo.h"
 #import "../Core/ArtworkFetcher.h"
 #import "../Integration/PlayVancedCallbacks.h"
@@ -10,6 +11,7 @@
 
 @implementation PlayVancedController {
     NowPlayingView     *_barView;
+    UpNextPopoverController *_upNext;
     metadb_handle_ptr   _currentTrack;
     NSString           *_currentPath;
 
@@ -173,12 +175,15 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
             strongSelf->_barView.artworkImage = image;
         }
     }];
+
+    [_upNext setNeedsReload];
 }
 
 - (void)handlePlaybackStop {
     _currentTrack.release();
     _currentPath = nil;
     [_barView clearDisplay];
+    [_upNext setNeedsReload];
 }
 
 - (void)handlePlaybackPause:(BOOL)paused {
@@ -241,6 +246,36 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
 
 - (void)handlePlaybackOrderChanged:(NSInteger)order {
     _barView.playbackOrder = order;
+    [_upNext setNeedsReload];
+}
+
+- (void)handleUpNextChanged {
+    [_upNext setNeedsReload];
+}
+
+#pragma mark - Up Next
+
+- (void)toggleUpNextPopover {
+    if (!self.isViewLoaded || !self.view.window) return;
+    if (!_upNext) {
+        _upNext = [[UpNextPopoverController alloc] init];
+        __weak typeof(self) weakSelf = self;
+        _upNext.visibilityChanged = ^(BOOL shown) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (strongSelf) strongSelf->_barView.upNextActive = shown;
+        };
+    }
+    NSView *anchor = _barView.upNextAnchorView ?: _barView;
+    [_upNext toggleRelativeToView:anchor];
+}
+
+- (BOOL)ownsWindow:(NSWindow *)window {
+    if (!window || !self.isViewLoaded) return NO;
+    return self.view.window == window || (_upNext && _upNext.popoverWindow == window);
+}
+
+- (void)nowPlayingViewDidPressUpNext {
+    [self toggleUpNextPopover];
 }
 
 #pragma mark - NowPlayingViewDelegate
@@ -273,6 +308,14 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
 }
 
 - (void)nowPlayingViewDidToggleShuffle {
+    [self toggleShuffle];
+}
+
+- (void)nowPlayingViewDidCycleRepeat {
+    [self cycleRepeat];
+}
+
+- (void)toggleShuffle {
     try {
         auto pm = playlist_manager::get();
         t_size current = pm->playback_order_get_active();
@@ -283,7 +326,7 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
     } catch (...) {}
 }
 
-- (void)nowPlayingViewDidCycleRepeat {
+- (void)cycleRepeat {
     try {
         auto pm = playlist_manager::get();
         t_size current = pm->playback_order_get_active();
@@ -490,6 +533,7 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
 }
 
 - (void)dealloc {
+    [_upNext close];
     PlayVancedCallbackManager::instance().unregisterController(self);
 }
 

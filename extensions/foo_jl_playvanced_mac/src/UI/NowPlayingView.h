@@ -19,6 +19,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)nowPlayingViewDidReceiveDroppedPaths:(NSArray<NSString *> *)paths;
 - (void)nowPlayingViewDidTapTrackInfo;
 - (void)nowPlayingViewDidRequestSetRating:(NSInteger)rating;
+- (void)nowPlayingViewDidPressUpNext;
 @end
 
 @interface NowPlayingView : NSView
@@ -33,6 +34,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, assign) float volume;
 // 0=Default, 1=RepeatAll, 2=RepeatOne, 3=Random, 4=Shuffle(tracks), 5=Shuffle(albums), 6=Shuffle(folders)
 @property (nonatomic, assign) NSInteger playbackOrder;
+// Highlights the Up Next button while its popover is shown.
+@property (nonatomic, assign) BOOL upNextActive;
+// The Up Next button when visible, else nil (popover falls back to the bar).
+@property (nonatomic, readonly, nullable) NSView *upNextAnchorView;
 
 - (void)clearDisplay;
 

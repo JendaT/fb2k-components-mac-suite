@@ -26,6 +26,7 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
 @property (nonatomic, strong) NSButton *stopButton;
 @property (nonatomic, strong) NSButton *shuffleButton;
 @property (nonatomic, strong) NSButton *repeatButton;
+@property (nonatomic, strong) NSButton *upNextButton;
 @property (nonatomic, strong) NSButton *muteButton;
 @property (nonatomic, strong) NSSlider *progressSlider;
 @property (nonatomic, strong) NSTextField *elapsedLabel;
@@ -157,6 +158,12 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
     _repeatButton = [self makeTransportButton:@"repeat" size:kSmallButtonSize action:@selector(repeatPressed:)];
     [self addSubview:_repeatButton];
 
+    _upNextButton = [self makeTransportButton:@"list.bullet" size:kSmallButtonSize action:@selector(upNextPressed:)];
+    _upNextButton.toolTip = @"Up Next";
+    _upNextButton.image.accessibilityDescription = @"Up Next";
+    [_upNextButton setAccessibilityLabel:@"Up Next"];
+    [self addSubview:_upNextButton];
+
     _muteButton = [self makeTransportButton:@"speaker.wave.2.fill" size:kSmallButtonSize action:@selector(mutePressed:)];
     [self addSubview:_muteButton];
 
@@ -277,6 +284,7 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
     _stopButton.hidden = !hasTrack;
     _shuffleButton.hidden = !hasTrack || !showSecondary;
     _repeatButton.hidden = !hasTrack || !showSecondary;
+    _upNextButton.hidden = !hasTrack;
     _muteButton.hidden = !hasTrack;
     _progressSlider.hidden = !hasTrack;
     _elapsedLabel.hidden = !hasTrack;
@@ -319,7 +327,7 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
     btnX += kSmallButtonSize;
     x = btnX + kPadding * 2;
 
-    // Right-side controls: [Shuffle][Repeat][Mute][===volume===]
+    // Right-side controls: [UpNext]  [Shuffle][Repeat]  [Mute][===volume===]
     CGFloat rightX = w - kPadding;
     rightX -= kVolumeWidth;
     _volumeSlider.frame = NSMakeRect(rightX, midY - 10, kVolumeWidth, 20);
@@ -330,13 +338,22 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
         _repeatButton.frame = NSMakeRect(rightX, smallBtnY, kSmallButtonSize, kSmallButtonSize);
         rightX -= kButtonSpacing + kSmallButtonSize;
         _shuffleButton.frame = NSMakeRect(rightX, smallBtnY, kSmallButtonSize, kSmallButtonSize);
-        rightX -= kPadding;
     }
-    CGFloat controlsX = rightX;
+    CGFloat baseControlsX = showSecondary ? rightX - kPadding : rightX;
 
-    // Rating sits after the track bar and before shuffle/repeat/mute/volume controls.
-    CGFloat ratingX = controlsX - kPadding - kRatingWidth;
+    // Up Next sits left of shuffle. Priority when space runs out: rating
+    // goes first, then Up Next (the progress bar keeps at least 120pt).
+    CGFloat upNextX = rightX - kButtonSpacing * 3 - kSmallButtonSize;
+    CGFloat upNextControlsX = upNextX - kPadding;
+    CGFloat ratingX = upNextControlsX - kPadding - kRatingWidth;
     BOOL showRating = (ratingX - x) >= 120.0;
+    BOOL showUpNext = showRating || (upNextControlsX - x) >= 120.0;
+
+    _upNextButton.hidden = !showUpNext;
+    _upNextButton.frame = NSMakeRect(upNextX, smallBtnY, kSmallButtonSize, kSmallButtonSize);
+    CGFloat controlsX = showUpNext ? upNextControlsX : baseControlsX;
+
+    // Rating sits after the track bar and before the right-side controls.
     _ratingLabel.hidden = !showRating;
     _ratingLabel.frame = NSMakeRect(ratingX, midY - 8, kRatingWidth, 16);
 
@@ -470,6 +487,10 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
     [self.delegate nowPlayingViewDidCycleRepeat];
 }
 
+- (void)upNextPressed:(id)sender {
+    [self.delegate nowPlayingViewDidPressUpNext];
+}
+
 - (void)mutePressed:(id)sender {
     [self.delegate nowPlayingViewDidToggleMute];
 }
@@ -534,6 +555,16 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
 - (void)setPlaybackOrder:(NSInteger)playbackOrder {
     _playbackOrder = playbackOrder;
     [self updateShuffleRepeatButtons];
+}
+
+- (void)setUpNextActive:(BOOL)upNextActive {
+    _upNextActive = upNextActive;
+    _upNextButton.contentTintColor = upNextActive ? [NSColor controlAccentColor] : fb2k_ui::textColor();
+}
+
+- (NSView *)upNextAnchorView {
+    if (_upNextButton.isHidden || !_upNextButton.window) return nil;
+    return _upNextButton;
 }
 
 - (void)updateMuteIcon {

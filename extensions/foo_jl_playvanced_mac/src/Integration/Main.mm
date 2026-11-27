@@ -4,6 +4,7 @@
 
 #import "../UI/PlayVancedController.h"
 #import "../Core/ArtworkFetcher.h"
+#import "PlayVancedShortcuts.h"
 
 JL_COMPONENT_ABOUT(
     "PlayVanced",
@@ -64,9 +65,11 @@ class playvanced_init : public initquit {
 public:
     void on_init() override {
         console::info("[PlayVanced] Component initialized");
+        PlayVancedShortcuts_install();
     }
 
     void on_quit() override {
+        PlayVancedShortcuts_uninstall();
     }
 };
 

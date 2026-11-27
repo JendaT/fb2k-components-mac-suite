@@ -24,6 +24,7 @@ public:
     void onVolumeChange(float newVolDb);
     void onSelectionChanged();
     void onPlaybackOrderChanged(t_size order);
+    void onUpNextChanged();
 
     metadb_handle_ptr getCurrentPlayingTrack() const;
 

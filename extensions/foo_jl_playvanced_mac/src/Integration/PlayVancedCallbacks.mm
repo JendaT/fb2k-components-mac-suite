@@ -1,6 +1,7 @@
 #import "PlayVancedCallbacks.h"
 #import "../Core/ArtworkFetcher.h"
 #import "../UI/PlayVancedController.h"
+#import "../../../../shared/UpNextCore.h"
 #import <mutex>
 
 static std::mutex g_controllersMutex;
@@ -108,6 +109,15 @@ void PlayVancedCallbackManager::onPlaybackOrderChanged(t_size order) {
     });
 }
 
+void PlayVancedCallbackManager::onUpNextChanged() {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        std::lock_guard<std::mutex> lock(g_controllersMutex);
+        for (PlayVancedController *c in g_controllers) {
+            [c handleUpNextChanged];
+        }
+    });
+}
+
 metadb_handle_ptr PlayVancedCallbackManager::getCurrentPlayingTrack() const {
     std::lock_guard<std::mutex> lock(m_trackMutex);
     return m_playingTrack;
@@ -119,6 +129,11 @@ void PlayVancedCallbackManager_registerController(PlayVancedController* controll
 
 void PlayVancedCallbackManager_unregisterController(PlayVancedController* controller) {
     PlayVancedCallbackManager::instance().unregisterController(controller);
+}
+
+NSArray<PlayVancedController *> *PlayVancedCallbackManager_controllers(void) {
+    std::lock_guard<std::mutex> lock(g_controllersMutex);
+    return g_controllers ? g_controllers.allObjects : @[];
 }
 
 // SDK play_callback_static
@@ -164,13 +179,34 @@ public:
 
 FB2K_SERVICE_FACTORY(playvanced_play_callback);
 
-// SDK playlist_callback_static for selection tracking
+// SDK playlist_callback_static: selection tracking + Up Next refresh
+// (item changes in "Now Playing" or the playing playlist).
+static bool upNextRelevantPlaylist(t_size playlist) {
+    auto pm = playlist_manager::get();
+    if (!pm.is_valid()) return false;
+    return playlist == pm->get_playing_playlist() ||
+           playlist == pm->find_playlist(upnext::kNowPlayingName);
+}
+
+static void notifyUpNextIfRelevant(t_size playlist) {
+    if (upNextRelevantPlaylist(playlist)) PlayVancedCallbackManager::instance().onUpNextChanged();
+}
+
 class playvanced_playlist_callback : public playlist_callback_static {
 public:
     unsigned get_flags() override {
         return flag_on_items_selection_change |
                flag_on_playlist_activate |
-               flag_on_playback_order_changed;
+               flag_on_playback_order_changed |
+               flag_on_items_added |
+               flag_on_items_reordered |
+               flag_on_items_removed |
+               flag_on_items_modified |
+               flag_on_items_replaced |
+               flag_on_playlist_created |
+               flag_on_playlists_reorder |
+               flag_on_playlists_removed |
+               flag_on_playlist_renamed;
     }
 
     void on_items_selection_change(t_size p_playlist, const bit_array& p_affected, const bit_array& p_state) override {
@@ -184,20 +220,32 @@ public:
         PlayVancedCallbackManager::instance().onSelectionChanged();
     }
 
-    void on_items_added(t_size, t_size, const pfc::list_base_const_t<metadb_handle_ptr>&, const bit_array&) override {}
-    void on_items_reordered(t_size, const t_size*, t_size) override {}
+    void on_items_added(t_size p, t_size, const pfc::list_base_const_t<metadb_handle_ptr>&, const bit_array&) override {
+        notifyUpNextIfRelevant(p);
+    }
+    void on_items_reordered(t_size p, const t_size*, t_size) override { notifyUpNextIfRelevant(p); }
     void on_items_removing(t_size, const bit_array&, t_size, t_size) override {}
-    void on_items_removed(t_size, const bit_array&, t_size, t_size) override {}
+    void on_items_removed(t_size p, const bit_array&, t_size, t_size) override { notifyUpNextIfRelevant(p); }
     void on_item_focus_change(t_size, t_size, t_size) override {}
-    void on_items_modified(t_size, const bit_array&) override {}
+    void on_items_modified(t_size p, const bit_array&) override { notifyUpNextIfRelevant(p); }
     void on_items_modified_fromplayback(t_size, const bit_array&, play_control::t_display_level) override {}
-    void on_items_replaced(t_size, const bit_array&, const pfc::list_base_const_t<t_on_items_replaced_entry>&) override {}
+    void on_items_replaced(t_size p, const bit_array&, const pfc::list_base_const_t<t_on_items_replaced_entry>&) override {
+        notifyUpNextIfRelevant(p);
+    }
     void on_item_ensure_visible(t_size, t_size) override {}
-    void on_playlist_created(t_size, const char*, t_size) override {}
-    void on_playlists_reorder(const t_size*, t_size) override {}
+    void on_playlist_created(t_size, const char*, t_size) override {
+        PlayVancedCallbackManager::instance().onUpNextChanged();
+    }
+    void on_playlists_reorder(const t_size*, t_size) override {
+        PlayVancedCallbackManager::instance().onUpNextChanged();
+    }
     void on_playlists_removing(const bit_array&, t_size, t_size) override {}
-    void on_playlists_removed(const bit_array&, t_size, t_size) override {}
-    void on_playlist_renamed(t_size, const char*, t_size) override {}
+    void on_playlists_removed(const bit_array&, t_size, t_size) override {
+        PlayVancedCallbackManager::instance().onUpNextChanged();
+    }
+    void on_playlist_renamed(t_size, const char*, t_size) override {
+        PlayVancedCallbackManager::instance().onUpNextChanged();
+    }
     void on_default_format_changed() override {}
     void on_playback_order_changed(t_size p_new_order) override {
         PlayVancedCallbackManager::instance().onPlaybackOrderChanged(p_new_order);
@@ -206,3 +254,13 @@ public:
 };
 
 FB2K_SERVICE_FACTORY(playvanced_playlist_callback);
+
+// SDK playback_queue_callback: foobar playback queue changes feed "Queued".
+class playvanced_queue_callback : public playback_queue_callback {
+public:
+    void on_changed(t_change_origin) override {
+        PlayVancedCallbackManager::instance().onUpNextChanged();
+    }
+};
+
+FB2K_SERVICE_FACTORY(playvanced_queue_callback);

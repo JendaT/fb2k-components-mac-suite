@@ -7,3 +7,6 @@
 
 void PlayVancedCallbackManager_registerController(PlayVancedController* controller);
 void PlayVancedCallbackManager_unregisterController(PlayVancedController* controller);
+
+// Snapshot of the live controllers (main thread).
+NSArray<PlayVancedController *> *PlayVancedCallbackManager_controllers(void);
