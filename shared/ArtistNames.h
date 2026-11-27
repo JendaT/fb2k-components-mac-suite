@@ -57,6 +57,27 @@ inline const char* latinExtAFold(unsigned cp) {
     return "";
 }
 
+// Simple Unicode lowercase fold for Latin-1, Latin Ext-A, Greek and Cyrillic.
+inline unsigned foldCase(unsigned cp) {
+    if (cp >= 0xC0 && cp <= 0xDE) return cp == 0xD7 ? cp : cp + 0x20;
+    if (cp >= 0x100 && cp <= 0x17F) {
+        if (cp == 0x130 || cp == 0x131 || cp == 0x138 || cp == 0x149 || cp == 0x17F) return cp;
+        if (cp == 0x178) return 0xFF;
+        if ((cp >= 0x139 && cp <= 0x148) || (cp >= 0x179 && cp <= 0x17E))
+            return (cp & 1) ? cp + 1 : cp;  // odd uppercase
+        return (cp & 1) ? cp : cp + 1;      // even uppercase
+    }
+    if (cp >= 0x391 && cp <= 0x3A9) return cp == 0x3A2 ? cp : cp + 0x20;
+    if (cp == 0x386) return 0x3AC;
+    if (cp >= 0x388 && cp <= 0x38A) return cp + 0x25;
+    if (cp == 0x38C) return 0x3CC;
+    if (cp == 0x38E || cp == 0x38F) return cp + 0x3F;
+    if (cp == 0x3C2) return 0x3C3;  // final sigma
+    if (cp >= 0x410 && cp <= 0x42F) return cp + 0x20;
+    if (cp >= 0x400 && cp <= 0x40F) return cp + 0x50;
+    return cp;
+}
+
 } // namespace detail
 
 // "A & B", "A vs B", "A feat. B", "A x B", "A, B", "A (B)" -> {"A","B"}.
@@ -137,9 +158,16 @@ inline std::string artistKey(std::string_view name) {
         }
         if (len == 2) {
             if (c == 0xCC || (c == 0xCD && (unsigned char)name[i + 1] <= 0xAF)) { i += len; continue; } // U+0300-036F
-            unsigned cp = ((c & 0x1Fu) << 6) | ((unsigned char)name[i + 1] & 0x3Fu);
+            const unsigned orig = ((c & 0x1Fu) << 6) | ((unsigned char)name[i + 1] & 0x3Fu);
+            const unsigned cp = detail::foldCase(orig);
             if (cp >= 0xC0 && cp <= 0xFF) { out += detail::latin1Fold(cp); i += len; continue; }
             if (cp >= 0x100 && cp <= 0x17F) { out += detail::latinExtAFold(cp); i += len; continue; }
+            if (cp != orig && cp < 0x800) {
+                out.push_back((char)(0xC0 | (cp >> 6)));
+                out.push_back((char)(0x80 | (cp & 0x3F)));
+                i += len;
+                continue;
+            }
         }
         out.append(name.substr(i, len));  // unknown scripts kept verbatim
         i += len;

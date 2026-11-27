@@ -49,5 +49,18 @@ int main() {
     CHECK(artistKey("Guns N\xE2\x80\x99 Roses") == artistKey("Guns N' Roses"), "curly apostrophe");
     CHECK(artistKey("a\xE2\x80\x93" "b") == artistKey("ab"), "en dash");
 
+    g_context = "artistKey unicode case";
+    CHECK(artistKey("KiLL\xCE\x94TK") == artistKey("Kill\xCE\xB4tk"), "delta case");
+    CHECK(artistKey("\xCE\xA3\xCE\xA9\xCE\x9A\xCE\xA1\xCE\x91\xCE\xA4\xCE\x97\xCE\xA3") ==
+              artistKey("\xCF\x83\xCF\x89\xCE\xBA\xCF\x81\xCE\xB1\xCF\x84\xCE\xB7\xCF\x82"),
+          "greek incl final sigma");
+    CHECK(artistKey("\xD0\x9C\xD0\x90\xD0\xA8\xD0\x90") == artistKey("\xD0\xBC\xD0\xB0\xD1\x88\xD0\xB0"), "cyrillic");
+    CHECK(artistKey("\xC3\x89" "LAN") == artistKey("\xC3\xA9" "lan"), "latin1 case");
+    CHECK(artistKey("\xC3\x89" "LAN") == artistKey("Elan"), "latin1 accent");
+    CHECK(artistKey("\xC5\x81\xC3\x93" "D\xC5\xB9") == artistKey("\xC5\x82\xC3\xB3" "d\xC5\xBA"), "latin ext-a");
+    CHECK(artistKey("\xCE\x94\xCE\x94") != artistKey("\xCE\x94\xCE\x95"), "greek differ");
+    CHECK(artistKey("\xD0\x9C\xD0\x90\xD0\xA8\xD0\x90") != artistKey("\xD0\x9C\xD0\x90\xD0\xA8"), "cyrillic differ");
+    CHECK(artistKey("Armec") != artistKey("Fele"), "unrelated");
+
     TEST_MAIN_END();
 }

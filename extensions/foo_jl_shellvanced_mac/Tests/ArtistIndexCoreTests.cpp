@@ -48,5 +48,22 @@ int main() {
         CHECK(i3[0].name == "Boss" && i3[0].appearsOnAlbums.empty(), "owner not appears-on");
         CHECK(i3[1].name == "Guest" && i3[1].appearsOnAlbums.size() == 1, "guest appears on");
     }
+
+    g_context = "display name";
+    const std::string upper = "KiLL\xCE\x94TK", lower = "Kill\xCE\xB4tk";
+    std::vector<TrackRow> r4 = {
+        {"", lower, "A", "2020", 0}, {"", lower, "B", "2020", 1}, {"", lower, "C", "2020", 2},
+        {upper, upper, "D", "2021", 3},
+    };
+    auto i4 = buildIndex(r4);
+    CHECK_EQ(i4.size(), 1, "case variants merge");
+    if (i4.size() == 1) CHECK(i4[0].name == upper, "album-artist spelling wins");
+
+    std::vector<TrackRow> r5 = {
+        {"", upper, "A", "2020", 0}, {"", lower, "B", "2020", 1}, {"", lower, "C", "2020", 2},
+    };
+    auto i5 = buildIndex(r5);
+    CHECK_EQ(i5.size(), 1, "merge without album artist");
+    if (i5.size() == 1) CHECK(i5[0].name == lower, "most frequent spelling wins");
     TEST_MAIN_END();
 }
