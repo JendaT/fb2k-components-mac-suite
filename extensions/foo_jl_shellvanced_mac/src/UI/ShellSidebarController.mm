@@ -715,7 +715,7 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     header.searchField.stringValue = @"";
     header.searchExpanded = NO;
     [_table noteHeightOfRowsWithIndexesChanged:[NSIndexSet indexSetWithIndex:(NSUInteger)kHeaderRowIndex]];
-    if (fieldHasFocus && focus) [window makeFirstResponder:_table];
+    if (fieldHasFocus) [window makeFirstResponder:_table];   // never leave focus in the collapsed field
     if (hadQuery) [self rebuildItemsReloading:NO];
 }
 

@@ -490,13 +490,17 @@ static NSView *SVMakePlaceholder(NSString *text) {
 
 // A card was clicked in the hosted AlbumViewVanced.
 - (void)openAlbumFromGrid:(NSDictionary<NSString *, id> *)album {
-    NSString *key = [album[@"key"] isKindOfClass:[NSString class]] ? album[@"key"] : nil;
-    if (key.length == 0) return;
+    NSString *avvKey = [album[@"key"] isKindOfClass:[NSString class]] ? album[@"key"] : nil;
+    if (avvKey.length == 0) return;
+    // Editions share AlbumViewVanced's key (artist + title); the card's year tells them apart.
+    NSString *year = [album[@"year"] isKindOfClass:[NSString class]] ? album[@"year"] : @"";
+    NSString *key = [NSString stringWithFormat:@"%@%s%@", avvKey, shellcore::kAlbumKeySeparator, year];
     if (!_albumInfo) _albumInfo = [NSMutableDictionary dictionary];
     if (_albumInfo.count >= 64) [_albumInfo removeAllObjects];   // small session cache
     _albumInfo[key] = [album copy];
     [self navigateTo:Destination{DestKind::Album, SVToStd(key)}];
     // Keep the keyboard with the page (Return / Q work on the track list).
+    [_albumPage selectFirstTrack];
     [self.view.window makeFirstResponder:_albumPage.tableView];
 }
 
@@ -597,6 +601,7 @@ static NSView *SVMakePlaceholder(NSString *text) {
 - (void)showCurrent {
     if (!_history.current()) _history.push({DestKind::Albums, ""});
     const Destination d = *_history.current();
+    if (d.kind != DestKind::Album) [_albumPage stopLoading];   // stale scans bail early
 
     switch (d.kind) {
         case DestKind::Playlist: {
@@ -742,7 +747,9 @@ static NSView *SVMakePlaceholder(NSString *text) {
     if (key.length != 1) return NO;
 
     // ⌘[ ⌘] ⌘N ⌘1 belong to the text field being edited (rename, search, ...).
-    BOOL typing = [self.view.window.firstResponder isKindOfClass:[NSTextView class]];
+    NSResponder *fr = self.view.window.firstResponder;
+    BOOL typing = [fr isKindOfClass:[NSTextView class]] &&
+        (((NSTextView *)fr).isFieldEditor || ((NSTextView *)fr).isEditable);
 
     if (mods == NSEventModifierFlagCommand) {
         if ([key isEqualToString:@"f"] || [key isEqualToString:@"l"]) {

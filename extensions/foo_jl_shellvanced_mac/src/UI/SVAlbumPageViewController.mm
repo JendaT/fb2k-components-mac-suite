@@ -6,6 +6,9 @@
 #import "SVAlbumPageViewController.h"
 #import <ImageIO/ImageIO.h>
 #include <algorithm>
+#include <atomic>
+#include <memory>
+#include <set>
 #include <vector>
 #include "../fb2k_sdk.h"
 #include "../../../../shared/UpNext.h"   // after the SDK include
@@ -79,8 +82,11 @@ static const CGFloat kRowHeight = 28.0;
                                                owner:self userInfo:nil];
     [self addTrackingArea:_tracking];
 }
-- (void)mouseEntered:(NSEvent *)event { _hovered = YES; [self refresh]; if (_linkEnabled) [[NSCursor pointingHandCursor] push]; }
-- (void)mouseExited:(NSEvent *)event  { _hovered = NO;  [self refresh]; if (_linkEnabled) [NSCursor pop]; }
+- (void)mouseEntered:(NSEvent *)event { _hovered = YES; [self refresh]; }
+- (void)mouseExited:(NSEvent *)event  { _hovered = NO;  [self refresh]; }
+- (void)resetCursorRects {
+    if (_linkEnabled) [self addCursorRect:self.bounds cursor:[NSCursor pointingHandCursor]];
+}
 @end
 
 static NSImage *SVDecodeThumbnail(NSData *data, CGFloat maxPixels) {
@@ -127,9 +133,23 @@ static NSImage *SVDecodeThumbnail(NSData *data, CGFloat maxPixels) {
     NSMutableArray<NSString *> *_artists;
     NSMutableArray<NSString *> *_lengths;
     NSUInteger _token;                   // discards stale async results
+    std::shared_ptr<std::atomic<NSUInteger>> _tokenBox;   // same value, readable from the scan thread
 }
 
 - (NSString *)albumKey { return _key; }
+
+- (NSUInteger)bumpToken {
+    if (!_tokenBox) _tokenBox = std::make_shared<std::atomic<NSUInteger>>(0);
+    _tokenBox->store(++_token);
+    return _token;
+}
+
+- (void)stopLoading { [self bumpToken]; }
+
+- (void)selectFirstTrack {
+    if (_handles.get_count() == 0) return;
+    [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+}
 - (NSTableView *)tableView { return _table; }
 
 - (void)dealloc {
@@ -305,7 +325,7 @@ static NSImage *SVDecodeThumbnail(NSData *data, CGFloat maxPixels) {
 - (void)showAlbumKey:(NSString *)key info:(NSDictionary<NSString *, id> *)info {
     [self view];   // make sure the UI exists
     if (key.length == 0) return;
-    const NSUInteger token = ++_token;
+    const NSUInteger token = [self bumpToken];
 
     NSString *title = [info[@"title"] isKindOfClass:[NSString class]] ? info[@"title"] : nil;
     NSString *artist = [info[@"artist"] isKindOfClass:[NSString class]] ? info[@"artist"] : nil;
@@ -313,8 +333,9 @@ static NSImage *SVDecodeThumbnail(NSData *data, CGFloat maxPixels) {
     NSArray *paths = [info[@"paths"] isKindOfClass:[NSArray class]] ? info[@"paths"] : nil;
     if (!title) title = SVToNS(shellcore::albumKeyTitle(SVToStd(key)));
     if (!artist) artist = SVToNS(shellcore::albumKeyArtist(SVToStd(key)));
+    if (!year) year = SVToNS(shellcore::albumKeyYear(SVToStd(key)));   // old-format keys: unknown (empty)
 
-    // Same album already shown: nothing to reload.
+    // Same album (same edition) already shown: nothing to reload.
     if ([_key isEqualToString:key] && _handles.get_count() > 0) return;
 
     _key = [key copy];
@@ -336,28 +357,30 @@ static NSImage *SVDecodeThumbnail(NSData *data, CGFloat maxPixels) {
             return;
         }
     }
-    [self scanLibraryForKey:key title:title artist:artist token:token];
+    [self scanLibraryForKey:key title:title artist:artist year:year token:token];
 }
 
 // No usable paths (relaunch, back/forward after a library change): find the album in the library.
-- (void)scanLibraryForKey:(NSString *)key title:(NSString *)title artist:(NSString *)artist token:(NSUInteger)token {
+- (void)scanLibraryForKey:(NSString *)key title:(NSString *)title artist:(NSString *)artist year:(NSString *)year token:(NSUInteger)token {
     metadb_handle_list all;
     try { library_manager::get()->get_all_items(all); } catch (...) {}
     if (all.get_count() == 0) { [self reportUnresolved:key token:token]; return; }
 
-    const std::string wantTitle = SVToStd(title), wantArtist = SVToStd(artist);
+    const std::string wantTitle = SVToStd(title), wantArtist = SVToStd(artist), wantYear = SVToStd(year);
+    auto tokenBox = _tokenBox;
     __weak SVAlbumPageViewController *weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         metadb_handle_list found;
-        std::string year;
+        std::string foundYear = wantYear;
         try {
             auto script = titleformat_compiler::get()->compile_force(
                 "%album artist%$char(1)%album%$char(1)%discnumber%$char(1)%tracknumber%$char(1)%date%");
-            struct Hit { int disc, track; t_size idx; };
+            struct Hit { t_size idx; std::string albumArtist, date; };
             std::vector<Hit> hits;
+            std::set<std::string> albumArtists;
             pfc::string8 out;
-            const bool variousWanted = artistnames::isVariousArtists(wantArtist);
             for (t_size i = 0; i < all.get_count(); i++) {
+                if ((i & 511) == 0 && tokenBox->load() != token) return;   // navigated away
                 out.reset();
                 all[i]->format_title(nullptr, out, script, nullptr);
                 std::string parts[5];
@@ -367,21 +390,24 @@ static NSImage *SVDecodeThumbnail(NSData *data, CGFloat maxPixels) {
                     else parts[field].push_back(*p);
                 }
                 if (parts[1] != wantTitle) continue;
-                if (parts[0] != wantArtist && !variousWanted) continue;
-                if (year.empty()) year = parts[4];
-                hits.push_back({atoi(parts[2].c_str()), atoi(parts[3].c_str()), i});
+                if (!wantYear.empty() && parts[4] != wantYear) continue;   // the card's %date% text
+                hits.push_back({i, parts[0], parts[4]});
+                albumArtists.insert(parts[0]);
             }
-            std::stable_sort(hits.begin(), hits.end(), [](const Hit &a, const Hit &b) {
-                return a.disc != b.disc ? a.disc < b.disc : a.track < b.track;
-            });
-            for (const Hit &h : hits) found.add_item(all[h.idx]);
+            // AlbumViewVanced's rule: one distinct album artist -> that artist; several -> "Various Artists".
+            const bool ok = albumArtists.size() > 1 ? wantArtist == "Various Artists"
+                                                    : (albumArtists.size() == 1 && *albumArtists.begin() == wantArtist);
+            if (ok) {
+                for (const Hit &h : hits) found.add_item(all[h.idx]);   // disc/track order is applied in applyHandles
+                if (foundYear.empty()) foundYear = hits[0].date;
+            }
         } catch (...) { found.remove_all(); }
 
         dispatch_async(dispatch_get_main_queue(), ^{
             SVAlbumPageViewController *s = weakSelf;
             if (!s || token != s->_token) return;
             if (found.get_count() == 0) { [s reportUnresolved:key token:token]; return; }
-            [s applyHandles:found title:title artist:artist year:SVToNS(year)];
+            [s applyHandles:found title:title artist:artist year:SVToNS(foundYear)];
         });
     });
 }
@@ -395,6 +421,7 @@ static NSImage *SVDecodeThumbnail(NSData *data, CGFloat maxPixels) {
 }
 
 - (void)clearTracks {
+    _cover.image = nil;
     _handles.remove_all();
     [_titles removeAllObjects];
     [_artists removeAllObjects];
@@ -405,7 +432,7 @@ static NSImage *SVDecodeThumbnail(NSData *data, CGFloat maxPixels) {
 }
 
 - (void)applyHandles:(metadb_handle_list_cref)handles title:(NSString *)title artist:(NSString *)artist year:(NSString *)year {
-    _handles = handles;
+    _handles = [self sortedByDiscAndTrack:handles];
     [_titles removeAllObjects];
     [_artists removeAllObjects];
     [_lengths removeAllObjects];
@@ -447,6 +474,28 @@ static NSImage *SVDecodeThumbnail(NSData *data, CGFloat maxPixels) {
     [self loadCoverForHandle:_handles.get_count() ? _handles[0] : metadb_handle_ptr() token:_token];
 }
 
+// Disc, then track number (stable): the same order whether the album came from a card or a scan.
+- (metadb_handle_list)sortedByDiscAndTrack:(metadb_handle_list_cref)handles {
+    const t_size n = handles.get_count();
+    std::vector<std::pair<int, int>> keys(n, {0, 0});
+    try {
+        auto script = titleformat_compiler::get()->compile_force("%discnumber%$char(1)%tracknumber%");
+        pfc::string8 out;
+        for (t_size i = 0; i < n; i++) {
+            out.reset();
+            handles[i]->format_title(nullptr, out, script, nullptr);
+            const char *sep = strchr(out.c_str(), '\x01');
+            keys[i] = {atoi(out.c_str()), sep ? atoi(sep + 1) : 0};
+        }
+    } catch (...) { return handles; }
+    std::vector<t_size> order(n);
+    for (t_size i = 0; i < n; i++) order[i] = i;
+    std::stable_sort(order.begin(), order.end(), [&](t_size a, t_size b) { return keys[a] < keys[b]; });
+    metadb_handle_list sorted;
+    for (t_size i : order) sorted.add_item(handles[i]);
+    return sorted;
+}
+
 - (NSString *)fold:(NSString *)s {
     return [(s ?: @"") stringByFoldingWithOptions:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch locale:nil];
 }
@@ -484,6 +533,7 @@ static NSImage *SVDecodeThumbnail(NSData *data, CGFloat maxPixels) {
         }
     }
     _artistLink.linkEnabled = _linkArtist != nil;
+    [_artistLink.window invalidateCursorRectsForView:_artistLink];
     _artistLink.toolTip = _linkArtist ? [NSString stringWithFormat:@"Go to %@", _linkArtist] : nil;
 }
 

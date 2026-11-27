@@ -184,6 +184,12 @@ static void testAlbumDestination() {
     CHECK(albumKeyArtist(albumKey("", "Untitled")) == "", "empty artist allowed");
     CHECK(albumKeyTitle(albumKey("", "Untitled")) == "Untitled", "title with empty artist");
     CHECK(albumKeyTitle("no separator") == "no separator", "malformed key -> whole string as title");
+    const std::string ky = albumKey("Daft Punk", "Discovery", "2001");
+    CHECK(albumKeyArtist(ky) == "Daft Punk" && albumKeyTitle(ky) == "Discovery" && albumKeyYear(ky) == "2001", "key with year");
+    CHECK(ky != albumKey("Daft Punk", "Discovery", "2021"), "editions differ by year");
+    CHECK(albumKeyYear(albumKey("A", "B")) == "", "empty year");
+    const std::string old = std::string("Daft Punk") + kAlbumKeySeparator + "Discovery";
+    CHECK(albumKeyTitle(old) == "Discovery" && albumKeyYear(old) == "", "old-format key: title ok, year unknown");
     Destination a{DestKind::Album, k};
     CHECK(a != artist("Daft Punk"), "album differs from artist");
     CHECK(a == Destination({DestKind::Album, k}), "same album equal");

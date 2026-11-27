@@ -104,8 +104,11 @@ private:
 // AlbumViewVanced hands over). Empty artist is allowed.
 inline const char* const kAlbumKeySeparator = "\x1f";
 
-inline std::string albumKey(const std::string& artist, const std::string& title) {
-    return artist + kAlbumKeySeparator + title;
+// The shell's key is artist + U+001F + title + U+001F + year (the card's year
+// text, may be empty): editions of one album differ only by year. Keys saved
+// before the year part existed ("artist U+001F title") still parse; year unknown.
+inline std::string albumKey(const std::string& artist, const std::string& title, const std::string& year = "") {
+    return artist + kAlbumKeySeparator + title + kAlbumKeySeparator + year;
 }
 
 inline std::string albumKeyArtist(const std::string& key) {
@@ -115,7 +118,17 @@ inline std::string albumKeyArtist(const std::string& key) {
 
 inline std::string albumKeyTitle(const std::string& key) {
     size_t p = key.find(kAlbumKeySeparator);
-    return p == std::string::npos ? key : key.substr(p + 1);
+    if (p == std::string::npos) return key;
+    size_t q = key.find(kAlbumKeySeparator, p + 1);
+    return q == std::string::npos ? key.substr(p + 1) : key.substr(p + 1, q - p - 1);
+}
+
+// Empty when the key has no year part (old format) or an empty year.
+inline std::string albumKeyYear(const std::string& key) {
+    size_t p = key.find(kAlbumKeySeparator);
+    if (p == std::string::npos) return {};
+    size_t q = key.find(kAlbumKeySeparator, p + 1);
+    return q == std::string::npos ? std::string() : key.substr(q + 1);
 }
 
 // "2024-02-26" -> "2024"; anything not starting with four digits is returned trimmed as is.

@@ -30,6 +30,12 @@ NS_ASSUME_NONNULL_BEGIN
 /// Shows an album. `info` is the AlbumViewVanced dictionary (key, title, artist,
 /// year, paths); without it (or when its paths no longer resolve) the library is
 /// scanned off the main thread for the key.
+/// Cancels a pending library scan (the page was left).
+- (void)stopLoading;
+
+/// Selects the first track without scrolling, so Return plays from the top.
+- (void)selectFirstTrack;
+
 - (void)showAlbumKey:(NSString *)key info:(nullable NSDictionary<NSString *, id> *)info;
 
 @end
