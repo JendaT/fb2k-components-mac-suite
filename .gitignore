@@ -6,6 +6,7 @@ SDK-*
 
 # Reference sources for analysis (Windows code, etc.)
 reference_sources/
+external_resources/
 
 # Code review outputs (generated locally)
 code_reviews/
