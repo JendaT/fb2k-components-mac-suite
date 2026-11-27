@@ -136,13 +136,19 @@ inline pfc::list_t<t_playback_queue_item> captureQueue() {
 // Re-adds `saved` on the next main-queue turn (after the default action's
 // queue flush). Playlists can mutate in between, so each saved location is
 // re-validated (same playlist slot still holds the same handle); otherwise
-// the item is queued by handle.
-inline void restoreQueueLater(const pfc::list_t<t_playback_queue_item>& saved) {
+// the item is queued by handle. planQueueRestore (UpNextCore.h) drops the
+// entry for the started (playlist, item) — foobar consumes a queued item it
+// plays — and entries still present in the live queue.
+inline void restoreQueueLater(const pfc::list_t<t_playback_queue_item>& saved,
+                              t_size startedPlaylist = pfc_infinite,
+                              t_size startedItem = pfc_infinite) {
     if (saved.get_count() == 0) return;
     pfc::list_t<t_playback_queue_item> copy = saved;
     dispatch_async(dispatch_get_main_queue(), ^{
         try {
             auto pm = playlist_manager::get();
+            std::vector<SavedQueueEntry> entries;
+            entries.reserve(copy.get_count());
             for (t_size i = 0; i < copy.get_count(); ++i) {
                 const auto& item = copy[i];
                 bool locationValid = false;
@@ -153,9 +159,23 @@ inline void restoreQueueLater(const pfc::list_t<t_playback_queue_item>& saved) {
                     locationValid = pm->playlist_get_item_handle(current, item.m_playlist, item.m_item)
                         && current == item.m_handle;
                 }
-                if (locationValid)
+                entries.push_back({(size_t)item.m_playlist, (size_t)item.m_item,
+                                   (uintptr_t)item.m_handle.get_ptr(), locationValid});
+            }
+            pfc::list_t<t_playback_queue_item> liveQueue;
+            pm->queue_get_contents(liveQueue);
+            std::vector<LiveQueueEntry> live;
+            live.reserve(liveQueue.get_count());
+            for (t_size i = 0; i < liveQueue.get_count(); ++i) {
+                const auto& l = liveQueue[i];
+                live.push_back({(size_t)l.m_playlist, (size_t)l.m_item, (uintptr_t)l.m_handle.get_ptr()});
+            }
+            for (const QueueRestoreOp& op : planQueueRestore(entries, (size_t)startedPlaylist,
+                                                             (size_t)startedItem, live)) {
+                const auto& item = copy[op.savedIndex];
+                if (op.byLocation)
                     pm->queue_add_item_playlist(item.m_playlist, item.m_item);
-                else if (item.m_handle.is_valid())
+                else
                     pm->queue_add_item(item.m_handle);
             }
         } catch (...) {}
@@ -178,7 +198,7 @@ inline void playItemRaw(t_size playlist, t_size item) {
 inline void playItemRestoringQueue(t_size playlist, t_size item,
                                    const pfc::list_t<t_playback_queue_item>& saved) {
     playItemRaw(playlist, item);
-    restoreQueueLater(saved);
+    restoreQueueLater(saved, playlist, item);
 }
 
 // Plays (playlist, item) without losing the foobar playback queue.

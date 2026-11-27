@@ -57,6 +57,44 @@ int main() {
     CHECK(*stoppedStartIndex(5, std::nullopt) == 0, "no focus");
     CHECK(*stoppedStartIndex(5, 9) == 0, "stale focus");
 
+    g_context = "planQueueRestore";
+    {   // Shuffle Play Next: X at np[4] and queued (np,4); playing X must not re-queue it.
+        std::vector<SavedQueueEntry> saved = { {0, 4, 0xA, true}, {0, 7, 0xB, true} };
+        auto ops = planQueueRestore(saved, 0, 4, {});
+        CHECK_EQ(ops.size(), 1, "started skipped");
+        CHECK(ops.size() == 1 && ops[0].savedIndex == 1 && ops[0].byLocation, "other kept");
+    }
+    {   // Only the FIRST matching entry is consumed.
+        std::vector<SavedQueueEntry> saved = { {0, 4, 0xA, true}, {0, 4, 0xA, true} };
+        auto ops = planQueueRestore(saved, 0, 4, {});
+        CHECK(ops.size() == 1 && ops[0].savedIndex == 1, "second duplicate kept");
+    }
+    {   // Invalid location never matches the started item; restored by handle.
+        std::vector<SavedQueueEntry> saved = { {0, 4, 0xA, false} };
+        auto ops = planQueueRestore(saved, 0, 4, {});
+        CHECK(ops.size() == 1 && !ops[0].byLocation, "by handle");
+    }
+    {   // No flush happened: everything is still queued -> nothing re-added.
+        std::vector<SavedQueueEntry> saved = { {1, 2, 0xA, true}, {kNoIndex, kNoIndex, 0xB, false} };
+        std::vector<LiveQueueEntry> live = { {1, 2, 0xA}, {kNoIndex, kNoIndex, 0xB} };
+        CHECK(planQueueRestore(saved, 3, 0, live).empty(), "already present");
+    }
+    {   // Partially present; each live entry matches once.
+        std::vector<SavedQueueEntry> saved = { {1, 2, 0xA, true}, {1, 2, 0xA, true}, {1, 5, 0xC, false} };
+        std::vector<LiveQueueEntry> live = { {1, 2, 0xA}, {kNoIndex, kNoIndex, 0xC} };
+        auto ops = planQueueRestore(saved, kNoIndex, kNoIndex, live);
+        CHECK(ops.size() == 1 && ops[0].savedIndex == 1, "one copy restored");
+    }
+    {   // By-location live entry with same handle does not satisfy a different slot.
+        std::vector<SavedQueueEntry> saved = { {1, 2, 0xA, true} };
+        std::vector<LiveQueueEntry> live = { {1, 3, 0xA} };
+        CHECK_EQ(planQueueRestore(saved, kNoIndex, kNoIndex, live).size(), 1, "different slot");
+    }
+    {   // Unknown started item: nothing skipped.
+        std::vector<SavedQueueEntry> saved = { {0, 4, 0xA, true} };
+        CHECK_EQ(planQueueRestore(saved, kNoIndex, kNoIndex, {}).size(), 1, "no skip");
+    }
+
     g_context = "addedFeedbackText";
     CHECK(addedFeedbackText(12, false) == "Added 12 tracks to queue", "queue plural");
     CHECK(addedFeedbackText(1, false) == "Added 1 track to queue", "queue singular");

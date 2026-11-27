@@ -2528,7 +2528,10 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
         }
     }
     if (row == pfc_infinite) row = 0;
-    runGuardedSDKAction("Up next play", ^{ upnext::fb::playPlaylistIntoNowPlaying(pl, row); });
+    const bool preserveQueue = simplaylist_config::getConfigBool(
+        simplaylist_config::kDoubleClickPreservesQueue,
+        simplaylist_config::kDefaultDoubleClickPreservesQueue);
+    runGuardedSDKAction("Up next play", ^{ upnext::fb::playPlaylistIntoNowPlaying(pl, row, preserveQueue); });
 }
 
 - (void)upNextPlayNextClicked:(NSMenuItem *)sender {

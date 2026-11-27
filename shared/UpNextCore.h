@@ -8,9 +8,11 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace upnext {
 
@@ -126,6 +128,66 @@ inline std::optional<size_t> stoppedStartIndex(size_t nowPlayingCount, std::opti
     if (nowPlayingCount == 0) return std::nullopt;
     if (focus && *focus < nowPlayingCount) return *focus;
     return size_t(0);
+}
+
+// ---- Queue restore after a queue-flushing play ----
+inline constexpr size_t kNoIndex = static_cast<size_t>(-1);
+
+// A playback-queue entry captured before the play. locationValid: at restore
+// time (playlist, item) still holds the same handle (else re-add by handle).
+struct SavedQueueEntry {
+    size_t playlist = kNoIndex;
+    size_t item = kNoIndex;
+    uintptr_t handle = 0;
+    bool locationValid = false;
+};
+
+// An entry in the live queue at restore time (playlist == kNoIndex: by handle).
+struct LiveQueueEntry {
+    size_t playlist = kNoIndex;
+    size_t item = kNoIndex;
+    uintptr_t handle = 0;
+};
+
+struct QueueRestoreOp {
+    size_t savedIndex;   // index into the saved list
+    bool byLocation;     // re-add as (playlist, item), else by handle
+};
+
+// Decides which saved entries to re-add, in order:
+//  - the FIRST saved entry whose valid location equals the started
+//    (playlist, item) is skipped (foobar consumes a queued item it plays);
+//  - entries still present in the live queue are skipped (the default action
+//    did not flush, or flushed later): a by-location entry matches a live
+//    entry with the same playlist + item, a by-handle entry matches a live
+//    entry with the same handle. Each live entry matches at most once.
+inline std::vector<QueueRestoreOp> planQueueRestore(const std::vector<SavedQueueEntry>& saved,
+                                                    size_t startedPlaylist, size_t startedItem,
+                                                    const std::vector<LiveQueueEntry>& live) {
+    std::vector<QueueRestoreOp> ops;
+    std::vector<bool> liveUsed(live.size(), false);
+    bool startedSkipped = false;
+    for (size_t i = 0; i < saved.size(); ++i) {
+        const SavedQueueEntry& e = saved[i];
+        const bool byLocation = e.locationValid && e.playlist != kNoIndex;
+        if (byLocation && !startedSkipped && startedPlaylist != kNoIndex &&
+            e.playlist == startedPlaylist && e.item == startedItem) {
+            startedSkipped = true;
+            continue;
+        }
+        bool present = false;
+        for (size_t j = 0; j < live.size(); ++j) {
+            if (liveUsed[j]) continue;
+            const LiveQueueEntry& l = live[j];
+            const bool match = byLocation ? (l.playlist == e.playlist && l.item == e.item)
+                                          : (e.handle != 0 && l.handle == e.handle);
+            if (match) { liveUsed[j] = true; present = true; break; }
+        }
+        if (present) continue;
+        if (!byLocation && e.handle == 0) continue;   // nothing to re-add
+        ops.push_back({i, byLocation});
+    }
+    return ops;
 }
 
 // Items foobar2000 already adds to its own context menu that our Up Next
