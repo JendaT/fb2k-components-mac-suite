@@ -701,6 +701,8 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     SVLibraryHeaderView *header = [self libraryHeaderView];
     if (!header) return;
     _searchOpen = YES;
+    [self scrollSidebarToTop];   // the header must sit in its own row, not float over a scrolled list
+    header = [self libraryHeaderView] ?: header;
     header.searchExpanded = YES;
     [_table noteHeightOfRowsWithIndexesChanged:[NSIndexSet indexSetWithIndex:(NSUInteger)kHeaderRowIndex]];
     [self.view.window makeFirstResponder:header.searchField];
@@ -730,14 +732,36 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     [self closeSearchReturningFocus:YES];
 }
 
+- (void)scrollSidebarToTop {
+    [_scroll.contentView scrollToPoint:NSZeroPoint];
+    [_scroll reflectScrolledClipView:_scroll.contentView];
+}
+
 - (void)searchTextChanged {
     SVLibraryHeaderView *header = [self libraryHeaderView];
     NSString *text = header.searchField.stringValue ?: @"";
     if ([text isEqualToString:_query ?: @""]) return;
     _query = [text copy];
+    // Scroll first: while the list is scrolled the header is a floating group row, and replacing the
+    // rows below it re-creates that view, which took the field editor (and focus) with it.
+    [self scrollSidebarToTop];
     [self rebuildItemsReloading:NO];
-    [_scroll.contentView scrollToPoint:NSZeroPoint];
-    [_scroll reflectScrolledClipView:_scroll.contentView];
+    [self scrollSidebarToTop];
+    [self keepSearchFocus];
+}
+
+// If the header view was re-created anyway, put the caret back at the end of the query.
+- (void)keepSearchFocus {
+    NSWindow *window = self.view.window;
+    SVLibraryHeaderView *header = [self libraryHeaderView];
+    if (!window || !header || !_searchOpen) return;
+    NSSearchField *field = header.searchField;
+    id fr = window.firstResponder;
+    if ([fr isKindOfClass:[NSTextView class]] && ((NSTextView *)fr).delegate == (id)field) return;
+    field.stringValue = _query ?: @"";
+    [window makeFirstResponder:field];
+    NSText *editor = field.currentEditor;
+    editor.selectedRange = NSMakeRange(editor.string.length, 0);
 }
 
 // Down arrow in the field: into the results.
@@ -1169,6 +1193,7 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
             v.playlistsChip.chipSelected = _filter == LibraryFilter::Playlists;
             v.artistsChip.chipSelected = _filter == LibraryFilter::Artists;
             v.searchExpanded = _searchOpen;
+            if (!v.searchField.currentEditor) v.searchField.stringValue = _searchOpen ? (_query ?: @"") : @"";
             return v;
         }
         case SVRowKindSection: {
