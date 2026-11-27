@@ -6,6 +6,7 @@ All notable changes to SimPlaylist will be documented in this file.
 
 ### Added
 - **Shell mode**: Opt-in `vanced=1` element parameter — double-click/Enter plays the playlist into "Now Playing", menu gains Play / Play Next / Add to Queue, Q adds to queue.
+- **Shell mode Play keeps the queue**: Double-click / context Play honour the preserve-queue setting and never play a queued track twice.
 
 ### Fixed
 - **Home key did nothing useful in grouped playlists**: Home jumped to an arbitrary point mid-list instead of the first track. The focus-movement API works in display rows, but Home computed its distance from the playlist index, which ignores every group header, subgroup header and padding row above the current track. End was wrong in the same way and only appeared to work because an over-large jump clamps to the end.

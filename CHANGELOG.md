@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Added
 - **Shell mode**: Opt-in `vanced=1` parameter — play playlist into Now Playing, Play / Play Next / Add to Queue, Q adds to queue
+- **Shell mode Play keeps the queue**: Honours preserve-queue; a queued track never plays twice
 
 #### Fixed
 - Home key jumped to an arbitrary point mid-list instead of the first track in grouped playlists (End was wrong the same way but masked by clamping)
@@ -666,6 +667,7 @@ Fixes the long-standing "playback stops until restart" cascade and restores drag
 - **Play / Play Next / Add to Queue**: Unified actions; playback goes through the single "Now Playing" up-next list
 - **Artist filter**: Artist's albums plus an "Appears on" section (for ShellVanced)
 - **Search shortcuts**: ⌘F / ⌘L focus search
+- **Open-album handler**: Click opens an album page in ShellVanced; double-click plays
 
 #### Changed
 - **Context menu**: Unified actions replace "Add to Now Playing" / "Add to Playback Queue"; duplicate foobar entries hidden
@@ -673,6 +675,7 @@ Fixes the long-standing "playback stops until restart" cascade and restores drag
 #### Fixed
 - **Stale rebuilds**: Older search results no longer overwrite newer ones
 - **Arrow keys**: Select the first album when nothing is selected
+- **Selection on rebuild**: Play-count/rating updates keep the selected album
 
 ## PlayVanced
 
@@ -681,9 +684,13 @@ Fixes the long-standing "playback stops until restart" cascade and restores drag
 #### Added
 - **Up Next popover**: Now playing, Queued and "Next from" sections; reorder, remove, clear
 - **Keyboard shortcuts**: Space, ⌘←/→, ⌘↑/↓, ⌘S shuffle, ⌘R repeat, ⌥⌘U Up Next
+- **Queue feedback**: Up Next pulses and shows "Added N tracks to queue"
 
 #### Changed
 - **Drop on bar**: Adds to the up-next queue instead of the active playlist
+- **Stopped bar**: All controls stay visible when stopped; Play/Space starts what you queued
+- **Stop button**: Removed from the bar (Pause covers it; Stop stays in the Playback menu)
+- **Play keeps the queue**: Playing a track from Up Next no longer flushes queued items
 
 ## ShellVanced
 
@@ -695,3 +702,14 @@ Fixes the long-standing "playback stops until restart" cascade and restores drag
 - **Artists**: Artist page with Deezer photo header, Play / Shuffle, albums plus "Appears on"
 - **Navigation**: Back/forward history, collapsible sidebar, last page restored
 - **Shortcuts**: ⌘F/⌘L search, ⌘[ / ⌘] back/forward, ⌘1 Albums, ⌘N new playlist, ⌃⌘S sidebar
+- **Album page**: Clicking an album opens a Spotify-style page with its tracks; double-click a card to play
+- **Library search**: 🔍 in "Your Library" filters playlists and artists as you type
+- **Pinned Albums**: The Albums item stays above the scrolling library list
+- **Spotify photos**: Optional fallback for artists without a real Deezer photo; Client ID/Secret in Preferences → Display → ShellVanced (Keychain), paced and rate-limit aware
+
+#### Fixed
+- **Quit crash**: ⌘Q no longer crashes (playlist callback unregistered while foobar is still up)
+- **Album editions**: Same-titled releases from different years no longer mix tracks; multi-disc albums play in disc order
+- **Artist names**: Case/accent variants merge (KiLLΔTK, Greek, Cyrillic); "ft"/"feat" and [ ] groups split correctly; names no longer truncate
+- **Artist photos**: Deezer placeholders and album covers posing as photos are rejected; same-name strangers need title or collaborator evidence; cover fallback tries several albums
+- **Search focus**: The library search field keeps focus while typing
