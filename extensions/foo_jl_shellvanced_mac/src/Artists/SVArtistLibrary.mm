@@ -38,7 +38,10 @@ public:
     explicit SVLibraryListener(SVArtistLibrary *owner) : m_owner(owner) {}
     void on_items_added(metadb_handle_list_cref) override { SVArtistLibraryScheduleRebuild(m_owner); }
     void on_items_removed(metadb_handle_list_cref) override { SVArtistLibraryScheduleRebuild(m_owner); }
-    void on_items_modified(metadb_handle_list_cref) override { SVArtistLibraryScheduleRebuild(m_owner); }
+    void on_items_modified(metadb_handle_list_cref) override {
+        if (library_callback::is_modified_from_hook()) return;  // display hooks cannot change artist names
+        SVArtistLibraryScheduleRebuild(m_owner);
+    }
 private:
     __unsafe_unretained SVArtistLibrary *m_owner;  // singleton, never deallocated
 };

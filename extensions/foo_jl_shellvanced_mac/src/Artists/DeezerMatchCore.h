@@ -34,6 +34,47 @@ inline std::vector<size_t> exactCandidates(const std::string& artist,
     return out;
 }
 
+namespace detail {
+// Unicode-ish casefold (Latin-1/Ext-A/Greek/Cyrillic) that KEEPS accents, whitespace and punctuation; trimmed.
+inline std::string casefoldExact(const std::string& name) {
+    const std::string in = artistnames::detail::trim(name);
+    std::string out;
+    size_t i = 0;
+    while (i < in.size()) {
+        unsigned char c = (unsigned char)in[i];
+        if (c < 0x80) { out.push_back((char)std::tolower(c)); i++; continue; }
+        size_t len = (c >= 0xF0) ? 4 : (c >= 0xE0) ? 3 : (c >= 0xC0) ? 2 : 1;
+        if (i + len > in.size()) len = in.size() - i;
+        if (len == 2) {
+            const unsigned orig = ((c & 0x1Fu) << 6) | ((unsigned char)in[i + 1] & 0x3Fu);
+            const unsigned cp = artistnames::detail::foldCase(orig);
+            if (cp < 0x800) {
+                out.push_back((char)(0xC0 | (cp >> 6)));
+                out.push_back((char)(0x80 | (cp & 0x3F)));
+                i += len;
+                continue;
+            }
+        }
+        out.append(in, i, len);
+        i += len;
+    }
+    return out;
+}
+}  // namespace detail
+
+// Name tier: among `exact` (indices from exactCandidates), if exactly one candidate matches the local
+// name case-insensitively with whitespace/punctuation preserved, narrow to it; otherwise unchanged.
+inline std::vector<size_t> narrowByExactName(const std::string& artist,
+                                             const std::vector<Candidate>& candidates,
+                                             const std::vector<size_t>& exact) {
+    const std::string want = detail::casefoldExact(artist);
+    if (want.empty()) return exact;
+    std::vector<size_t> hits;
+    for (size_t i : exact)
+        if (detail::casefoldExact(candidates[i].name) == want) hits.push_back(i);
+    return hits.size() == 1 ? hits : exact;
+}
+
 // Drops (..)/[..] groups, EP/LP/VA/remaster/deluxe/edition words, punctuation, case.
 inline std::string normalizeTitle(const std::string& title) {
     std::string stripped;

@@ -218,9 +218,15 @@ static NSString *SHA1Hex(NSString *s) {
         _negative = [NSMutableDictionary dictionary];
         NSData *data = [NSData dataWithContentsOfURL:[self negativeURL]];
         id json = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-        if ([json isKindOfClass:[NSDictionary class]]) {
+        // v2 format: {"v":2,"e":{key:epoch}}. Older (unversioned) files were recorded under the previous
+        // matching rule and are ignored so the new rule can retry those artists.
+        NSDictionary *entries = nil;
+        if ([json isKindOfClass:[NSDictionary class]] && [json[@"v"] isEqual:@2] &&
+            [json[@"e"] isKindOfClass:[NSDictionary class]])
+            entries = json[@"e"];
+        if (entries) {
             NSTimeInterval now = [NSDate date].timeIntervalSince1970;
-            [(NSDictionary *)json enumerateKeysAndObjectsUsingBlock:^(id k, id v, BOOL *stop) {
+            [entries enumerateKeysAndObjectsUsingBlock:^(id k, id v, BOOL *stop) {
                 if ([k isKindOfClass:[NSString class]] && [v isKindOfClass:[NSNumber class]] &&
                     now - [v doubleValue] < kNegativeTTL)
                     self->_negative[k] = v;
@@ -246,7 +252,7 @@ static NSString *SHA1Hex(NSString *s) {
         self->_negativeSavePending = YES;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), self->_diskQueue, ^{
             self->_negativeSavePending = NO;
-            NSData *data = [NSJSONSerialization dataWithJSONObject:[self negativeStoreLocked] options:0 error:nil];
+            NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"v": @2, @"e": [self negativeStoreLocked]} options:0 error:nil];
             [data writeToURL:[self negativeURL] atomically:YES];
         });
     });
@@ -375,7 +381,8 @@ static NSString *SHA1Hex(NSString *s) {
     [[SVDeezerClient shared] searchArtist:name completion:^(std::vector<deezermatch::Candidate> cands, BOOL ok) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (!ok) { [self fallbackForName:name key:key cacheResult:NO]; return; }  // transient: retry later
-            std::vector<size_t> exact = deezermatch::exactCandidates(name.UTF8String, cands);
+            std::vector<size_t> exact = deezermatch::narrowByExactName(
+                name.UTF8String, cands, deezermatch::exactCandidates(name.UTF8String, cands));
             std::vector<deezermatch::Candidate> usable;
             for (size_t i : exact)
                 if (deezermatch::hasRealPicture(cands[i].pictureUrl)) usable.push_back(cands[i]);
