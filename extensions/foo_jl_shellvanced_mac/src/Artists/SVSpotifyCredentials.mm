@@ -91,11 +91,12 @@ static void EnsureLoaded(void) {
         Delete(kAccountId);
         Delete(kAccountSecret);
         gId = nil; gSecret = nil;
+        gLoaded = YES;
     } else {
         ok = Store(kAccountId, i ?: @"") && Store(kAccountSecret, s ?: @"");
-        gId = i; gSecret = s;
+        if (ok) { gId = i; gSecret = s; gLoaded = YES; }
+        else gLoaded = NO;  // partial write: re-read the real Keychain state next time
     }
-    gLoaded = YES;
     [Lock() unlock];
     return ok;
 }

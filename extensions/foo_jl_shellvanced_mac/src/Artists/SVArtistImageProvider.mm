@@ -22,6 +22,8 @@
 
 #import <CommonCrypto/CommonDigest.h>
 
+NSNotificationName const SVArtistImagesDidChangeNotification = @"SVArtistImagesDidChangeNotification";
+
 static const NSTimeInterval kNegativeTTL = 30.0 * 24 * 60 * 60;
 
 @interface SVPendingRequest : NSObject
@@ -163,6 +165,9 @@ static const NSUInteger kMaxTransientEntries = 2000;
     NSURL *_cacheDir;
     NSMutableDictionary<NSString *, NSNumber *> *_negative;  // key -> epoch; _diskQueue only
     BOOL _negativeSavePending;                               // _diskQueue only
+    NSMutableSet<NSString *> *_spotifyInFlight;     // main thread only: keys with a background Spotify lookup
+    NSString *_headerKey;                           // main thread: artist page header's key (Spotify priority)
+    NSString *_latestKey;                           // main thread: most recently requested key
     NSMutableDictionary<NSString *, SVTransientResult *> *_transient;  // main thread only; no images
     NSCache<NSString *, NSImage *> *_transientCovers;   // 60 s covers, cost-limited
     NSCache<NSString *, NSImage *> *_transientRounds;   // rounded images for transient hits, cost-limited
@@ -182,6 +187,7 @@ static const NSUInteger kMaxTransientEntries = 2000;
         _roundCache = [[NSCache alloc] init];
         _roundCache.totalCostLimit = 32 * 1024 * 1024;
         _transient = [NSMutableDictionary dictionary];
+        _spotifyInFlight = [NSMutableSet set];
         _transientCovers = [[NSCache alloc] init];
         _transientCovers.totalCostLimit = 16 * 1024 * 1024;
         _transientRounds = [[NSCache alloc] init];
@@ -318,11 +324,18 @@ static NSString *SHA1Hex(NSString *s) {
 #pragma mark - Public
 
 - (void)imageForArtist:(NSString *)name size:(CGFloat)points completion:(void (^)(NSImage *))completion {
+    [self imageForArtist:name size:points priority:NO completion:completion];
+}
+
+- (void)imageForArtist:(NSString *)name size:(CGFloat)points priority:(BOOL)priority
+            completion:(void (^)(NSImage *))completion {
     NSAssert([NSThread isMainThread], @"main thread only");
     if (points < 1) points = 1;
     std::string stdName = name.UTF8String ? name.UTF8String : "";
     NSString *key = [NSString stringWithUTF8String:artistnames::artistKey(stdName).c_str()] ?: @"";
     if (key.length == 0) { completion(RoundImage(nil, name, points)); return; }
+    if (priority) _headerKey = key;
+    _latestKey = key;
 
     NSString *roundKey = [NSString stringWithFormat:@"%@|%g", key, points];
     NSImage *cached = [_roundCache objectForKey:roundKey];
@@ -428,18 +441,19 @@ static std::vector<std::string> NormalizedTitles(NSArray<NSString *> *titles) {
 }
 
 // 9x8 grayscale-ready render for the dHash.
-static uint64_t DHashOfImage(NSImage *img) {
+static BOOL DHashOfImage(NSImage *img, uint64_t *out) {
     CGImageRef cg = [img CGImageForProposedRect:NULL context:nil hints:nil];
-    if (!cg) return 0;
+    if (!cg) return NO;
     uint8_t buf[9 * 8 * 4] = {0};
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
     CGContextRef ctx = CGBitmapContextCreate(buf, 9, 8, 8, 9 * 4, cs, kCGImageAlphaPremultipliedLast);
     CGColorSpaceRelease(cs);
-    if (!ctx) return 0;
+    if (!ctx) return NO;
     CGContextSetInterpolationQuality(ctx, kCGInterpolationHigh);
     CGContextDrawImage(ctx, CGRectMake(0, 0, 9, 8), cg);
     CGContextRelease(ctx);
-    return imagehash::dHash9x8(buf);
+    *out = imagehash::dHash9x8(buf);
+    return YES;
 }
 
 // Step 1: disk photo, then a kept cover-like Deezer picture (< 30 days old).
@@ -573,7 +587,10 @@ static uint64_t DHashOfImage(NSImage *img) {
             dispatch_async(dispatch_get_main_queue(), ^{ [self noDeezerPhotoForName:name key:key]; });
             return;
         }
-        [self checkCoverLikeHash:DHashOfImage(img) covers:covers index:0 done:^(BOOL coverLike) {
+        uint64_t photoHash = 0;
+        // Cannot hash the photo: skip the comparison.
+        NSArray<NSString *> *toCompare = DHashOfImage(img, &photoHash) ? covers : @[];
+        [self checkCoverLikeHash:photoHash covers:toCompare index:0 done:^(BOOL coverLike) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (!coverLike) {
                     NSURL *dest = [self photoURLForKey:key];
@@ -599,103 +616,145 @@ static uint64_t DHashOfImage(NSImage *img) {
     if (!u) { [self checkCoverLikeHash:photoHash covers:covers index:i + 1 done:done]; return; }
     [[SVDeezerClient shared] downloadImageAtURL:u completion:^(NSData *d) {
         NSImage *im = d.length ? [[NSImage alloc] initWithData:d] : nil;
-        if (im && imagehash::isCoverLike(photoHash, {DHashOfImage(im)})) { done(YES); return; }
+        uint64_t h = 0;
+        if (im && DHashOfImage(im, &h) && imagehash::isCoverLike(photoHash, {h})) { done(YES); return; }
         [self checkCoverLikeHash:photoHash covers:covers index:i + 1 done:done];
     }];
 }
 
 #pragma mark - Spotify
 
-// Shows the (cover-like) Deezer pick, or the album-art fallback when there is none. `persist` NO
-// (Spotify blocked / transient failure) keeps it in memory only so a later session retries Spotify.
-- (void)useDeezerPick:(SVDeezerPick *)pick persist:(BOOL)persist name:(NSString *)name key:(NSString *)key {
-    if (!pick) { [self fallbackForName:name key:key cacheResult:YES]; return; }
-    if (persist) {
-        NSURL *dest = [self coverLikeURLForKey:key];
-        NSData *data = pick.data;
-        dispatch_async(_diskQueue, ^{ [data writeToURL:dest atomically:YES]; });
-    }
-    [self finishKey:key name:name source:pick.image cache:YES];
+typedef NS_ENUM(NSInteger, SVPickPersist) { SVPickPersistNone, SVPickPersistNormal, SVPickPersistShort };
+
+// Keeps the cover-like Deezer picture on disk (.cl). Normal = 30-day TTL; Short = 1 day (Spotify
+// blocked/failing), done by back-dating the file. Skipped when the credentials changed meanwhile.
+- (void)persistPick:(SVDeezerPick *)pick mode:(SVPickPersist)mode generation:(NSUInteger)gen key:(NSString *)key {
+    if (!pick || mode == SVPickPersistNone || gen != [SVSpotifyClient shared].generation) return;
+    NSURL *dest = [self coverLikeURLForKey:key];
+    NSData *data = pick.data;
+    dispatch_async(_diskQueue, ^{
+        [data writeToURL:dest atomically:YES];
+        if (mode == SVPickPersistShort)
+            [[NSFileManager defaultManager] setAttributes:@{NSFileModificationDate: [NSDate dateWithTimeIntervalSinceNow:-(kNegativeTTL - 24 * 3600)]}
+                                             ofItemAtPath:dest.path error:nil];
+    });
 }
 
-// Source order: reached for a Deezer miss (pick nil) or a cover-like Deezer picture (pick).
+// Shows the cover-like Deezer pick, or the album-art/initials fallback when there is none.
+- (void)showFallbackPick:(SVDeezerPick *)pick name:(NSString *)name key:(NSString *)key {
+    if (pick) [self finishKey:key name:name source:pick.image cache:YES];
+    else [self fallbackForName:name key:key cacheResult:YES];
+}
+
+- (BOOL)isUrgentKey:(NSString *)key {
+    return [key isEqualToString:_headerKey] || [key isEqualToString:_latestKey];
+}
+
+// Source order: reached for a Deezer miss (pick nil) or a cover-like Deezer picture (pick). The UI is
+// never held up: the fallback is shown immediately and replaced when Spotify returns a verified photo.
 - (void)spotifyStageForName:(NSString *)name key:(NSString *)key pick:(SVDeezerPick *)pick {
     SVSpotifyClient *sp = [SVSpotifyClient shared];
+    const NSUInteger gen = sp.generation;
     if (!spmatch::needsSpotify(pick != nil, pick != nil, sp.isAvailable)) {
-        // Not configured / rejected / blocked. Blocked is not persisted: a later session retries.
-        [self useDeezerPick:pick persist:!sp.isBlocked name:name key:key];
+        [self showFallbackPick:pick name:name key:key];
+        [self persistPick:pick mode:sp.isTemporarilyUnavailable ? SVPickPersistShort : SVPickPersistNormal
+               generation:gen key:key];
         return;
     }
+    [self showFallbackPick:pick name:name key:key];
+    if ([_spotifyInFlight containsObject:key]) return;  // a lookup for this artist is already running
+    [_spotifyInFlight addObject:key];
     NSString *spKey = [kSpotifyNegPrefix stringByAppendingString:key];
     [self isNegativeKey:spKey completion:^(BOOL negative) {
-        if (negative) { [self useDeezerPick:pick persist:YES name:name key:key]; return; }
-        [self spotifyLookupName:name completion:^(NSString *imageUrl, SVSpotifyStatus status) {
+        if (negative) {
+            [self->_spotifyInFlight removeObject:key];
+            [self persistPick:pick mode:SVPickPersistNormal generation:gen key:key];
+            return;
+        }
+        [self spotifyLookupName:name key:key completion:^(NSString *imageUrl, SVSpotifyStatus status) {
+            void (^finish)(SVPickPersist) = ^(SVPickPersist mode) {
+                [self->_spotifyInFlight removeObject:key];
+                [self persistPick:pick mode:mode generation:gen key:key];
+            };
             if (status == SVSpotifyStatusOK && imageUrl) {
                 NSURL *url = [NSURL URLWithString:imageUrl];
-                if (!url) { [self useDeezerPick:pick persist:NO name:name key:key]; return; }
+                if (!url) { finish(SVPickPersistShort); return; }
                 [[SVSpotifyClient shared] downloadImageAtURL:url completion:^(NSData *data) {
                     NSImage *img = DecodeImage(data);
                     dispatch_async(dispatch_get_main_queue(), ^{
-                        if (!img) { [self useDeezerPick:pick persist:NO name:name key:key]; return; }
+                        if (!img) { finish(SVPickPersistShort); return; }
+                        [self->_spotifyInFlight removeObject:key];
                         NSURL *dest = [self photoURLForKey:key];
                         dispatch_async(self->_diskQueue, ^{ [data writeToURL:dest atomically:YES]; });
-                        [self finishKey:key name:name source:img cache:YES];
+                        [self upgradeKey:key toImage:img];
                     });
                 }];
             } else if (status == SVSpotifyStatusOK) {
-                [self recordNegativeKey:spKey];  // verified "no photo on Spotify"
-                [self useDeezerPick:pick persist:YES name:name key:key];
+                if (gen == [SVSpotifyClient shared].generation) [self recordNegativeKey:spKey];  // verified "no photo"
+                finish(SVPickPersistNormal);
             } else {
-                // Failed / blocked / rejected credentials: no negative entry, retried in a later session.
-                [self useDeezerPick:pick persist:NO name:name key:key];
+                // Failed / blocked / rejected: no negative entry. Blocked or failing keeps the pick for a day only.
+                finish(status == SVSpotifyStatusAuthFailed ? SVPickPersistNormal : SVPickPersistShort);
             }
         }];
     }];
 }
 
+// A verified Spotify photo arrived after the fallback was shown: swap it in and tell observers.
+- (void)upgradeKey:(NSString *)key toImage:(NSImage *)img {
+    [_sourceCache setObject:img forKey:key cost:CostOf(img)];
+    [_transient removeObjectForKey:key];
+    [_transientCovers removeObjectForKey:key];
+    [_roundCache removeAllObjects];       // round renders are rebuilt from the source cache
+    [_transientRounds removeAllObjects];
+    [[NSNotificationCenter defaultCenter] postNotificationName:SVArtistImagesDidChangeNotification object:nil];
+}
+
 // Main-thread completion: verified Spotify image URL, or nil with OK (no confident match) / an error status.
-- (void)spotifyLookupName:(NSString *)name completion:(void (^)(NSString *_Nullable url, SVSpotifyStatus status))completion {
-    [[SVSpotifyClient shared] searchArtist:name completion:^(std::vector<spmatch::Candidate> cands, SVSpotifyStatus st) {
+- (void)spotifyLookupName:(NSString *)name key:(NSString *)key
+               completion:(void (^)(NSString *_Nullable url, SVSpotifyStatus status))completion {
+    [[SVSpotifyClient shared] searchArtist:name urgent:[self isUrgentKey:key]
+                                completion:^(std::vector<spmatch::Candidate> cands, SVSpotifyStatus st) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (st != SVSpotifyStatusOK) { completion(nil, st); return; }
+            // Ambiguity is judged on ALL exact-name candidates (image-less ones included); too many = give up.
             std::vector<spmatch::Candidate> use;
-            for (size_t i : spmatch::exactCandidates(name.UTF8String ?: "", cands)) {
-                if (use.size() >= 4) break;  // bound the (slow, paced) album lookups
-                use.push_back(cands[i]);
-            }
-            if (use.empty()) { completion(nil, SVSpotifyStatusOK); return; }
-            [self spotifyConfirm:use index:0 remote:{} totals:{} userTitles:NormalizedUserTitles(name)
-                            name:name completion:completion];
+            for (size_t i : spmatch::exactCandidates(name.UTF8String ?: "", cands)) use.push_back(cands[i]);
+            if (use.empty() || use.size() > 4) { completion(nil, SVSpotifyStatusOK); return; }
+            std::vector<std::string> userAll = NormalizedUserTitles(name), userAlbums;
+            for (NSString *t in [[SVArtistLibrary shared] albumTitlesForArtist:name])
+                userAlbums.push_back(deezermatch::normalizeTitle(t.UTF8String ?: ""));
+            [self spotifyConfirm:use index:0 remote:{} key:key userAlbums:userAlbums userAll:userAll completion:completion];
         });
     }];
 }
 
 - (void)spotifyConfirm:(std::vector<spmatch::Candidate>)cands
                  index:(size_t)i
-                remote:(std::vector<std::vector<std::string>>)remote
-                totals:(std::vector<long>)totals
-            userTitles:(std::vector<std::string>)user
-                  name:(NSString *)name
+                remote:(std::vector<spmatch::RemoteTitles>)remote
+                   key:(NSString *)key
+            userAlbums:(std::vector<std::string>)userAlbums
+               userAll:(std::vector<std::string>)userAll
             completion:(void (^)(NSString *_Nullable, SVSpotifyStatus))completion {
     if (i >= cands.size()) {
-        if (cands.size() == 1) {
-            completion(spmatch::acceptLone(name.UTF8String ?: "", user, remote[0], totals[0])
-                           ? [NSString stringWithUTF8String:cands[0].imageUrl.c_str()] : nil, SVSpotifyStatusOK);
-        } else {
-            int chosen = deezermatch::chooseCandidate(user, remote);
-            completion(chosen >= 0 ? [NSString stringWithUTF8String:cands[(size_t)chosen].imageUrl.c_str()] : nil,
-                       SVSpotifyStatusOK);
-        }
+        const int chosen = spmatch::chooseConfirmed(userAlbums, userAll, remote);
+        NSString *url = (chosen >= 0 && !cands[(size_t)chosen].imageUrl.empty())
+            ? [NSString stringWithUTF8String:cands[(size_t)chosen].imageUrl.c_str()] : nil;
+        completion(url, SVSpotifyStatusOK);
         return;
     }
     NSString *cid = [NSString stringWithUTF8String:cands[i].id.c_str()];
-    [[SVSpotifyClient shared] albumsForArtistId:cid completion:^(NSArray<NSString *> *titles, long total, SVSpotifyStatus st) {
+    [[SVSpotifyClient shared] albumsForArtistId:cid urgent:[self isUrgentKey:key]
+        completion:^(NSArray<NSString *> *all, NSArray<NSString *> *primary, long total, SVSpotifyStatus st) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (st != SVSpotifyStatusOK || !titles) { completion(nil, st == SVSpotifyStatusOK ? SVSpotifyStatusFailed : st); return; }
-            auto r = remote; r.push_back(NormalizedTitles(titles));
-            auto t = totals; t.push_back(total);
-            [self spotifyConfirm:cands index:i + 1 remote:std::move(r) totals:std::move(t)
-                      userTitles:user name:name completion:completion];
+            if (st != SVSpotifyStatusOK || !all) { completion(nil, st == SVSpotifyStatusOK ? SVSpotifyStatusFailed : st); return; }
+            auto r = remote;
+            spmatch::RemoteTitles rt;
+            rt.all = NormalizedTitles(all);
+            rt.primary = NormalizedTitles(primary);
+            r.push_back(std::move(rt));
+            [self spotifyConfirm:cands index:i + 1 remote:std::move(r) key:key
+                      userAlbums:userAlbums userAll:userAll completion:completion];
         });
     }];
 }
@@ -714,8 +773,9 @@ static uint64_t DHashOfImage(NSImage *img) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [self->_sourceCache removeAllObjects];
             [self->_roundCache removeAllObjects];
+            [self->_spotifyInFlight removeAllObjects];
             [self clearTransient];
-            [[NSNotificationCenter defaultCenter] postNotificationName:SVArtistLibraryDidChangeNotification object:nil];
+            [[NSNotificationCenter defaultCenter] postNotificationName:SVArtistImagesDidChangeNotification object:nil];
         });
     });
 }

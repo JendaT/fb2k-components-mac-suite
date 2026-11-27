@@ -32,6 +32,9 @@ extern NSNotificationName const SVArtistLibraryDidChangeNotification;
 /// Album + track titles (raw), used to disambiguate Deezer candidates.
 - (NSArray<NSString *> *)userTitlesForArtist:(NSString *)name;
 
+/// Album titles only (owned + appears-on), raw.
+- (NSArray<NSString *> *)albumTitlesForArtist:(NSString *)name;
+
 /// First track of the artist's newest album (for the cover fallback); invalid if unknown.
 - (metadb_handle_ptr)representativeHandleForArtist:(NSString *)name;
 

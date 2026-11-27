@@ -35,23 +35,59 @@ inline std::string pickImageUrl(const std::vector<Image>& images, int maxWidth =
     return best ? best->url : std::string();
 }
 
-// Indices of candidates with a non-empty image whose name equals `artist` on artistKey.
+// Indices of ALL candidates whose name equals `artist` on artistKey (image-less ones included, so
+// ambiguity is judged before any candidate is dropped).
 inline std::vector<size_t> exactCandidates(const std::string& artist, const std::vector<Candidate>& cands) {
     std::vector<size_t> out;
     const std::string key = artistnames::artistKey(artist);
     if (key.empty()) return out;
     for (size_t i = 0; i < cands.size(); i++)
-        if (!cands[i].imageUrl.empty() && artistnames::artistKey(cands[i].name) == key) out.push_back(i);
+        if (artistnames::artistKey(cands[i].name) == key) out.push_back(i);
     return out;
 }
 
-// Lone exact candidate: title overlap with the user's library, else the small-discography rule
-// (`total` = the albums endpoint's total).
-inline bool acceptLone(const std::string& artist, const std::vector<std::string>& user,
-                       const std::vector<std::string>& remoteTitles, long total) {
-    if (deezermatch::chooseCandidate(user, {remoteTitles}) == 0) return true;
-    return deezermatch::acceptLoneWithoutOverlap(artist, total);
+// A candidate's normalized album titles: `primary` = album/single groups, `all` = every group
+// (adds appears_on/compilation).
+struct RemoteTitles {
+    std::vector<std::string> primary, all;
+};
+
+// Spotify always needs title overlap (no small-discography shortcut). >= 2 distinct matching titles
+// (any local title vs any Spotify group), or exactly one strong (exact, >= 6 chars) match that is
+// one of the user's ALBUM titles against a Spotify album/single.
+inline bool confirmed(const std::vector<std::string>& userAlbums, const std::vector<std::string>& userAll,
+                      const RemoteTitles& remote) {
+    if (deezermatch::scoreOverlap(userAll, remote.all).distinct >= 2) return true;
+    const deezermatch::OverlapScore sc = deezermatch::scoreOverlap(userAlbums, remote.primary);
+    return sc.distinct == 1 && sc.strongSingle;
 }
+
+// Index of the single confirmed candidate; none or several confirmed (ambiguous) -> -1.
+inline int chooseConfirmed(const std::vector<std::string>& userAlbums, const std::vector<std::string>& userAll,
+                           const std::vector<RemoteTitles>& remote) {
+    int chosen = -1;
+    for (size_t i = 0; i < remote.size(); i++) {
+        if (!confirmed(userAlbums, userAll, remote[i])) continue;
+        if (chosen >= 0) return -1;
+        chosen = (int)i;
+    }
+    return chosen;
+}
+
+// A persisted rate-limit block is never trusted beyond a week from now (clock changes, corrupt file).
+inline double clampBlockUntil(double loaded, double now) {
+    if (!(loaded > 0)) return 0;
+    const double cap = now + 7.0 * 24 * 3600;
+    return loaded > cap ? cap : loaded;
+}
+
+// Stops Spotify for the session after this many consecutive failed requests.
+struct FailureTracker {
+    int consecutive = 0;
+    static constexpr int kLimit = 5;
+    void record(bool failed) { consecutive = failed ? consecutive + 1 : 0; }
+    bool tripped() const { return consecutive >= kLimit; }
+};
 
 // Retry-After header (delta seconds). Missing/garbage -> `fallback`; clamped to [1, 7 days].
 inline long parseRetryAfter(const std::string& v, long fallback = 3600) {

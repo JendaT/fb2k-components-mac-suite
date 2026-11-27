@@ -14,6 +14,10 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+/// Posted (main thread) when cached artist images changed (a Spotify photo arrived, or the Spotify
+/// credentials changed). Observers should re-request the images they show; nothing else is invalidated.
+extern NSNotificationName const SVArtistImagesDidChangeNotification;
+
 @interface SVArtistImageProvider : NSObject
 
 + (instancetype)shared;
@@ -23,6 +27,12 @@ NS_ASSUME_NONNULL_BEGIN
 /// at `points` (resolution independent, Retina-aware); never nil.
 - (void)imageForArtist:(NSString *)name
                   size:(CGFloat)points
+            completion:(void (^)(NSImage *image))completion;
+
+/// Same, for the artist page header: its lookups jump to the front of the Spotify queue.
+- (void)imageForArtist:(NSString *)name
+                  size:(CGFloat)points
+              priority:(BOOL)priority
             completion:(void (^)(NSImage *image))completion;
 
 /// Main thread. Call after the Spotify credentials changed: clears Spotify negatives and cover-like

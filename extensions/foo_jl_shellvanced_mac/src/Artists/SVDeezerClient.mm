@@ -5,6 +5,7 @@
 
 #import "SVDeezerClient.h"
 #import "SVRateLimiter.h"
+#import "SVRedirectGuard.h"
 
 static NSString *const kSVDeezerApiHost = @"api.deezer.com";
 static NSString *const kSVDeezerUserAgent = @"foobar2000-component";
@@ -38,6 +39,11 @@ static const NSTimeInterval kSVDeezerTokenWait = 10.0;
 
 // Waits for a rate-limit token on the serial queue, then starts the request.
 - (void)request:(NSURL *)url completion:(void (^)(NSData *_Nullable data))completion {
+    [self request:url redirectGuard:nil completion:completion];
+}
+
+- (void)request:(NSURL *)url redirectGuard:(SVRedirectGuard *_Nullable)guard
+     completion:(void (^)(NSData *_Nullable data))completion {
     dispatch_async(_queue, ^{
         if (![self->_limiter acquireWithTimeout:kSVDeezerTokenWait]) { completion(nil); return; }
         NSURLSessionDataTask *task = [self->_session dataTaskWithURL:url
@@ -46,6 +52,7 @@ static const NSTimeInterval kSVDeezerTokenWait = 10.0;
                     ? ((NSHTTPURLResponse *)response).statusCode : 0;
                 completion((error || status != 200) ? nil : data);
             }];
+        if (guard) task.delegate = guard;  // re-checks the host on every redirect
         [task resume];
     });
 }
@@ -144,11 +151,15 @@ static std::string Str(id v) {
 }
 
 - (void)downloadImageAtURL:(NSURL *)url completion:(void (^)(NSData *_Nullable))completion {
-    NSString *host = url.host.lowercaseString;
-    BOOL allowed = [url.scheme.lowercaseString isEqualToString:@"https"] &&
-                   ([host hasSuffix:@".dzcdn.net"] || [host isEqualToString:kSVDeezerApiHost]);
-    if (!allowed) { completion(nil); return; }
-    [self request:url completion:completion];
+    static NSArray<NSString *> *hosts;
+    static SVRedirectGuard *guard;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        hosts = @[@"dzcdn.net", kSVDeezerApiHost];
+        guard = [SVRedirectGuard guardWithHosts:hosts];
+    });
+    if (![SVRedirectGuard url:url isAllowedForHosts:hosts]) { completion(nil); return; }
+    [self request:url redirectGuard:guard completion:completion];
 }
 
 @end

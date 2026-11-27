@@ -69,8 +69,11 @@
     NSButton *save = [NSButton buttonWithTitle:@"Save" target:self action:@selector(save:)];
     save.frame = NSMakeRect(fieldX + 78, y, 70, 24);
     [self.view addSubview:save];
+    NSButton *remove = [NSButton buttonWithTitle:@"Remove" target:self action:@selector(remove:)];
+    remove.frame = NSMakeRect(fieldX + 156, y, 76, 24);
+    [self.view addSubview:remove];
     _status = JLCreateHelperText(@"");
-    _status.frame = NSMakeRect(fieldX + 158, y + 5, 200, 14);
+    _status.frame = NSMakeRect(fieldX + 240, y + 5, 160, 14);
     [self.view addSubview:_status];
     y += 38;
 
@@ -106,17 +109,37 @@
     }];
 }
 
+// Applies a credentials change. The rate-limit block survives unless the Client ID itself changed.
+- (void)applyChangeIdChanged:(BOOL)idChanged {
+    [[SVSpotifyClient shared] credentialsChangedClearingBlock:idChanged];
+    [[SVArtistImageProvider shared] spotifyCredentialsDidChange];
+}
+
+- (void)refreshSecretPlaceholder {
+    _secretField.stringValue = @"";
+    _secretField.placeholderString = [SVSpotifyCredentials clientSecret].length ? @"(stored in Keychain)" : @"";
+}
+
 - (void)save:(id)sender {
     NSString *cid, *secret;
     [self currentId:&cid secret:&secret];
+    NSString *oldId = [SVSpotifyCredentials clientId] ?: @"", *oldSecret = [SVSpotifyCredentials clientSecret] ?: @"";
+    const BOOL idChanged = ![cid isEqualToString:oldId];
+    const BOOL changed = idChanged || ![secret isEqualToString:oldSecret];
+    if (!changed) { [self setStatus:@"Nothing changed"]; [self refreshSecretPlaceholder]; return; }
     BOOL ok = [SVSpotifyCredentials saveClientId:cid secret:secret];
-    _secretField.stringValue = @"";
-    _secretField.placeholderString = [SVSpotifyCredentials clientSecret].length ? @"(stored in Keychain)" : @"";
+    [self refreshSecretPlaceholder];
     [self setStatus:ok ? @"Saved" : @"Keychain write failed"];
-    if (ok) {
-        [[SVSpotifyClient shared] credentialsChanged];
-        [[SVArtistImageProvider shared] spotifyCredentialsDidChange];
-    }
+    if (ok) [self applyChangeIdChanged:idChanged];
+}
+
+- (void)remove:(id)sender {
+    const BOOL had = [SVSpotifyCredentials isConfigured] || [SVSpotifyCredentials clientId].length;
+    [SVSpotifyCredentials saveClientId:nil secret:nil];
+    _idField.stringValue = @"";
+    [self refreshSecretPlaceholder];
+    [self setStatus:@"Removed"];
+    if (had) [self applyChangeIdChanged:YES];
 }
 
 @end

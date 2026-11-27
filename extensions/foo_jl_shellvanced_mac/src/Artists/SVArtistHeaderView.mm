@@ -86,7 +86,10 @@ static const CGFloat kPad = 24.0;
     [super viewDidMoveToWindow];
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
     [nc removeObserver:self name:SVArtistLibraryDidChangeNotification object:nil];  // never double-register
+    [nc removeObserver:self name:SVArtistImagesDidChangeNotification object:nil];
     if (self.window) {
+        [nc addObserver:self selector:@selector(imagesChanged:)
+                   name:SVArtistImagesDidChangeNotification object:nil];
         [nc addObserver:self selector:@selector(libraryChanged:)
                    name:SVArtistLibraryDidChangeNotification object:nil];
         [self updateCounts];
@@ -101,6 +104,16 @@ static const CGFloat kPad = 24.0;
     [self updateCounts];
 }
 
+// A Spotify photo arrived / credentials changed: re-request just the photo.
+- (void)imagesChanged:(NSNotification *)note {
+    if (_artistName.length == 0) return;
+    const NSUInteger token = ++_loadToken;
+    [[SVArtistImageProvider shared] imageForArtist:_artistName size:kPhotoSize priority:YES
+                                        completion:^(NSImage *image) {
+        if (token == self->_loadToken) self->_photo.image = image;
+    }];
+}
+
 - (void)setArtistName:(NSString *)artistName {
     _artistName = [artistName copy];
     _nameLabel.stringValue = artistName ?: @"";
@@ -109,7 +122,7 @@ static const CGFloat kPad = 24.0;
     const NSUInteger token = ++_loadToken;
     if (artistName.length == 0) { _photo.image = nil; return; }
     _photo.image = nil;
-    [[SVArtistImageProvider shared] imageForArtist:artistName size:kPhotoSize
+    [[SVArtistImageProvider shared] imageForArtist:artistName size:kPhotoSize priority:YES
                                         completion:^(NSImage *image) {
         if (token == self->_loadToken) self->_photo.image = image;  // ignore stale loads
     }];

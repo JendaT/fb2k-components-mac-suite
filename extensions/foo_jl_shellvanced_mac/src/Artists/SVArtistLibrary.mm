@@ -178,6 +178,15 @@ private:
     return e ? e->trackIndices.size() : 0;
 }
 
+- (NSArray<NSString *> *)albumTitlesForArtist:(NSString *)name {
+    NSMutableArray<NSString *> *titles = [NSMutableArray array];
+    const auto *e = [self entryForName:name];
+    if (!e) return titles;
+    for (const auto &a : e->ownedAlbums) [titles addObject:NS(a)];
+    for (const auto &a : e->appearsOnAlbums) [titles addObject:NS(a)];
+    return titles;
+}
+
 - (NSArray<NSString *> *)userTitlesForArtist:(NSString *)name {
     NSMutableArray<NSString *> *titles = [NSMutableArray array];
     const auto *e = [self entryForName:name];

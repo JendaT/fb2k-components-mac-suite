@@ -549,6 +549,8 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
 
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(artistLibraryDidChange:)
                                                  name:SVArtistLibraryDidChangeNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(artistImagesDidChange:)
+                                                 name:SVArtistImagesDidChangeNotification object:nil];
 
     [self rebuildItemsReloading:YES];
 }
@@ -569,6 +571,15 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     NSView *v = [_table viewAtColumn:0 row:kHeaderRowIndex makeIfNecessary:NO];
     if ([v isKindOfClass:[SVLibraryHeaderView class]])
         ((SVLibraryHeaderView *)v).separatorVisible = _scroll.contentView.bounds.origin.y > 0.5;
+}
+
+// Cached artist photos changed: reload only the visible artist rows (no rebuild of the sidebar).
+- (void)artistImagesDidChange:(NSNotification *)note {
+    NSRange vis = [_table rowsInRect:_table.visibleRect];
+    NSMutableIndexSet *rows = [NSMutableIndexSet indexSet];
+    for (NSUInteger i = vis.location; i < NSMaxRange(vis) && i < _items.count; i++)
+        if (_items[i].kind == SVRowKindArtist) [rows addIndex:i];
+    if (rows.count) [_table reloadDataForRowIndexes:rows columnIndexes:[NSIndexSet indexSetWithIndex:0]];
 }
 
 - (void)artistLibraryDidChange:(NSNotification *)note {
