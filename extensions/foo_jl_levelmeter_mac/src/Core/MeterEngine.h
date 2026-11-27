@@ -77,6 +77,12 @@ public:
     // Apply display ballistics over `dt` seconds and publish the snapshot.
     void advance(double dt);
 
+    // No audio in the last frame, the needle, loudness and stereo readings
+    // are at rest, and the bars have fallen to `restDb`, below which nothing
+    // shows (DisplaySettings::restDb()). Until audio arrives again, idle()
+    // and advance() change nothing that shows.
+    bool settled(double restDb) const;
+
     const Snapshot &snapshot() const { return _snap; }
 
     // Clear held maxima and clip lights (click on the meter).
@@ -91,6 +97,8 @@ private:
     void notePsrPeak(float peak, size_t frames);
     // `lr`, or a copy with non-finite samples set to 0 when it has any.
     const float *finiteSamples(const float *lr, size_t frames);
+    // The RMS, needle, stereo and loudness readings are at rest.
+    bool detectorsSettled() const;
 
     EngineSettings _settings;
     double _sampleRate = 0;

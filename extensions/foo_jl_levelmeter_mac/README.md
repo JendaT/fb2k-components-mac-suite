@@ -116,7 +116,7 @@ foo_jl_levelmeter_mac/
 - Samples come from `visualisation_stream_v2::get_chunk_absolute`; each frame reads the audio played since the previous frame, with a 1 s backlog so loudness misses no audio after a late frame.
 - Everything in `src/Core` except `LevelMeterConfig.h` has no SDK or Cocoa dependency and is unit-tested standalone; the tests gate the build.
 - `MeterRenderer` needs only Cocoa, so `Scripts/preview.sh` can draw real meter panels (fed by the real engine) to PNG for design checks.
-- A 60 fps `NSTimer` drives the view; the meter keeps measuring while its window is covered and stops redrawing once everything has settled.
+- A 60 fps `NSTimer` drives the view; the meter keeps measuring while its window is covered and stops measuring and redrawing once every reading has fallen to rest.
 - An `initquit` service releases all live streams before service teardown; holding a stream through shutdown aborts the app.
 - Theme colours are drawn in Display P3 through `shared/ThemeColor.h`.
 - Settings persist through `fb2k::configStore` under the `foo_jl_levelmeter.` prefix.

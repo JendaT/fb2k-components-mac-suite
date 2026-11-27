@@ -10,7 +10,9 @@
 #pragma once
 
 #include "Detectors.h"
+#include <algorithm>
 #include <cstdint>
+#include <limits>
 
 namespace meter {
 
@@ -106,6 +108,14 @@ struct DisplaySettings {
     // their own: green to 0, yellow to +4, red above.
     double warnStart() const { return scale == ScaleType::Dbfs ? warnDb : kReference(); }
     double overStart() const { return scale == ScaleType::Dbfs ? overDb : kReference() + 4.0; }
+    // dBFS at or below which the peak, hold and RMS readings show nothing:
+    // the bottom of the bars, or on the analog faces the peak LED threshold.
+    double restDb() const {
+        if (style == MeterStyle::Analog) {
+            return peakLed ? peakLedDbfs : std::numeric_limits<double>::infinity();
+        }
+        return std::min((double)floorDb, -6.0);   // as BarScale clamps it
+    }
 };
 
 } // namespace meter
