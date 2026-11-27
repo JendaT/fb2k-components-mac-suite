@@ -24,7 +24,7 @@ enum : unsigned short {
     kKeyRight = 124,
     kKeyDown  = 125,
     kKeyUp    = 126,
-    // Physical key positions (ANSI), so non-Latin layouts work too.
+    // Physical key positions (ANSI): fallback for non-Latin layouts only.
     kKeyS     = 1,
     kKeyR     = 15,
     kKeyU     = 32,
@@ -56,6 +56,21 @@ bool controlHasFocus(NSWindow *window) {
     return [fr isKindOfClass:[NSButton class]] ||        // includes NSPopUpButton, checkboxes
            [fr isKindOfClass:[NSPopUpButton class]] ||
            [fr isKindOfClass:[NSSegmentedControl class]];
+}
+
+// Letter shortcut match: the layout's character when it is a single ASCII
+// character (so Dvorak/AZERTY users get the letter printed on the key), else
+// the ANSI key position (non-Latin layouts such as Cyrillic or Greek).
+bool matchesLetter(NSEvent *event, unichar letter, unsigned short fallbackKeyCode) {
+    NSString *chars = event.charactersIgnoringModifiers;
+    if (chars.length == 1) {
+        unichar c = [chars characterAtIndex:0];
+        if (c < 128) {
+            if (c >= 'A' && c <= 'Z') c = (unichar)(c - 'A' + 'a');
+            return c == letter;
+        }
+    }
+    return event.keyCode == fallbackKeyCode;
 }
 
 template <typename F>
@@ -109,16 +124,21 @@ BOOL handleKeyDown(NSEvent *event) {
             default:
                 break;
         }
-        if (event.isARepeat) return NO;
-        if (keyCode == kKeyS) { [controller toggleShuffle]; return YES; }
-        if (keyCode == kKeyR) { [controller cycleRepeat]; return YES; }
+        // Repeats of our own shortcuts are swallowed (not passed on to e.g. Save).
+        if (matchesLetter(event, 's', kKeyS)) {
+            if (!event.isARepeat) [controller toggleShuffle];
+            return YES;
+        }
+        if (matchesLetter(event, 'r', kKeyR)) {
+            if (!event.isARepeat) [controller cycleRepeat];
+            return YES;
+        }
         return NO;
     }
 
     if (mods == (NSEventModifierFlagCommand | NSEventModifierFlagOption)) {
-        if (event.isARepeat) return NO;
-        if (keyCode == kKeyU) {
-            [controller toggleUpNextPopover];
+        if (matchesLetter(event, 'u', kKeyU)) {
+            if (!event.isARepeat) [controller toggleUpNextPopover];
             return YES;
         }
     }

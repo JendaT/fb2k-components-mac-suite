@@ -282,6 +282,10 @@ static void logRatingMenuCandidates(menu_tree_item::ptr item, NSString *prefix) 
     contextmenu_manager::ptr _contextMenuManagerV1;
     // Store handles for custom menu actions (Reload Info)
     metadb_handle_list _contextMenuHandles;
+    // Playlist item the context menu was opened on (-1 if none) and its
+    // handle, for "Play" in shell mode.
+    NSInteger _contextMenuClickedIndex;
+    metadb_handle_ptr _contextMenuClickedHandle;
     // Active reload operations for progress tracking
     std::vector<ReloadOperation> _reloadOperations;
     // Pre-compiled title format scripts for columns (rebuilt when columns change)
@@ -2317,14 +2321,14 @@ static BOOL validCachedStringArray(NSArray *arr) {
     NSInteger playlistIndex = [view playlistIndexForRow:row];
     if (playlistIndex < 0) return;  // Header row or invalid
 
-    if (self.vancedMode) {
-        upnext::fb::playPlaylistIntoNowPlaying(activePlaylist, (t_size)playlistIndex);
-        return;
-    }
-
     bool preserveQueue = simplaylist_config::getConfigBool(
         simplaylist_config::kDoubleClickPreservesQueue,
         simplaylist_config::kDefaultDoubleClickPreservesQueue);
+
+    if (self.vancedMode) {
+        upnext::fb::playPlaylistIntoNowPlaying(activePlaylist, (t_size)playlistIndex, preserveQueue);
+        return;
+    }
 
     if (preserveQueue && pm->queue_get_count() > 0) {
         // Save queue, play track (flushes queue), restore queue next run loop
@@ -2385,6 +2389,19 @@ static BOOL validCachedStringArray(NSArray *arr) {
     }
 
     if (handles.get_count() == 0) return;
+
+    // Remember the row the menu was opened on (not just the selection).
+    _contextMenuClickedIndex = -1;
+    _contextMenuClickedHandle.release();
+    NSInteger clickedRow = [view rowAtPoint:point];
+    NSInteger clickedIndex = clickedRow >= 0 ? [view playlistIndexForRow:clickedRow] : -1;
+    if (clickedIndex >= 0 && (t_size)clickedIndex < itemCount) {
+        metadb_handle_ptr h;
+        if (pm->playlist_get_item_handle(h, activePlaylist, (t_size)clickedIndex)) {
+            _contextMenuClickedIndex = clickedIndex;
+            _contextMenuClickedHandle = h;
+        }
+    }
 
     // Build context menu
     [self showContextMenuForHandles:handles atPoint:point inView:view];
@@ -2495,18 +2512,22 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
     auto pm = playlist_manager::get();
     t_size pl = (t_size)_currentPlaylistIndex;
     t_size count = pm->playlist_get_item_count(pl);
-    t_size row = 0;
-    metadb_handle_ptr first;
-    for (t_size i = 0; i < count; ++i) {
-        if (pm->playlist_is_item_selected(pl, i)) { row = i; break; }
+    t_size row = pfc_infinite;
+    // Prefer the row the menu was opened on, if it still holds the same track.
+    if (_contextMenuClickedIndex >= 0 && (t_size)_contextMenuClickedIndex < count &&
+        _contextMenuClickedHandle.is_valid()) {
+        metadb_handle_ptr h;
+        if (pm->playlist_get_item_handle(h, pl, (t_size)_contextMenuClickedIndex) && h == _contextMenuClickedHandle)
+            row = (t_size)_contextMenuClickedIndex;
     }
-    // Fall back to the clicked handle's position if the selection is empty
-    if (!pm->playlist_is_item_selected(pl, row) && count > 0) {
+    // Otherwise the first position holding the first menu handle.
+    if (row == pfc_infinite) {
         for (t_size i = 0; i < count; ++i) {
             metadb_handle_ptr h;
             if (pm->playlist_get_item_handle(h, pl, i) && h == _contextMenuHandles[0]) { row = i; break; }
         }
     }
+    if (row == pfc_infinite) row = 0;
     runGuardedSDKAction("Up next play", ^{ upnext::fb::playPlaylistIntoNowPlaying(pl, row); });
 }
 

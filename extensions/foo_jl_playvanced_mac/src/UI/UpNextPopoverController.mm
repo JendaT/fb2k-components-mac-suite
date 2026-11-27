@@ -720,7 +720,7 @@ static NSNumber *selectionKey(Section section, size_t index) {
     try {
         t_size np = [self validatedNowPlayingForRows:[NSIndexSet indexSetWithIndex:(NSUInteger)row]];
         if (np == pfc_infinite) { [self reloadNow]; return; }
-        playlist_manager::get()->playlist_execute_default_action(np, _rows[row].index);
+        upnext::fb::detail::playItemPreservingQueue(np, _rows[row].index);
     } catch (...) {}
 }
 

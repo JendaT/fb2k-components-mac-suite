@@ -4,12 +4,15 @@
 //  as the Up Next queue. Decisions live in UpNextCore.h.
 //
 //  Include after the component's SDK header (fb2k_sdk.h / foobar2000.h).
+//  Objective-C++ only (uses dispatch_async with a block).
 //  None of these helpers change the *active* playlist; they may change the
 //  *playing* playlist.
 //
 #pragma once
 
 #include "UpNextCore.h"
+
+#include <dispatch/dispatch.h>
 
 namespace upnext {
 namespace fb {
@@ -25,6 +28,10 @@ inline t_size findOrCreateNowPlaying() {
     return pm->find_or_create_playlist(kNowPlayingName);
 }
 
+// Label convention: store the BARE source name (playlist name, artist name,
+// album title, "Now Playing"). Display code adds any "Next from: " prefix.
+// Readers should still strip a leading "Next from: " for labels stored by
+// older builds.
 inline void setSourceLabel(const char* label) {
     t_size np = findOrCreateNowPlaying();
     pfc::string8 s(label ? label : "");
@@ -103,6 +110,66 @@ inline PlaybackState currentPlaybackState() {
 
 namespace detail {
 
+// Snapshot of the foobar playback queue.
+inline pfc::list_t<t_playback_queue_item> captureQueue() {
+    pfc::list_t<t_playback_queue_item> saved;
+    playlist_manager::get()->queue_get_contents(saved);
+    return saved;
+}
+
+// Re-adds `saved` on the next main-queue turn (after the default action's
+// queue flush). Playlists can mutate in between, so each saved location is
+// re-validated (same playlist slot still holds the same handle); otherwise
+// the item is queued by handle.
+inline void restoreQueueLater(const pfc::list_t<t_playback_queue_item>& saved) {
+    if (saved.get_count() == 0) return;
+    pfc::list_t<t_playback_queue_item> copy = saved;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        try {
+            auto pm = playlist_manager::get();
+            for (t_size i = 0; i < copy.get_count(); ++i) {
+                const auto& item = copy[i];
+                bool locationValid = false;
+                if (item.m_playlist != pfc_infinite &&
+                    item.m_playlist < pm->get_playlist_count() &&
+                    item.m_item < pm->playlist_get_item_count(item.m_playlist)) {
+                    metadb_handle_ptr current;
+                    locationValid = pm->playlist_get_item_handle(current, item.m_playlist, item.m_item)
+                        && current == item.m_handle;
+                }
+                if (locationValid)
+                    pm->queue_add_item_playlist(item.m_playlist, item.m_item);
+                else if (item.m_handle.is_valid())
+                    pm->queue_add_item(item.m_handle);
+            }
+        } catch (...) {}
+    });
+}
+
+// Runs the playlist default action on (playlist, item), falling back to
+// set_playing_playlist + play. Does not touch the queue itself.
+inline void playItemRaw(t_size playlist, t_size item) {
+    auto pm = playlist_manager::get();
+    if (!pm->playlist_execute_default_action(playlist, item)) {
+        pm->set_playing_playlist(playlist);
+        pm->playlist_set_focus_item(playlist, item);
+        playback_control::get()->start(playback_control::track_command_play);
+    }
+}
+
+// Plays (playlist, item) and restores a previously captured queue afterwards
+// (playlist_execute_default_action flushes the playback queue).
+inline void playItemRestoringQueue(t_size playlist, t_size item,
+                                   const pfc::list_t<t_playback_queue_item>& saved) {
+    playItemRaw(playlist, item);
+    restoreQueueLater(saved);
+}
+
+// Plays (playlist, item) without losing the foobar playback queue.
+inline void playItemPreservingQueue(t_size playlist, t_size item) {
+    playItemRestoringQueue(playlist, item, captureQueue());
+}
+
 inline void insertAt(t_size np, t_size at, metadb_handle_list_cref items) {
     if (items.get_count() == 0) return;
     playlist_manager::get()->playlist_insert_items(np, at, items, bit_array_false());
@@ -128,9 +195,7 @@ inline void apply(Action action, metadb_handle_list_cref items) {
             insertAt(np, 0, rest);
             if (plan.switchPlayingToNowPlaying) pm->set_playing_playlist(np);
             pm->playlist_set_focus_item(np, 0);
-            pfc::string8 label("Next from: ");
-            label << name;
-            setSourceLabel(label.c_str());
+            setSourceLabel(name.c_str());
         }
     }
 
@@ -149,8 +214,15 @@ inline void playNext(metadb_handle_list_cref items) { detail::apply(Action::Play
 inline void addToQueue(metadb_handle_list_cref items) { detail::apply(Action::AddToQueue, items); }
 
 // Replaces Now Playing with `items` and starts playback at startIndex.
-inline void playNow(metadb_handle_list_cref items, t_size startIndex, const char* sourceLabel) {
+// `sourceLabel` is the bare source name (see setSourceLabel). The foobar
+// playback queue is preserved unless preserveQueue is false (it is captured
+// before Now Playing is cleared; entries that pointed into the old Now
+// Playing are re-queued by handle).
+inline void playNow(metadb_handle_list_cref items, t_size startIndex, const char* sourceLabel,
+                    bool preserveQueue = true) {
     auto pm = playlist_manager::get();
+    pfc::list_t<t_playback_queue_item> savedQueue;
+    if (preserveQueue) savedQueue = detail::captureQueue();
     t_size np = findOrCreateNowPlaying();
     pm->playlist_clear(np);
     detail::insertAt(np, 0, items);
@@ -158,23 +230,17 @@ inline void playNow(metadb_handle_list_cref items, t_size startIndex, const char
     if (items.get_count() == 0) return;
     if (startIndex >= items.get_count()) startIndex = 0;
     pm->playlist_set_focus_item(np, startIndex);
-    if (!pm->playlist_execute_default_action(np, startIndex)) {
-        pm->set_playing_playlist(np);
-        pm->playlist_set_focus_item(np, startIndex);
-        playback_control::get()->start(playback_control::track_command_play);
-    }
+    detail::playItemRestoringQueue(np, startIndex, savedQueue);
 }
 
 // Copies a playlist into Now Playing and plays from startRow.
-inline void playPlaylistIntoNowPlaying(t_size srcPlaylist, t_size startRow) {
+inline void playPlaylistIntoNowPlaying(t_size srcPlaylist, t_size startRow, bool preserveQueue = true) {
     auto pm = playlist_manager::get();
     pfc::string8 name;
     pm->playlist_get_name(srcPlaylist, name);
     metadb_handle_list all;
     pm->playlist_get_all_items(srcPlaylist, all);
-    pfc::string8 label("Next from: ");
-    label << name;
-    playNow(all, startRow, label.c_str());
+    playNow(all, startRow, name.c_str(), preserveQueue);
 }
 
 } // namespace fb

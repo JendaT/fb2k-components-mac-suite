@@ -383,11 +383,18 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
         if (!found && _currentPath.length > 0) {
             found = [self findTrackByPath:_currentPath playlist:&playlistIdx item:&itemIdx];
         }
-        if (!found) return;
+        // Playing from the Up Next "Now Playing" playlist: don't switch the
+        // active playlist to it; only ask views to reveal the track.
+        const t_size np = pm->find_playlist(upnext::kNowPlayingName);
+        const bool fromNowPlaying = np != pfc_infinite &&
+            ((found && playlistIdx == np) || pm->get_playing_playlist() == np);
 
-        pm->set_active_playlist(playlistIdx);
-        pm->playlist_set_focus_item(playlistIdx, itemIdx);
-        pm->playlist_ensure_visible(playlistIdx, itemIdx);
+        if (!fromNowPlaying) {
+            if (!found) return;
+            pm->set_active_playlist(playlistIdx);
+            pm->playlist_set_focus_item(playlistIdx, itemIdx);
+            pm->playlist_ensure_visible(playlistIdx, itemIdx);
+        }
     } catch (...) {}
 
     if (_currentPath.length > 0) {
