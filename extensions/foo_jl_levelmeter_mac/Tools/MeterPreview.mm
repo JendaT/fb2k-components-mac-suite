@@ -8,12 +8,18 @@
 //
 //  Build and run: Scripts/preview.sh [output-dir]
 //
+//  Also: Scripts/preview.sh --stack   (the Static, Live and Overlay layers
+//        composited must match one Pass::All draw)
+//        Scripts/preview.sh --time    (ms per frame of each pass at 2x)
+//
 
 #import <Cocoa/Cocoa.h>
 #include "../src/Core/MeterEngine.h"
 #include "../src/Core/LevelMeterThemes.h"
 #include "../src/UI/MeterRenderer.h"
+#include <chrono>
 #include <cmath>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -80,15 +86,198 @@ void render(const std::string &path, CGFloat w, CGFloat h, const DisplaySettings
     printf("wrote %s\n", path.c_str());
 }
 
+#pragma mark - Layer checks and timing
+
+// Transparent premultiplied bitmap at 2x, top-left origin like the view's
+// layers; 8-bit like a layer's backing, or float. Caller releases.
+CGContextRef makeContext(CGFloat w, CGFloat h, bool floatPixels = false, CGFloat scale = 2.0) {
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = floatPixels
+        ? CGBitmapContextCreate(NULL, (size_t)(w * scale), (size_t)(h * scale), 32, 0, space,
+                                kCGImageAlphaPremultipliedLast | kCGBitmapFloatComponents | kCGBitmapByteOrder32Little)
+        : CGBitmapContextCreate(NULL, (size_t)(w * scale), (size_t)(h * scale), 8, 0, space,
+                                kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    CGColorSpaceRelease(space);
+    CGContextClearRect(ctx, CGRectMake(0, 0, w * scale, h * scale));
+    CGContextTranslateCTM(ctx, 0, h * scale);
+    CGContextScaleCTM(ctx, scale, -scale);
+    return ctx;
+}
+
+// Run `body` with `ctx` as the current (flipped) AppKit context, for the text.
+template <typename F>
+void withContext(CGContextRef ctx, F body) {
+    NSGraphicsContext *gc = [NSGraphicsContext graphicsContextWithCGContext:ctx flipped:YES];
+    [NSGraphicsContext saveGraphicsState];
+    [NSGraphicsContext setCurrentContext:gc];
+    body();
+    [NSGraphicsContext restoreGraphicsState];
+}
+
+// Draw Static, Live and Overlay into separate layers, stack them the way
+// the view does and compare with one Pass::All draw. Returns the largest
+// difference in any channel, in 1/255 steps.
+int stackDiff(CGFloat w, CGFloat h, const DisplaySettings &s, const Snapshot &snap, bool floatPixels) {
+    const CGRect bounds = CGRectMake(0, 0, w, h);
+    MeterRenderer r;
+    CGContextRef all = makeContext(w, h, floatPixels);
+    withContext(all, [&] { r.draw(all, bounds, s, snap, Pass::All); });
+    const Pass passes[3] = { Pass::Static, Pass::Live, Pass::Overlay };
+    CGContextRef stacked = makeContext(w, h, floatPixels);
+    CGContextSaveGState(stacked);
+    CGContextConcatCTM(stacked, CGAffineTransformInvert(CGContextGetCTM(stacked)));
+    const CGRect px = CGRectMake(0, 0, CGBitmapContextGetWidth(stacked), CGBitmapContextGetHeight(stacked));
+    for (Pass pass : passes) {
+        CGContextRef layer = makeContext(w, h, floatPixels);
+        withContext(layer, [&] { r.draw(layer, bounds, s, snap, pass); });
+        CGImageRef img = CGBitmapContextCreateImage(layer);
+        CGContextDrawImage(stacked, px, img);
+        CGImageRelease(img);
+        CGContextRelease(layer);
+    }
+    CGContextRestoreGState(stacked);
+    const size_t bytes = CGBitmapContextGetBytesPerRow(all) * CGBitmapContextGetHeight(all);
+    double maxDiff = 0;
+    if (floatPixels) {
+        const float *a = (const float *)CGBitmapContextGetData(all), *b = (const float *)CGBitmapContextGetData(stacked);
+        for (size_t i = 0; i < bytes / sizeof(float); ++i) maxDiff = std::max(maxDiff, std::fabs((double)a[i] - b[i]) * 255.0);
+    } else {
+        const uint8_t *a = (const uint8_t *)CGBitmapContextGetData(all), *b = (const uint8_t *)CGBitmapContextGetData(stacked);
+        for (size_t i = 0; i < bytes; ++i) maxDiff = std::max(maxDiff, (double)std::abs((int)a[i] - (int)b[i]));
+    }
+    CGContextRelease(all);
+    CGContextRelease(stacked);
+    return (int)std::ceil(maxDiff - 1e-3);
+}
+
+// Float pixels show whether the layers add up to the same picture; 8-bit
+// layers (as on screen) also round each layer, a step or two at most.
+int stackCheck(const char *name, CGFloat w, CGFloat h, const DisplaySettings &s, const Snapshot &snap) {
+    const int exact = stackDiff(w, h, s, snap, true);
+    const int eightBit = stackDiff(w, h, s, snap, false);
+    printf("%-24s max channel difference: float %d, 8-bit %d\n", name, exact, eightBit);
+    return exact;
+}
+
+// Needles swinging and the LED blinking, so each frame draws something new.
+Snapshot movingSnapshot(const Snapshot &base, int frame) {
+    Snapshot s = base;
+    for (int c = 0; c < 2; ++c) {
+        const double v = 0.5 + 0.5 * std::sin(frame * 0.07 + c * 1.3);
+        s.ch[c].needleDb = (float)(-20.0 + 23.0 * v);
+        s.ch[c].peakDb = (float)(-12.0 + 12.5 * v);
+        s.ch[c].rmsDb = s.ch[c].peakDb - 8.0f;
+        s.ch[c].holdDb = s.ch[c].peakDb + 1.0f;
+    }
+    return s;
+}
+
+// Mean ms per frame of `pass`, cleared each frame like a layer's backing.
+double timePass(CGFloat w, CGFloat h, const DisplaySettings &s, const Snapshot &base, Pass pass, int frames) {
+    const CGRect bounds = CGRectMake(0, 0, w, h);
+    MeterRenderer r;
+    CGContextRef ctx = makeContext(w, h);
+    double ms = 0;
+    withContext(ctx, [&] {
+        for (int f = -20; f < frames; ++f) {   // a few frames of warm-up (font caches)
+            const Snapshot snap = movingSnapshot(base, f);
+            const auto t0 = std::chrono::steady_clock::now();
+            @autoreleasepool {
+                CGContextClearRect(ctx, bounds);
+                r.draw(ctx, bounds, s, snap, pass);
+            }
+            const auto t1 = std::chrono::steady_clock::now();
+            if (f >= 0) ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
+        }
+    });
+    CGContextRelease(ctx);
+    return ms / frames;
+}
+
+void timeCase(const char *name, CGFloat w, CGFloat h, const DisplaySettings &s, const Snapshot &base) {
+    const int frames = 600;
+    const double all = timePass(w, h, s, base, Pass::All, frames);
+    const double st = timePass(w, h, s, base, Pass::Static, frames);
+    const double live = timePass(w, h, s, base, Pass::Live, frames);
+    const double ov = timePass(w, h, s, base, Pass::Overlay, frames);
+    printf("%-26s %4.0fx%-4.0f  all %6.3f  static %6.3f  live %6.3f  overlay %6.3f  ms\n", name, w, h, all, st, live,
+           ov);
+}
+
 } // namespace
 
 int main(int argc, const char **argv) {
     @autoreleasepool {
         const std::string out = argc > 1 ? argv[1] : ".";
+        const bool stack = out == "--stack", timing = out == "--time";
         MeterEngine e;
         e.configure(EngineSettings());
         feedMusic(e, 6.0);
         Snapshot snap = e.snapshot();
+
+        if (stack || timing) {
+            DisplaySettings d;
+            d.palette = darkPalette();
+            DisplaySettings a = d;
+            a.style = MeterStyle::Analog;
+            Snapshot lit = snap, unlit = snap;
+            lit.ch[0].peakDb = lit.ch[1].peakDb = -0.2f;
+            unlit.ch[0].peakDb = unlit.ch[1].peakDb = -6.0f;
+            Snapshot mono = lit;
+            mono.channels = 1;
+            mono.ch[1] = mono.ch[0];
+            if (stack) {
+                int worst = 0;
+                auto check = [&](const char *name, CGFloat w, CGFloat h, const DisplaySettings &s, const Snapshot &sn) {
+                    worst = std::max(worst, stackCheck(name, w, h, s, sn));
+                };
+                const FaceStyle faces[3] = { FaceStyle::Vintage, FaceStyle::Dark, FaceStyle::Theme };
+                const char *faceNames[3] = { "vintage", "dark", "theme" };
+                for (int i = 0; i < 3; ++i) {
+                    DisplaySettings f = a;
+                    f.face = faces[i];
+                    std::string base = faceNames[i];
+                    check((base + " pair lit").c_str(), 560, 200, f, lit);
+                    check((base + " pair unlit").c_str(), 560, 200, f, unlit);
+                    check((base + " stacked lit").c_str(), 260, 380, f, lit);
+                    check((base + " mono").c_str(), 560, 200, f, mono);
+                    DisplaySettings one = f;
+                    one.needleLayout = NeedleLayout::Single;
+                    check((base + " single lit").c_str(), 320, 210, one, lit);
+                    check((base + " single unlit").c_str(), 320, 210, one, unlit);
+                }
+                DisplaySettings ppm = a;
+                ppm.needle = NeedleBallistics::PpmDin;
+                ppm.peakLed = false;
+                check("vintage ppm no led", 560, 200, ppm, snap);
+                DisplaySettings clear = a;
+                clear.face = FaceStyle::Theme;
+                clear.palette = lightPalette();
+                clear.palette.background = 0x00000000;
+                check("theme light clear bg", 560, 200, clear, lit);
+                check("analog too small", 60, 30, a, lit);
+                check("digital vertical", 260, 420, d, snap);
+                check("digital horizontal", 760, 104, d, snap);
+                printf("worst %d\n", worst);
+                return worst <= 1 ? 0 : 1;
+            }
+            printf("ms per frame at 2x, %d frames each\n", 600);
+            timeCase("digital", 260, 420, d, snap);
+            timeCase("digital horizontal", 760, 104, d, snap);
+            const FaceStyle faces[3] = { FaceStyle::Vintage, FaceStyle::Dark, FaceStyle::Theme };
+            const char *faceNames[3] = { "vintage", "dark", "theme" };
+            for (int i = 0; i < 3; ++i) {
+                DisplaySettings f = a;
+                f.face = faces[i];
+                timeCase((std::string(faceNames[i]) + " pair").c_str(), 560, 200, f, snap);
+                timeCase((std::string(faceNames[i]) + " pair large").c_str(), 1000, 360, f, snap);
+            }
+            DisplaySettings one = a;
+            one.needleLayout = NeedleLayout::Single;
+            timeCase("vintage single", 320, 210, one, snap);
+            timeCase("vintage stacked", 260, 380, a, snap);
+            return 0;
+        }
         // Show a latched clip on one side so its look gets checked too.
         Snapshot clipped = snap;
         clipped.ch[1].clip = true;

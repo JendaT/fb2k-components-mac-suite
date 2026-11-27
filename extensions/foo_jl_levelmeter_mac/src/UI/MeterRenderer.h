@@ -25,10 +25,14 @@ enum class HitArea {
 
 // What a draw call covers. Static is what only changes with the settings or
 // the size (background, scales, names); Live is the rest, drawn over it.
+// Overlay is drawn over Live and also only changes with the settings or the
+// size: the analog pivot housing, glass glare and window shadow sit above
+// the needles. All draws the three in that order.
 enum class Pass {
     All,
     Static,
     Live,
+    Overlay,
 };
 
 class MeterRenderer {
@@ -42,7 +46,7 @@ public:
 
 private:
     void drawDigital(CGContextRef ctx, CGRect bounds, const DisplaySettings &s, const Snapshot &snap, Pass pass);
-    void drawAnalog(CGContextRef ctx, CGRect bounds, const DisplaySettings &s, const Snapshot &snap);
+    void drawAnalog(CGContextRef ctx, CGRect bounds, const DisplaySettings &s, const Snapshot &snap, Pass pass);
 
     meter_layout::Result _layout;
     bool _analog = false;
