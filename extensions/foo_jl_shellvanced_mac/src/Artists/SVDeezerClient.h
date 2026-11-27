@@ -30,6 +30,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)albumTitlesForArtistId:(NSString *)artistId
                     completion:(void (^)(NSArray<NSString *> *_Nullable titles))completion;
 
+/// artist/{id}: nb_album. completion gets -1 on failure.
+- (void)albumCountForArtistId:(NSString *)artistId completion:(void (^)(long count))completion;
+
 /// Downloads an image from Deezer's CDN (https, *.dzcdn.net only). nil on failure.
 - (void)downloadImageAtURL:(NSURL *)url completion:(void (^)(NSData *_Nullable data))completion;
 

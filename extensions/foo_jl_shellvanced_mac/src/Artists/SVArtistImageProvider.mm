@@ -188,11 +188,50 @@ static const NSUInteger kMaxTransientEntries = 2000;
                         URLByAppendingPathComponent:@"artists" isDirectory:YES];
         [[NSFileManager defaultManager] createDirectoryAtURL:_cacheDir withIntermediateDirectories:YES
                                                   attributes:nil error:nil];
+        [self migrateCacheIfNeeded];
     }
     return self;
 }
 
 #pragma mark - Keys and disk
+
+static NSString *const kCacheFormat = @"3";
+
+// v3: earlier caches may hold wrong-artist photos and Deezer placeholders; wipe them once.
+- (void)migrateCacheIfNeeded {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSURL *marker = [_cacheDir URLByAppendingPathComponent:@"format"];
+    NSString *cur = [NSString stringWithContentsOfURL:marker encoding:NSUTF8StringEncoding error:nil];
+    if ([cur isEqualToString:kCacheFormat]) return;
+    for (NSURL *u in [fm contentsOfDirectoryAtURL:_cacheDir includingPropertiesForKeys:nil options:0 error:nil])
+        if ([u.pathExtension isEqualToString:@"jpg"] || [u.lastPathComponent isEqualToString:@"negative.json"])
+            [fm removeItemAtURL:u error:nil];
+    [kCacheFormat writeToURL:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
+// Classifies a decoded image on a 24x24 downscale; also rejects the known placeholder bytes.
+static BOOL IsPlaceholderPhoto(NSData *data, NSImage *img) {
+    unsigned char md[CC_SHA1_DIGEST_LENGTH];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    CC_SHA1(data.bytes, (CC_LONG)data.length, md);
+#pragma clang diagnostic pop
+    NSString *hex = @"";
+    for (int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) hex = [hex stringByAppendingFormat:@"%02x", md[i]];
+    if ([hex isEqualToString:@"b92c0575e728b71f120618a25c1c52716007ed96"]) return YES;
+    CGImageRef cg = [img CGImageForProposedRect:NULL context:nil hints:nil];
+    if (!cg) return NO;
+    const int N = 24;
+    uint8_t buf[N * N * 4] = {0};
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(buf, N, N, 8, N * 4, cs, kCGImageAlphaPremultipliedLast);
+    CGColorSpaceRelease(cs);
+    if (!ctx) return NO;
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationMedium);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, N, N), cg);
+    CGContextRelease(ctx);
+    return deezermatch::looksLikePlaceholderPhoto(buf, N, N);
+}
 
 static NSString *SHA1Hex(NSString *s) {
     const char *utf8 = s.UTF8String;
@@ -218,10 +257,10 @@ static NSString *SHA1Hex(NSString *s) {
         _negative = [NSMutableDictionary dictionary];
         NSData *data = [NSData dataWithContentsOfURL:[self negativeURL]];
         id json = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-        // v2 format: {"v":2,"e":{key:epoch}}. Older (unversioned) files were recorded under the previous
+        // v3 format: {"v":3,"e":{key:epoch}}. Older (unversioned) files were recorded under the previous
         // matching rule and are ignored so the new rule can retry those artists.
         NSDictionary *entries = nil;
-        if ([json isKindOfClass:[NSDictionary class]] && [json[@"v"] isEqual:@2] &&
+        if ([json isKindOfClass:[NSDictionary class]] && [json[@"v"] isEqual:@3] &&
             [json[@"e"] isKindOfClass:[NSDictionary class]])
             entries = json[@"e"];
         if (entries) {
@@ -252,7 +291,7 @@ static NSString *SHA1Hex(NSString *s) {
         self->_negativeSavePending = YES;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), self->_diskQueue, ^{
             self->_negativeSavePending = NO;
-            NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"v": @2, @"e": [self negativeStoreLocked]} options:0 error:nil];
+            NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"v": @3, @"e": [self negativeStoreLocked]} options:0 error:nil];
             [data writeToURL:[self negativeURL] atomically:YES];
         });
     });
@@ -390,15 +429,49 @@ static NSString *SHA1Hex(NSString *s) {
             if (usable.empty()) {
                 [self recordNegativeKey:key];
                 [self fallbackForName:name key:key cacheResult:YES];
-            } else if (exact.size() == 1) {
-                [self downloadPhotoUrl:usable[0].pictureUrl name:name key:key];
             } else {
-                // Several same-name artists: only a candidate whose albums overlap the user's library.
                 std::vector<std::string> user;
                 for (NSString *t in [[SVArtistLibrary shared] userTitlesForArtist:name])
                     user.push_back(deezermatch::normalizeTitle(t.UTF8String ?: ""));
-                [self confirmCandidates:usable index:0 remote:{} userTitles:user name:name key:key];
+                if (exact.size() == 1)
+                    [self confirmLoneCandidate:usable[0] userTitles:user name:name key:key];
+                else
+                    // Several same-name artists: only a candidate whose albums overlap the user's library.
+                    [self confirmCandidates:usable index:0 remote:{} userTitles:user name:name key:key];
             }
+        });
+    }];
+}
+
+// Step 3a: lone exact-name candidate. Accept on title overlap, else only a small discography
+// (nb_album <= 15) and a distinctive name (>= 5 chars); a big catalogue is probably someone else.
+- (void)confirmLoneCandidate:(deezermatch::Candidate)cand
+                  userTitles:(std::vector<std::string>)user
+                        name:(NSString *)name
+                         key:(NSString *)key {
+    NSString *cid = [NSString stringWithUTF8String:cand.id.c_str()];
+    [[SVDeezerClient shared] albumTitlesForArtistId:cid completion:^(NSArray<NSString *> *titles) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!titles) { [self fallbackForName:name key:key cacheResult:NO]; return; }  // transient failure
+            std::vector<std::string> norm;
+            for (NSString *t in titles) norm.push_back(deezermatch::normalizeTitle(t.UTF8String ?: ""));
+            if (deezermatch::chooseCandidate(user, {norm}) == 0) {
+                [self downloadPhotoUrl:cand.pictureUrl name:name key:key];
+                return;
+            }
+            void (^decide)(long) = ^(long nb) {
+                if (nb < 0) { [self fallbackForName:name key:key cacheResult:NO]; return; }
+                if (deezermatch::acceptLoneWithoutOverlap(name.UTF8String ?: "", nb)) {
+                    [self downloadPhotoUrl:cand.pictureUrl name:name key:key];
+                } else {
+                    [self recordNegativeKey:key];
+                    [self fallbackForName:name key:key cacheResult:YES];
+                }
+            };
+            if (cand.nbAlbum >= 0) { decide(cand.nbAlbum); return; }
+            [[SVDeezerClient shared] albumCountForArtistId:cid completion:^(long nb) {
+                dispatch_async(dispatch_get_main_queue(), ^{ decide(nb); });
+            }];
         });
     }];
 }
@@ -440,8 +513,14 @@ static NSString *SHA1Hex(NSString *s) {
     if (!url) { [self fallbackForName:name key:key cacheResult:NO]; return; }
     [[SVDeezerClient shared] downloadImageAtURL:url completion:^(NSData *data) {
         NSImage *img = DecodeImage(data);
+        BOOL placeholder = img && IsPlaceholderPhoto(data, img);
         dispatch_async(dispatch_get_main_queue(), ^{
             if (!img) { [self fallbackForName:name key:key cacheResult:NO]; return; }
+            if (placeholder) {  // Deezer's generic silhouette = no real picture
+                [self recordNegativeKey:key];
+                [self fallbackForName:name key:key cacheResult:YES];
+                return;
+            }
             NSURL *dest = [self photoURLForKey:key];
             dispatch_async(self->_diskQueue, ^{ [data writeToURL:dest atomically:YES]; });
             [self finishKey:key name:name source:img cache:YES];

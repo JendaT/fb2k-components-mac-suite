@@ -56,5 +56,29 @@ int main() {
         CHECK(!titlesOverlap({"love song"}, {"glove songs"}), "no mid-word containment");
         CHECK_EQ(chooseCandidate(V{"home", "away"}, {V{"home", "away"}}), 0, "two short distinct overlaps");
     }
+    g_context = "loneRule";
+    CHECK(!acceptLoneWithoutOverlap("Nala", 43), "Nala 43 rejected");
+    CHECK(!acceptLoneWithoutOverlap("Question", 62), "Question 62 rejected");
+    CHECK(acceptLoneWithoutOverlap("Nailik Hypnotik", 9), "Nailik 9 accepted");
+    CHECK(!acceptLoneWithoutOverlap("Kaya", 3), "short key rejected");
+    CHECK(!acceptLoneWithoutOverlap("Nailik Hypnotik", -1), "unknown count rejected");
+    CHECK(acceptLoneWithoutOverlap("Nailik Hypnotik", 15) && !acceptLoneWithoutOverlap("Nailik Hypnotik", 16), "15 boundary");
+    g_context = "placeholder";
+    {
+        const int W = 24, H = 24;
+        std::vector<uint8_t> a(W * H * 4, 255), b(W * H * 4, 255), c(W * H * 4, 255);
+        for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+            const int i = (y * W + x) * 4;
+            const bool fig = (x > 7 && x < 16 && y > 5);
+            const uint8_t v = fig ? 150 : 225;  // two-tone silhouette
+            a[i] = v; a[i + 1] = v; a[i + 2] = (uint8_t)(v + 8);
+            const uint8_t g = (uint8_t)((x * 10 + y * 3 + ((x * 7 + y * 13) % 17)) % 256);  // noisy gradient
+            b[i] = g; b[i + 1] = g; b[i + 2] = g;
+            c[i] = (uint8_t)(x * 10); c[i + 1] = (uint8_t)(y * 10); c[i + 2] = 40;
+        }
+        CHECK(looksLikePlaceholderPhoto(a.data(), W, H), "flat two-tone silhouette");
+        CHECK(!looksLikePlaceholderPhoto(b.data(), W, H), "noisy grayscale gradient");
+        CHECK(!looksLikePlaceholderPhoto(c.data(), W, H), "colorful");
+    }
     TEST_MAIN_END();
 }

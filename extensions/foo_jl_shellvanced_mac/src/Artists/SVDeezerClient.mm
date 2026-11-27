@@ -93,6 +93,7 @@ static std::string Str(id v) {
             if (pic.empty()) pic = Str(d[@"picture_medium"]);
             c.pictureUrl = pic;
             c.fans = [d[@"nb_fan"] respondsToSelector:@selector(longValue)] ? [d[@"nb_fan"] longValue] : 0;
+            c.nbAlbum = [d[@"nb_album"] respondsToSelector:@selector(longValue)] ? [d[@"nb_album"] longValue] : -1;
             if (!c.id.empty()) out.push_back(std::move(c));
         }
         completion(std::move(out), YES);
@@ -119,6 +120,21 @@ static std::string Str(id v) {
             if ([t isKindOfClass:[NSString class]] && t.length) [titles addObject:t];
         }
         completion(titles);
+    }];
+}
+
+- (void)albumCountForArtistId:(NSString *)artistId completion:(void (^)(long))completion {
+    NSCharacterSet *nonDigits = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
+    if (artistId.length == 0 || [artistId rangeOfCharacterFromSet:nonDigits].location != NSNotFound) {
+        completion(-1);
+        return;
+    }
+    NSURL *url = APIURL([NSString stringWithFormat:@"/artist/%@", artistId], nil);
+    [self request:url completion:^(NSData *data) {
+        id json = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        if (![json isKindOfClass:[NSDictionary class]] || json[@"error"]) { completion(-1); return; }
+        id n = json[@"nb_album"];
+        completion([n respondsToSelector:@selector(longValue)] ? [n longValue] : -1);
     }];
 }
 

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,7 @@ namespace deezermatch {
 struct Candidate {
     std::string id, name, pictureUrl;
     long fans = 0;
+    long nbAlbum = -1;  // -1 = unknown (not in the search payload)
 };
 
 // Deezer's "no photo" pictures contain "/images/artist//" (empty hash).
@@ -181,6 +183,40 @@ inline int chooseCandidate(const std::vector<std::string>& user,
         chosen = (int)i;
     }
     return chosen;
+}
+
+
+// Lone exact-name candidate whose albums share no title with the user's library: accept only a small
+// discography (a big one is almost surely a different, more famous artist) and a distinctive name.
+inline size_t keyLength(const std::string& artist) {
+    size_t n = 0;
+    for (unsigned char c : artistnames::artistKey(artist)) if ((c & 0xC0) != 0x80) n++;
+    return n;
+}
+inline bool acceptLoneWithoutOverlap(const std::string& artist, long nbAlbum) {
+    return nbAlbum >= 0 && nbAlbum <= 15 && keyLength(artist) >= 5;
+}
+
+// Deezer's generic grey silhouette. `rgba` is a small (~24x24) downscale, 4 bytes/pixel.
+// Placeholder iff all pixels are near-grey (chroma <= 20) and >= 90% fall in the two most populated
+// of 16 luma buckets (flat two-tone image).
+inline bool looksLikePlaceholderPhoto(const uint8_t* rgba, int w, int h) {
+    if (!rgba || w <= 0 || h <= 0) return false;
+    int buckets[16] = {0};
+    const int total = w * h;
+    for (int i = 0; i < total; i++) {
+        const int r = rgba[i * 4], g = rgba[i * 4 + 1], b = rgba[i * 4 + 2];
+        const int mx = std::max(r, std::max(g, b)), mn = std::min(r, std::min(g, b));
+        if (mx - mn > 20) return false;
+        const int luma = (299 * r + 587 * g + 114 * b) / 1000;
+        buckets[std::min(15, luma / 16)]++;
+    }
+    int top1 = 0, top2 = 0;
+    for (int c : buckets) {
+        if (c > top1) { top2 = top1; top1 = c; }
+        else if (c > top2) top2 = c;
+    }
+    return (top1 + top2) * 10 >= total * 9;
 }
 
 }  // namespace deezermatch
