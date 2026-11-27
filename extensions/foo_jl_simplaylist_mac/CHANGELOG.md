@@ -4,6 +4,9 @@ All notable changes to SimPlaylist will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Shell mode**: Opt-in `vanced=1` element parameter — double-click/Enter plays the playlist into "Now Playing", menu gains Play / Play Next / Add to Queue, Q adds to queue.
+
 ### Fixed
 - **Home key did nothing useful in grouped playlists**: Home jumped to an arbitrary point mid-list instead of the first track. The focus-movement API works in display rows, but Home computed its distance from the playlist index, which ignores every group header, subgroup header and padding row above the current track. End was wrong in the same way and only appeared to work because an over-large jump clamps to the end.
 - **Album art could pin the CPU indefinitely**: an image too large to cache was neither stored nor remembered as unusable, so every redraw decoded it again on up to four background threads for as long as its album was on screen.

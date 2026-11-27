@@ -6,7 +6,7 @@
 //
 
 // Simple Playlist
-#define SIMPLAYLIST_VERSION "1.5.1"
+#define SIMPLAYLIST_VERSION "1.6.0"
 #define SIMPLAYLIST_VERSION_INT 151
 
 // Playlist Organizer
@@ -38,7 +38,7 @@
 #define CLOUD_STREAMER_VERSION_INT 020
 
 // Playback Controls
-#define PLAYBACK_CONTROLS_VERSION "0.1.0"
+#define PLAYBACK_CONTROLS_VERSION "0.1.1"
 #define PLAYBACK_CONTROLS_VERSION_INT 010
 
 // Effects DSP
@@ -50,15 +50,15 @@
 #define LIBVANCED_VERSION_INT 100
 
 // AlbumViewVanced
-#define ALBUMVIEWVANCED_VERSION "1.0.0"
+#define ALBUMVIEWVANCED_VERSION "1.1.0"
 #define ALBUMVIEWVANCED_VERSION_INT 100
 
 // PlayVanced (Now Playing panel)
-#define PLAYVANCED_VERSION "1.0.0"
+#define PLAYVANCED_VERSION "1.1.0"
 #define PLAYVANCED_VERSION_INT 100
 
 // Tidal Integration
-#define TIDAL_VERSION "0.3.1"
+#define TIDAL_VERSION "0.3.2"
 #define TIDAL_VERSION_INT 031
 
 // ShellVanced (streaming-style shell)

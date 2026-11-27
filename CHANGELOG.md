@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Distribution packaging scripts
 
 ### Changed
+- **Deployment target**: All components now require macOS 12 Monterey (Xcode 27.2 dropped 11.0)
 - Preferences page titles now match foobar2000's built-in style (non-bold)
 - Unified copyright notices across all extensions
 
@@ -24,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## SimPlaylist
 
 ### [Unreleased]
+
+#### Added
+- **Shell mode**: Opt-in `vanced=1` parameter — play playlist into Now Playing, Play / Play Next / Add to Queue, Q adds to queue
 
 #### Fixed
 - Home key jumped to an arbitrary point mid-list instead of the first track in grouped playlists (End was wrong the same way but masked by clamping)
@@ -576,6 +580,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Playback Controls
 
+### [Unreleased]
+
+#### Fixed
+- **Component GUID**: No longer collides with another component's GUID
+
 ### [0.1.0] - 2025-12-30
 
 #### Added
@@ -597,6 +606,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Standalone unit-test suite (425 checks, 11 binaries, ASan+UBSan) gating every build via `Scripts/run_tests.sh`
 
 #### Fixed
+- **Preferences GUID**: No longer collides with another component's
 - Decoder open failures now log the chosen decoder and the exception instead of silently skipping the track
 - Debug-logging preference honored after restart (cache was only synced on toggle)
 - Static-destructor logging can no longer touch torn-down fb2k services
@@ -647,3 +657,30 @@ Fixes the long-standing "playback stops until restart" cascade and restores drag
 
 #### Added
 - Initial public release: browser, search, library, playlists, sync, ISRC matching, album art
+
+## AlbumViewVanced
+
+### [Unreleased]
+
+#### Added
+- **Play / Play Next / Add to Queue**: Unified actions; playback goes through the single "Now Playing" up-next list
+- **Artist filter**: Artist's albums plus an "Appears on" section (for ShellVanced)
+- **Search shortcuts**: ⌘F / ⌘L focus search
+
+#### Changed
+- **Context menu**: Unified actions replace "Add to Now Playing" / "Add to Playback Queue"; duplicate foobar entries hidden
+
+#### Fixed
+- **Stale rebuilds**: Older search results no longer overwrite newer ones
+- **Arrow keys**: Select the first album when nothing is selected
+
+## PlayVanced
+
+### [Unreleased]
+
+#### Added
+- **Up Next popover**: Now playing, Queued and "Next from" sections; reorder, remove, clear
+- **Keyboard shortcuts**: Space, ⌘←/→, ⌘↑/↓, ⌘S shuffle, ⌘R repeat, ⌥⌘U Up Next
+
+#### Changed
+- **Drop on bar**: Adds to the up-next queue instead of the active playlist
