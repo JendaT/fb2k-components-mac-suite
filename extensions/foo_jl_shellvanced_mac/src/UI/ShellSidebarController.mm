@@ -149,12 +149,43 @@ typedef NS_ENUM(NSInteger, SVRowKind) {
 @property (nonatomic, strong) NSButton *addButton;
 @property (nonatomic, strong) SVChipButton *playlistsChip;
 @property (nonatomic, strong) SVChipButton *artistsChip;
+@property (nonatomic, assign) BOOL separatorVisible;
 @end
 
-@implementation SVLibraryHeaderView
+@implementation SVLibraryHeaderView {
+    NSBox *_separator;
+}
+- (void)setSeparatorVisible:(BOOL)visible {
+    _separatorVisible = visible;
+    _separator.hidden = !visible;
+}
 - (instancetype)initWithFrame:(NSRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
+        // Opaque backdrop in the sidebar's own material so rows scroll beneath
+        // the sticky header instead of showing through it.
+        NSVisualEffectView *backdrop = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
+        backdrop.material = NSVisualEffectMaterialSidebar;
+        backdrop.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+        backdrop.state = NSVisualEffectStateFollowsWindowActiveState;
+        backdrop.translatesAutoresizingMaskIntoConstraints = NO;
+        [self addSubview:backdrop];
+        _separator = [[NSBox alloc] initWithFrame:NSZeroRect];
+        _separator.boxType = NSBoxSeparator;
+        _separator.translatesAutoresizingMaskIntoConstraints = NO;
+        _separator.hidden = YES;
+        [self addSubview:_separator];
+        [NSLayoutConstraint activateConstraints:@[
+            [backdrop.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+            [backdrop.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+            [backdrop.topAnchor constraintEqualToAnchor:self.topAnchor],
+            [backdrop.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+            [_separator.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+            [_separator.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+            [_separator.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+            [_separator.heightAnchor constraintEqualToConstant:1],
+        ]];
+
         _titleLabel = [NSTextField labelWithString:@"Your Library"];
         _titleLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];
         _titleLabel.textColor = [NSColor secondaryLabelColor];
@@ -210,6 +241,7 @@ typedef NS_ENUM(NSInteger, SVRowKind) {
         name.lineBreakMode = NSLineBreakByTruncatingTail;
         name.translatesAutoresizingMaskIntoConstraints = NO;
         [name setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [name setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
         self.textField = name;
 
         _countField = [NSTextField labelWithString:@""];
@@ -230,7 +262,7 @@ typedef NS_ENUM(NSInteger, SVRowKind) {
             [icon.widthAnchor constraintEqualToConstant:18],
             [name.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:6],
             [name.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
-            [_countField.leadingAnchor constraintGreaterThanOrEqualToAnchor:name.trailingAnchor constant:6],
+            [_countField.leadingAnchor constraintEqualToAnchor:name.trailingAnchor constant:6],
             [_countField.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-8],
             [_countField.firstBaselineAnchor constraintEqualToAnchor:name.firstBaselineAnchor],
         ]];
@@ -269,6 +301,8 @@ typedef NS_ENUM(NSInteger, SVRowKind) {
         name.font = [NSFont systemFontOfSize:fb2k_ui::rowFontSize(fb2k_ui::SizeVariant::Normal)];
         name.lineBreakMode = NSLineBreakByTruncatingTail;
         name.translatesAutoresizingMaskIntoConstraints = NO;
+        [name setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [name setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
         self.textField = name;
 
         [self addSubview:photo];
@@ -279,7 +313,7 @@ typedef NS_ENUM(NSInteger, SVRowKind) {
             [photo.widthAnchor constraintEqualToConstant:kArtistPhotoSize],
             [photo.heightAnchor constraintEqualToConstant:kArtistPhotoSize],
             [name.leadingAnchor constraintEqualToAnchor:photo.trailingAnchor constant:8],
-            [name.trailingAnchor constraintLessThanOrEqualToAnchor:self.trailingAnchor constant:-8],
+            [name.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-8],
             [name.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
         ]];
     }
@@ -457,6 +491,9 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     _table.keyHandler = ^BOOL(NSEvent *event) { return [weakSelf handleTableKey:event]; };
 
     _scroll.documentView = _table;
+    _scroll.contentView.postsBoundsChangedNotifications = YES;
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(sidebarScrolled:)
+                                                 name:NSViewBoundsDidChangeNotification object:_scroll.contentView];
     [root addSubview:_scroll];
     self.view = root;
 
@@ -468,6 +505,14 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+// Hairline under the sticky header only while rows are scrolled beneath it.
+- (void)sidebarScrolled:(NSNotification *)note {
+    if (_items.count == 0 || _items[0].kind != SVRowKindLibraryHeader) return;
+    NSView *v = [_table viewAtColumn:0 row:0 makeIfNecessary:NO];
+    if ([v isKindOfClass:[SVLibraryHeaderView class]])
+        ((SVLibraryHeaderView *)v).separatorVisible = _scroll.contentView.bounds.origin.y > 0.5;
 }
 
 - (void)artistLibraryDidChange:(NSNotification *)note {
