@@ -18,6 +18,22 @@ int main() {
     CHECK(splitArtists("Xydur") == (V{"Xydur"}), "Xydur");
     CHECK(splitArtists("Vulkan") == (V{"Vulkan"}), "Vulkan");
 
+    g_context = "splitArtists brackets";
+    CHECK(splitArtists("Audio Syntax and Varaboro (ft Varazslo)") == (V{"Audio Syntax and Varaboro", "Varazslo"}), "paren ft");
+    CHECK(splitArtists("Osom [Psykovsky & Kindzadza] & Maramba") == (V{"Osom", "Maramba", "Psykovsky", "Kindzadza"}), "mid bracket");
+    CHECK(splitArtists("Anthropus [The Endless Knot]") == (V{"Anthropus", "The Endless Knot"}), "bracket");
+    CHECK(splitArtists("ritual zynth [ The Endless Knot ]") == (V{"ritual zynth", "The Endless Knot"}), "bracket spaces");
+    CHECK(splitArtists("Kara\xC3\xA1 [Kataclysmic][The Endless Knot]") == (V{"Kara\xC3\xA1", "Kataclysmic", "The Endless Knot"}), "two brackets");
+    CHECK(splitArtists("Oroboro (Official)") == (V{"Oroboro"}), "official");
+    CHECK(splitArtists("TikbaH (KinetiK Flux and MacromhO)") == (V{"TikbaH", "KinetiK Flux and MacromhO"}), "and in paren");
+    CHECK(splitArtists("Post Modern Music (PMM)") == (V{"Post Modern Music", "PMM"}), "PMM");
+    CHECK(splitArtists("KERAMIK (Metacortex Records)") == (V{"KERAMIK", "Metacortex Records"}), "records");
+    CHECK(splitArtists("A ft B") == (V{"A", "B"}), "ft word");
+    CHECK(splitArtists("A Featuring B") == (V{"A", "B"}), "featuring");
+    CHECK(splitArtists("A feat B") == (V{"A", "B"}), "feat word");
+    CHECK(splitArtists("A (unclosed") == (V{"A (unclosed"}), "unbalanced");
+    CHECK(splitArtists("A & B (A)") == (V{"A", "B"}), "dedupe");
+
     g_context = "splitArtists guards";
     CHECK(splitArtists("Florence and the Machine") == (V{"Florence and the Machine"}), "and");
     CHECK(splitArtists("Mumford and Sons") == (V{"Mumford and Sons"}), "and 2");

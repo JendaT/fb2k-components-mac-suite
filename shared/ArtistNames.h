@@ -29,7 +29,8 @@ inline std::string trim(const std::string& v) {
 
 inline bool isJoinerWord(const std::string& w) {
     std::string l = lowerAscii(w);
-    return l == "vs" || l == "vs." || l == "feat." || l == "ft." || l == "x" || l == "&";
+    return l == "vs" || l == "vs." || l == "feat" || l == "feat." || l == "ft" || l == "ft." ||
+           l == "featuring" || l == "featuring." || l == "x" || l == "&";
 }
 
 // Lowercase ASCII fold for U+00C0..U+00FF.
@@ -100,26 +101,47 @@ inline unsigned greekStrip(unsigned cp) {
 
 } // namespace detail
 
-// "A & B", "A vs B", "A feat. B", "A x B", "A, B", "A (B)" -> {"A","B"}.
-// Joiners must be whole words with a word on each side; "AT&T", "Malcolm X"
-// are left alone. Only a trailing "(...)" group becomes an extra part.
-// A "Friends" pseudo-artist is dropped.
+// "A & B", "A vs B", "A feat. B", "A ft B", "A x B", "A, B", "A (B)" -> {"A","B"}.
+// Joiners (vs, feat, ft, featuring, x, &) must be whole words with a word on each
+// side; "AT&T", "Malcolm X" are left alone ("and" is never a joiner).
+// Every balanced "(...)" / "[...]" group is cut out; the rest is split as above
+// and each group's content (minus a leading ft/feat/featuring word) is split the
+// same way and appended in order of appearance. Unbalanced brackets stay literal;
+// a group that is just "official" is dropped. A "Friends" pseudo-artist is
+// dropped and duplicates are removed (first occurrence wins).
 inline std::vector<std::string> splitArtists(std::string_view name) {
     std::vector<std::string> out;
     auto add = [&](std::string t) {
         t = detail::trim(t);
         if (t.empty() || detail::lowerAscii(t) == "friends") return;
+        for (const auto& o : out) if (o == t) return;
         out.push_back(t);
     };
 
-    std::string s = detail::trim(std::string(name));
-    std::string extra;
-    if (s.size() > 3 && s.back() == ')') {
-        size_t open = s.rfind(" (");
-        if (open != std::string::npos && open > 0) {
-            extra = s.substr(open + 2, s.size() - open - 3);
-            s = detail::trim(s.substr(0, open));
+    std::string s;
+    std::vector<std::string> groups;
+    {
+        const std::string in = detail::trim(std::string(name));
+        for (size_t i = 0; i < in.size(); i++) {
+            const char o = in[i];
+            if (o == '(' || o == '[') {
+                const char c = (o == '(') ? ')' : ']';
+                int depth = 0;
+                size_t j = i;
+                for (; j < in.size(); j++) {
+                    if (in[j] == o) depth++;
+                    else if (in[j] == c && --depth == 0) break;
+                }
+                if (j < in.size()) {
+                    groups.push_back(in.substr(i + 1, j - i - 1));
+                    s += ' ';
+                    i = j;
+                    continue;
+                }
+            }
+            s += o;
         }
+        s = detail::trim(s);
     }
 
     std::vector<std::string> words;
@@ -149,7 +171,19 @@ inline std::vector<std::string> splitArtists(std::string_view name) {
         }
     }
     add(cur);
-    if (!extra.empty()) add(extra);
+    for (const std::string& g : groups) {
+        std::string c = detail::trim(g);
+        if (detail::lowerAscii(c) == "official") continue;
+        size_t sp = 0;
+        while (sp < c.size() && !std::isspace((unsigned char)c[sp])) sp++;
+        if (sp < c.size()) {
+            std::string l = detail::lowerAscii(c.substr(0, sp));
+            if (l == "ft" || l == "ft." || l == "feat" || l == "feat." || l == "featuring")
+                c = detail::trim(c.substr(sp));
+        }
+        if (c.empty()) continue;
+        for (const auto& p : splitArtists(c)) add(p);
+    }
     return out;
 }
 
