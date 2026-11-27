@@ -11,7 +11,7 @@ Visual playback queue manager for foobar2000 macOS - functionality that exists i
 ## Requirements
 
 - foobar2000 for Mac 2.x
-- macOS 11.0+ (Big Sur or later)
+- macOS 12.0+ (Monterey or later)
 - Xcode 12+ with Command Line Tools (for building from source)
 - Ruby (for project generation)
 

@@ -606,7 +606,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Standalone unit-test suite (425 checks, 11 binaries, ASan+UBSan) gating every build via `Scripts/run_tests.sh`
 
 #### Fixed
-- **Preferences GUID**: No longer collides with another component's; existing layouts referencing it may need re-adding
+- **Preferences GUID**: No longer collides with another component's
 - Decoder open failures now log the chosen decoder and the exception instead of silently skipping the track
 - Debug-logging preference honored after restart (cache was only synced on toggle)
 - Static-destructor logging can no longer touch torn-down fb2k services

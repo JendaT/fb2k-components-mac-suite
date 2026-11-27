@@ -11,7 +11,7 @@ An interactive waveform display and seekbar for foobar2000 macOS.
 ## Requirements
 
 - foobar2000 for Mac 2.x
-- macOS 11.0+ (Big Sur or later)
+- macOS 12.0+ (Monterey or later)
 - Xcode 12+ with Command Line Tools (for building from source)
 - Ruby (for project generation)
 

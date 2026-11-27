@@ -19,7 +19,7 @@ Adds a personal "Save to library" export into the music.hq folder layout, and DA
 - `Tests/` + `Scripts/run_tests.sh` — standalone test binaries (no XCTest, no Xcode) gating `build.sh`; suites for ManifestParser, both policies, URLUtils, TidalSession, StreamCache.
 
 ### Fixed
-- **Preferences GUID**: Preferences page GUID no longer collides with another component's; layouts referencing it by GUID may need re-adding.
+- **Preferences GUID**: Preferences page GUID no longer collides with another component's.
 - Decoder open failures are no longer silent: `open_for_decoding` now logs which decoder was selected and the exact exception before fb2k skips the track (previously the console showed "Found decoder, opening..." then nothing).
 - Debug-logging preference is now honored after restart (the cached flag was previously only synced when the pref was toggled).
 - Logging from static destructors can no longer touch torn-down fb2k services (console backend is dropped on component quit).

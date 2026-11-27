@@ -12,7 +12,7 @@ A streamlined playlist view with album grouping and cover art display.
 
 ### Requirements
 
-- macOS 11.0 (Big Sur) or later
+- macOS 12.0 (Monterey) or later
 - Xcode 14.0 or later
 - foobar2000 SDK 2025-03-07
 - Ruby (for project generation)
