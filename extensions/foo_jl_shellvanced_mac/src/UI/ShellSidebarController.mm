@@ -544,10 +544,17 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
         }
         return;
     }
+    // reloadData may clear the selection and reset scrolling: keep the user's position.
+    NSClipView *clip = _scroll.contentView;
+    const NSPoint origin = clip.bounds.origin;
     _reflecting = YES;
     [_table reloadData];
     _reflecting = NO;
-    [self reflectDestination:_reflected];
+    [self reflectDestination:_reflected scroll:NO];
+    NSPoint restored = origin;
+    restored.y = MAX(0, MIN(restored.y, NSHeight(_table.frame) - NSHeight(clip.bounds)));
+    [clip scrollToPoint:restored];
+    [_scroll reflectScrolledClipView:clip];
 }
 
 - (void)reloadPlaylists {
@@ -575,16 +582,19 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
 }
 
 - (void)reflectDestination:(const Destination &)destination {
+    [self reflectDestination:destination scroll:YES];
+}
+
+- (void)reflectDestination:(const Destination &)destination scroll:(BOOL)scroll {
     _reflected = destination;
     if (!self.isViewLoaded) return;
     NSInteger row = [self rowForDestination:destination];
     _reflecting = YES;
     if (row >= 0) {
         if (_table.selectedRow != row) {
-            // Only move the list when the selection actually changes, so rebuilds don't yank the scroll position.
             [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
-            [_table scrollRowToVisible:row];
         }
+        if (scroll) [_table scrollRowToVisible:row];
     } else {
         [_table deselectAll:nil];
     }
@@ -972,7 +982,7 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     NSInteger row = _table.selectedRow;
     if (row < 0) {
         // Clicking empty space: keep showing what the content shows.
-        dispatch_async(dispatch_get_main_queue(), ^{ [self reflectDestination:self->_reflected]; });
+        dispatch_async(dispatch_get_main_queue(), ^{ [self reflectDestination:self->_reflected scroll:NO]; });
         return;
     }
     SVSidebarItem *item = _items[(NSUInteger)row];
