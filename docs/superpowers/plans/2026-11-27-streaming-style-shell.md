@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** One "Now Playing" up-next list with Play / Play Next / Add to Queue everywhere, an Up Next popover in PlayVanced, and a new ShellVanced panel (sidebar + navigable content area hosting existing panels).
+**Goal:** One "Now Playing" up-next list with Play / Play Next / Add to Queue everywhere, an Up Next popover in PlayVanced, a new ShellVanced panel (sidebar + navigable content area hosting existing panels) with an artist browser, and Spotify-style keyboard shortcuts.
 
 **Architecture:** Pure, SDK-free decision logic in header-only `shared/UpNextCore.h` (unit-tested), a thin header-only SDK wrapper `shared/UpNext.h` compiled into each consumer. ShellVanced hosts other components by enumerating `ui_element_mac` services and instantiating them by GUID; it keeps instances alive and swaps visibility.
 
@@ -28,7 +28,8 @@
 2. **Now Playing playlist deleted or renamed by the user** — helpers recreate it on next action; popover shows empty state, no crash (Task 1 `findOrCreateNowPlaying`, Task 5 empty state).
 3. **Playback stopped** — Play Next inserts after focus (or at 0), nothing auto-starts (Task 1 tests).
 4. **Hosted component not installed** — shell shows a placeholder instead of crashing (Task 6 step).
-5. **Playlist list churn while shell is open** (create/rename/delete/reorder playlists, including "Now Playing" being created) — sidebar never shows "Now Playing", selection survives or falls back to Albums (Task 7 `sidebarPlaylists` tests + callback refresh).
+5. **Artist photos for same-name artists** — never show a stranger's photo; ambiguous names without an album-title overlap fall back to the album cover (Task 9 `exactCandidates`/`titlesOverlap` tests).
+6. **Playlist list churn while shell is open** (create/rename/delete/reorder playlists, including "Now Playing" being created) — sidebar never shows "Now Playing", selection survives or falls back to Albums (Task 7 `sidebarPlaylists` tests + callback refresh).
 
 ---
 
@@ -36,9 +37,13 @@
 
 | Phase | Tasks (parallel within a phase; disjoint files) |
 |---|---|
-| 1 | Task 1 (fixer) · Task 6 shell spike (fixer) · GUID fix (orchestrator, inline) |
-| 2 | Task 2 (fixer) · Task 3 (fixer) · Task 4 (fixer) · Task 5 (designer) · Task 7 (designer, only if Task 6 passed) |
-| 3 | Task 8 (orchestrator) |
+| 1 | Task 1 (fixer) · Task 6 shell spike (fixer) · GUID fix (orchestrator, inline) — orchestrator commits all before phase 2 |
+| 2 | Task 2 (fixer) · Task 4 (fixer) · Task 5 (designer) · Task 7 (designer, only if Task 6 passed) · Task 9 (fixer, **own git worktree**, only if Task 6 passed) |
+| 3 | Task 7 agent wires Task 9's artist classes into the sidebar/navigation · Task 8 (orchestrator) |
+
+Task 3 (LibVanced) was dropped: LibVanced is not part of the shell and stays unchanged.
+
+**Worktree note (Task 9):** the SDK folder is gitignored, so in a worktree export `FB2K_SDK_PATH=/Users/codrin/Documents/Workspace/fb2k-components-mac-suite/SDK-2025-03-07` before `./Scripts/build.sh`. Task 9 touches only `extensions/foo_jl_shellvanced_mac/src/Artists/` and `extensions/foo_jl_shellvanced_mac/Tests/Artist*`; Task 7 owns every other shell file, including `Scripts/run_tests.sh`.
 
 ---
 
@@ -48,6 +53,7 @@
 - Create: `shared/UpNextCore.h` (pure C++17, no SDK)
 - Create: `shared/UpNext.h` (header-only SDK wrapper; includes `UpNextCore.h`)
 - Create: `shared/Tests/UpNextCoreTests.cpp`, `shared/Tests/TestHarness.h` (copy of `extensions/foo_jl_simplaylist_mac/Tests/TestHarness.h`)
+- Create: `shared/ArtistNames.h` (pure) + `shared/Tests/ArtistNamesTests.cpp`
 - Create: `shared/scripts/run_tests.sh` (same conventions as `extensions/foo_jl_simplaylist_mac/Scripts/run_tests.sh`: auto-discover `shared/Tests/*Tests.cpp`, ASan+UBSan, exit non-zero on failure)
 
 **Interfaces — Produces (`namespace upnext`, in `UpNextCore.h`):**
@@ -102,8 +108,13 @@ extern/inline const GUID kSourceLabelProperty;         // generate a fresh GUID
 `buildSections`: playing idx 2 of 5 → `{true, 3, 2}`; playing last of 5 → `{true, 5, 0}`; stopped count 4 → `{false, 0, 4}`; stopped count 0 → `{false, 0, 0}`.
 `isDuplicateFoobarMenuItem`: true for "Play", " play ", "Add to playback queue", "Add to Playback Queue"; false for "Play Next", "Add to Queue", "Playback Statistics".
 
+`ArtistNames.h` (`namespace artistnames`): `std::vector<std::string> splitArtists(std::string_view)`, `bool isVariousArtists(std::string_view)`, `std::string artistKey(std::string_view)`. Tests in `shared/Tests/ArtistNamesTests.cpp`:
+- `splitArtists("Radice & Uyak") == {"Radice","Uyak"}`; `"Audiokidnapping vs Der Sandmann"` → `{"Audiokidnapping","Der Sandmann"}`; `"Magnethik Sadhu & Xydur (Trimurti)"` → `{"Magnethik Sadhu","Xydur","Trimurti"}`; `"Psykovsky & Friends"` → `{"Psykovsky"}`; `"A feat. B"`, `"A ft. B"`, `"A x B"`, `"A, B"` → `{"A","B"}`; `"Armec"` → `{"Armec"}`; words containing x/vs inside (`"Xydur"`, `"Vulkan"`) are not split.
+- `isVariousArtists`: true for "Various Artists", "various artists", "VA", "V/A"; false for "Vali", "Vavaa".
+- `artistKey("KiLLΔTK") != artistKey("KiLLATK")` is acceptable; `artistKey("Beyoncé") == artistKey("beyonce")`; `artistKey("D.o.c.") == artistKey("doc")`; `artistKey("Alice D") != artistKey("Alice DJ")`.
+
 - [ ] **Step 2: Run** `shared/scripts/run_tests.sh` — expected: FAIL (functions undefined).
-- [ ] **Step 3: Implement `shared/UpNextCore.h`** to the interface above.
+- [ ] **Step 3: Implement `shared/UpNextCore.h` and `shared/ArtistNames.h`** to the interfaces above (accent folding: a small built-in Latin-1/Latin-Extended-A fold table is enough; no ICU).
 - [ ] **Step 4: Run** `shared/scripts/run_tests.sh` — expected: all pass, exit 0.
 - [ ] **Step 5: Implement `shared/UpNext.h`.** Approach:
   - `currentPlaybackState()` from `playback_control::is_playing`, `playlist_manager::get_playing_item_location`, NP index via `find_playlist(kNowPlayingName)`, `playback_order_get_name(playback_order_get_active())` → `isShuffleOrderName`.
@@ -116,24 +127,16 @@ extern/inline const GUID kSourceLabelProperty;         // generate a fresh GUID
 
 **Files:** Modify `extensions/foo_jl_albumviewvanced_mac/src/UI/AlbumViewVancedController.mm` (play path `:374-400`, queue `:402-436`, menu `:460-612`, Now Playing helpers `:634-700`), `src/UI/AlbumGridView.mm` (`keyDown` `:786-814` only if Q routing lives there), `src/Core/*Config*` (remove `kStableNowPlayingPlaylistName` if unused).
 
-**Consumes:** `upnext::fb::playNow/playNext/addToQueue`, `upnext::isDuplicateFoobarMenuItem` (Task 1).
+**Consumes:** `upnext::fb::playNow/playNext/addToQueue`, `upnext::isDuplicateFoobarMenuItem`, `artistnames::*` (Task 1).
+**Produces:** selector `setArtistFilter:` (NSString or nil) on the AlbumViewVanced view controller.
 
 - [ ] **Step 1:** `playPaths:startIndex:` → build handles as today, call `upnext::fb::playNow(items, startIndex, <album title>)`. No queue flush, no `set_active_playlist`.
 - [ ] **Step 2:** Menu top section in this order: Play, Play Next, Add to Queue (key equivalent `q`), Add to Playlist ▸ (existing submenu, still excluding Now Playing), separator, foobar tree. Remove "Add to Now Playing" and "Add to Playback Queue" items and their now-dead methods.
 - [ ] **Step 3:** In the recursive foobar-menu builder (`:580-612`), skip nodes where `upnext::isDuplicateFoobarMenuItem(name)` is true.
 - [ ] **Step 4:** Q key → Add to Queue (`upnext::fb::addToQueue`).
-- [ ] **Step 5:** `./Scripts/build.sh` → `BUILD SUCCEEDED`. Grep shows no remaining `queue_flush` or `set_active_playlist` in the play path.
-
-### Task 3: LibVanced unified actions
-
-**Files:** Modify `extensions/foo_jl_libvanced_mac/src/UI/LibVancedController.mm` (double-click `:155` handler, menu `:480-577`, Q handling).
-
-**Consumes:** same as Task 2.
-
-- [ ] **Step 1:** Double-click / Enter → `upnext::fb::playNow(items, 0, <node display name>)` (replaces "send to current playlist").
-- [ ] **Step 2:** Menu top: Play, Play Next, Add to Queue (`q`), Add to Playlist ▸ containing the existing Send to Playlist / Add to Playlist / Send to New Playlist entries, separator, foobar tree with `isDuplicateFoobarMenuItem` filtering (both the main builder and the v1 fallback at `:528`). Remove the old "Add to Queue" foobar-queue implementation.
-- [ ] **Step 3:** Q key → `upnext::fb::addToQueue`.
-- [ ] **Step 4:** `./Scripts/build.sh` → `BUILD SUCCEEDED` (runs nothing else).
+- [ ] **Step 5: Artist filter.** Add `- (void)setArtistFilter:(nullable NSString *)name;` on the controller (declared in its header, but the shell calls it via `respondsToSelector:`/`performSelector:` — keep the exact selector). Owned albums = album artist's `artistnames::splitArtists` parts contain a part with equal `artistKey`; appears-on = any track artist part matches but not owned. Owned first, then an "Appears on" section label in the grid; search field hidden while a filter is set; `nil` restores everything. Exclude `isVariousArtists` names from owned matching.
+- [ ] **Step 6:** ⌘F / ⌘L (`performKeyEquivalent:` on the controller's view, only when the window is key) → focus the search field (`makeFirstResponder:`), unless an artist filter hides it.
+- [ ] **Step 7:** `./Scripts/build.sh` → `BUILD SUCCEEDED`. Grep shows no remaining `queue_flush` or `set_active_playlist` in the play path.
 
 ### Task 4: SimPlaylist shell mode
 
@@ -159,7 +162,8 @@ extern/inline const GUID kSourceLabelProperty;         // generate a fresh GUID
 - [ ] **Step 2:** `NSPopover` (transient, ~360×480) with `NSTableView` sections: **Now playing**, **Queued** (foobar queue via `queue_get_contents`, only if non-empty), **Next from: <label>** using `buildSections` over the playing playlist (NP when stopped). Shuffle note "Shuffle is on — order may differ" when `isShuffleOrderName`. Empty state "Nothing up next". Rows: small art if cheaply available (else none), title, artist, duration.
 - [ ] **Step 3:** Interactions on NP rows: double-click → `playlist_execute_default_action(np, idx)`; drag reorder → `playlist_reorder_items`; Delete key and context "Remove" → `playlist_remove_items`; "Clear" button removes items after the playing one. Rows from a non-NP playing playlist are read-only.
 - [ ] **Step 4:** Refresh on new track/stop, NP item add/remove/reorder, playing-playlist change, queue change; coalesce to one reload per run-loop turn; only while popover is shown.
-- [ ] **Step 5:** `./Scripts/build.sh --regenerate` → `BUILD SUCCEEDED`.
+- [ ] **Step 5: Shortcuts** in new `src/Integration/PlayVancedShortcuts.mm` (local `NSEvent` key-down monitor installed once, removed at shutdown): Space play/pause (skip when first responder is an `NSText`/field editor or the event's window isn't the foobar main window), ⌘→/⌘← next/previous, ⌘↑/⌘↓ volume ±(use `playback_control::volume_up/volume_down`), ⌘S toggle shuffle (reuse the controller's shuffle toggle), ⌘R cycle repeat (reuse controller), ⌥⌘U toggle the Up Next popover (on the first registered controller). Consume handled events.
+- [ ] **Step 6:** `./Scripts/build.sh --regenerate` → `BUILD SUCCEEDED`.
 
 ### Task 6: ShellVanced scaffold + hosting spike (hard gate)
 
@@ -171,11 +175,12 @@ extern/inline const GUID kSourceLabelProperty;         // generate a fresh GUID
 NSViewController* SVInstantiateElement(const GUID& guid, NSDictionary<NSString*,NSString*>* params);
 ```
 using `for (auto e : ui_element_mac::enumerate()) if (e->get_guid() == guid) …instantiate(fb2k::wrapNSObject(params))` + `fb2k::unwrapNSObject`.
-GUIDs: AlbumViewVanced `{B4E8F3A2-9C5D-4E6B-AF7E-2D3C4B5A6E7F}`, LibVanced `{A3D7F2E1-8B4C-4F5A-9E6D-1C2B3A4D5E6F}`, SimPlaylist `{8FE5C4B4-619D-4D89-8567-1D96C32E2162}`.
+GUIDs: AlbumViewVanced `{B4E8F3A2-9C5D-4E6B-AF7E-2D3C4B5A6E7F}`, SimPlaylist `{8FE5C4B4-619D-4D89-8567-1D96C32E2162}`.
 
 - [ ] **Step 1:** Scaffold; `./Scripts/build.sh --regenerate` → `BUILD SUCCEEDED`.
 - [ ] **Step 2:** Spike: controller view hosts AlbumViewVanced via `SVInstantiateElement` filling the view; placeholder label "Install AlbumViewVanced to use this section" when nil. Build → `BUILD SUCCEEDED`.
-- [ ] **Step 3:** Report back for the orchestrator's in-app check (orchestrator installs ShellVanced, adds it to a test layout, confirms the grid renders and works; also checks that hosted controllers unregister from their singleton callback managers on teardown — read `PlayVancedCallbacks.mm:22`-style code in AlbumViewVanced/LibVanced). **Gate:** if hosting fails, stop Task 7 and apply the spec fallback.
+- [ ] **Step 2b:** On first instantiate, log every `NSApp.mainMenu` item with a key equivalent (recursively: menu path, modifiers, key) to the foobar console with prefix `[ShellVanced] key:`, on the next run-loop turn so dynamic menus exist. (Removed in Task 7.)
+- [ ] **Step 3:** Report back for the orchestrator's in-app check (orchestrator installs ShellVanced, adds it to a test layout, confirms the grid renders and works; also checks that hosted controllers unregister from their singleton callback managers on teardown — read `PlayVancedCallbacks.mm:22`-style code in AlbumViewVanced). **Gate:** if hosting fails, stop Task 7 and apply the spec fallback.
 
 ### Task 7: ShellVanced sidebar, navigation, playlists (designer)
 
@@ -183,8 +188,8 @@ GUIDs: AlbumViewVanced `{B4E8F3A2-9C5D-4E6B-AF7E-2D3C4B5A6E7F}`, LibVanced `{A3D
 
 **Produces (`namespace shellcore`):**
 ```cpp
-enum class DestKind { Albums, Library, Playlist };
-struct Destination { DestKind kind; std::string playlistName; bool operator==(const Destination&) const; };
+enum class DestKind { Albums, Playlist, Artist };
+struct Destination { DestKind kind; std::string name; bool operator==(const Destination&) const; }; // name: playlist or artist
 class NavHistory {
 public:
     void push(const Destination& d);   // no-op if equal to current; truncates forward stack
@@ -198,14 +203,63 @@ std::vector<size_t> sidebarPlaylists(const std::vector<std::string>& names); // 
 - [ ] **Step 1: Failing tests** `Tests/ShellCoreTests.cpp`: push A,B,C → back()==B, back()==A, canGoBack false; push D after back → canGoForward false; push same as current doesn't grow history; `sidebarPlaylists({"Now Playing","Hitech","Tek"}) == {1,2}`; `{"now playing"}` is kept (exact match only); empty → empty.
 - [ ] **Step 2:** `Scripts/run_tests.sh` → FAIL; implement `ShellCore.h`; → PASS.
 - [ ] **Step 3: Layout** — `NSSplitView`: source-list sidebar (min 180, default 220, collapsible) + content container with a top row: back/forward buttons + destination title.
-- [ ] **Step 4: Sidebar** — LIBRARY: Albums, Library; PLAYLISTS (+ creates "New Playlist" and starts inline rename): `sidebarPlaylists` with item counts. Select playlist → `set_active_playlist(idx)` + show hosted SimPlaylist (`{"vanced":"1"}`). Context menu: Play (`upnext::fb::playPlaylistIntoNowPlaying(idx,0)`), Rename, Delete. Drop targets: file URLs and `com.foobar2000.simplaylist.rows` (model: `extensions/foo_jl_plorg_mac/src/UI/PlaylistOrganizerController.mm:550`) → append to that playlist.
+- [ ] **Step 4: Sidebar** — fixed **Albums** row; **Your Library** header with + (creates "New Playlist" and starts inline rename) and filter chips **[Playlists] [Artists]** (none selected = both; persist selection). Playlists: `sidebarPlaylists` with item counts. Artists: rows from Task 9's `SVArtistLibrary` (32 px round photo from `SVArtistImageProvider`, name) — until Task 9 lands, stub the Artists section behind the chip. Select playlist → `set_active_playlist(idx)` + show hosted SimPlaylist (`{"vanced":"1"}`). Context menu: Play (`upnext::fb::playPlaylistIntoNowPlaying(idx,0)`), Rename, Delete. Drop targets: file URLs and `com.foobar2000.simplaylist.rows` (model: `extensions/foo_jl_plorg_mac/src/UI/PlaylistOrganizerController.mm:550`) → append to that playlist.
 - [ ] **Step 5: Hosting/navigation** — lazy `SVInstantiateElement` per destination kind, keep alive, swap `hidden`; navigation goes through `NavHistory`; refresh sidebar via `playlist_callback` (created/removed/renamed/reordered/items count); if the shown playlist disappears, navigate to Albums. Persist last destination + sidebar width (cfg vars).
-- [ ] **Step 6:** `./Scripts/build.sh --regenerate` → tests pass, `BUILD SUCCEEDED`.
+- [ ] **Step 6: Shortcuts** via `performKeyEquivalent:` on the shell's root view: ⌘F/⌘L focus the first visible `NSSearchField` in the current content (Albums home) — on a playlist or artist page, no-op; ⌘[ / ⌘] back/forward; ⌘1 Albums; ⌘N new playlist; ⌃⌘S toggle sidebar. Remove the Task 6 key-dump logging. If the orchestrator reports a collision from the key dump, use the replacement key it gives you.
+- [ ] **Step 7:** `./Scripts/build.sh --regenerate` → tests pass, `BUILD SUCCEEDED`.
+- [ ] **Step 8 (phase 3, after Task 9 lands): Artist page.** Destination `Artist(name)`: show Task 9's `SVArtistHeaderView` above the hosted AlbumViewVanced and call `setArtistFilter:name` (via `respondsToSelector:`); leaving the artist page calls `setArtistFilter:nil` and hides the header. Header Play/Shuffle → `upnext::fb::playNow(handles, 0, "Next from: <artist>")` with handles from `SVArtistLibrary` (shuffled copy for Shuffle). Build → `BUILD SUCCEEDED`.
+
+### Task 9: Artist library + photos (fixer, own worktree)
+
+**Files:** Create under `extensions/foo_jl_shellvanced_mac/`: `src/Artists/ArtistIndexCore.h` (pure), `src/Artists/DeezerMatchCore.h` (pure), `src/Artists/SVArtistLibrary.{h,mm}`, `src/Artists/SVArtistImageProvider.{h,mm}`, `src/Artists/SVDeezerClient.{h,mm}`, `src/Artists/SVArtistHeaderView.{h,mm}`, `Tests/ArtistIndexCoreTests.cpp`, `Tests/DeezerMatchCoreTests.cpp`.
+
+**Consumes:** `artistnames::*` (Task 1).
+**Produces:**
+```cpp
+namespace artistindex {
+struct TrackRow { std::string albumArtist, artist, album, date; size_t trackIndex; }; // trackIndex = caller's handle index
+struct ArtistEntry { std::string name; std::string key; std::vector<std::string> ownedAlbums, appearsOnAlbums; std::vector<size_t> trackIndices; std::string newestAlbum; };
+std::vector<ArtistEntry> buildIndex(const std::vector<TrackRow>& rows); // sorted by key; VA excluded; album artist falls back to artist
+}
+namespace deezermatch {
+struct Candidate { std::string id, name, pictureUrl; long fans; };
+bool hasRealPicture(const std::string& url);                 // false if empty or contains "/images/artist//"
+std::vector<size_t> exactCandidates(const std::string& artist, const std::vector<Candidate>&);
+std::string normalizeTitle(const std::string& title);       // drop (..)/[..], EP/LP/VA/remaster noise, punctuation, case
+bool titlesOverlap(const std::vector<std::string>& user, const std::vector<std::string>& remote); // equal, or ≥6-char containment
+}
+```
+```objc
+@interface SVArtistLibrary : NSObject   // singleton; rebuilds from library_manager (debounced 1 s) on library_callback
++ (instancetype)shared;
+@property (readonly) NSArray<NSString *> *artistNames;     // display names, sorted
+- (metadb_handle_list)handlesForArtist:(NSString *)name;   // owned + appears-on, album/track order
+- (NSUInteger)albumCountForArtist:(NSString *)name; - (NSUInteger)trackCountForArtist:(NSString *)name;
+- (NSArray<NSString *> *)userTitlesForArtist:(NSString *)name; // album + track titles, for disambiguation
+extern NSNotificationName const SVArtistLibraryDidChangeNotification;
+@end
+@interface SVArtistImageProvider : NSObject
++ (instancetype)shared;
+- (void)imageForArtist:(NSString *)name size:(CGFloat)points completion:(void (^)(NSImage *image))completion; // main thread; round-cropped; fallback = newest album cover; placeholder initials if neither
+@end
+@interface SVArtistHeaderView : NSView
+@property (copy) NSString *artistName;      // loads photo + counts
+@property (copy) void (^onPlay)(void); @property (copy) void (^onShuffle)(void);
+@end
+```
+
+- [ ] **Step 1: Failing tests.** `ArtistIndexCoreTests.cpp`: rows {AA="Radice & Uyak", album "X"}, {AA="", artist="Armec", album "Replication EP"}, {AA="Various Artists", artist="Fele", album "Comp"} → artists `Armec` (owned {"Replication EP"}), `Fele` (owned {}, appearsOn {"Comp"}), `Radice` and `Uyak` (owned {"X"}); no "Various Artists" entry; sorted by key; `newestAlbum` picks max `date` (ties → first seen). `DeezerMatchCoreTests.cpp`: `hasRealPicture` false for `"https://e-cdns-images.dzcdn.net/images/artist//250x250-000000-80-0-0.jpg"` and "", true for a URL with a hash; `exactCandidates("Kaya", {Kaya, KAYA, Kayah})` → {0,1}; `exactCandidates("Alice D", {"Alice DJ"})` → {}; `titlesOverlap({normalizeTitle("Replication EP")}, {normalizeTitle("Replication (Remastered)")})` true; `titlesOverlap({"abc"}, {"abcd"})` false (under 6 chars).
+- [ ] **Step 2:** Compile/run these tests with bare `clang++ -std=c++17 -I../../shared` (same flags as `shared/scripts/run_tests.sh`) → FAIL; implement the two cores → PASS. (Task 7 adds `Scripts/run_tests.sh`, which will pick these up.)
+- [ ] **Step 3:** `SVDeezerClient`: `search/artist?q=&limit=5` and `artist/{id}/albums?limit=100`, NSURLSession, generic User-Agent, ≤ 8 req/s (adapt `shared/RateLimiter.*` by copying into `src/Artists/`), JSON → `deezermatch::Candidate`.
+- [ ] **Step 4:** `SVArtistImageProvider` decision: one exact candidate with real picture → use it; several exact → accept only the candidate whose albums overlap `userTitlesForArtist:` (fetch albums lazily); otherwise fallback. Disk cache in `NSCachesDirectory/foo_jl_shellvanced/artists/<sha1(artistKey)>.jpg`; negative results in `.../negative.json` with 30-day TTL; in-memory NSCache. Fallback cover via `album_art_manager_v2` on a track of `newestAlbum`. Round crop at requested size, Retina-aware.
+- [ ] **Step 5:** `SVArtistLibrary` + `SVArtistHeaderView` (128 pt round photo, name in large bold, "N albums · M tracks", Play and Shuffle buttons styled like `shared/UIStyles.h`).
+- [ ] **Step 6:** In the worktree: `FB2K_SDK_PATH=… ./Scripts/build.sh --regenerate` → `BUILD SUCCEEDED`. Report the worktree path and branch.
 
 ### Task 8: Integration, docs, release prep (orchestrator)
 
 - [ ] GUID fix: fresh GUIDs for `g_guid_playback_controls` (`foo_jl_playback_controls_ext/src/Integration/Main.mm:63-65`) and `g_guid_tidal_prefs` (`foo_jl_tidal_mac/src/Integration/Main.mm:99-100`); build both.
-- [ ] Version bumps in `shared/version.h`: AlbumViewVanced, LibVanced, PlayVanced → 1.1.0; SimPlaylist → 1.6.0; Playback Controls → 0.1.1; Tidal → 0.3.2; ShellVanced 0.1.0.
+- [ ] Merge Task 9's worktree branch (fast-forward or cherry-pick; files are disjoint).
+- [ ] Version bumps in `shared/version.h`: AlbumViewVanced, PlayVanced → 1.1.0; SimPlaylist → 1.6.0; Playback Controls → 0.1.1; Tidal → 0.3.2; ShellVanced 0.1.0.
 - [ ] CHANGELOG per component + global CHANGELOG (compact style); README updates; `docs/shellvanced.md` (layout snippet from spec §5); `docs/hosting-ui-elements.md` (how to instantiate another component's ui_element_mac, gotchas found in Task 6).
 - [ ] `./Scripts/build.sh --clean --install` for every changed component → each `BUILD SUCCEEDED`; `shared/scripts/run_tests.sh` passes.
 - [ ] Hand the user a manual checklist (Review Focus items 1–5 + popover interactions) and offer to apply the new layout with a backup of `UI-Layout.txt`.

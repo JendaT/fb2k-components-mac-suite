@@ -16,14 +16,18 @@ Current layout (`~/Library/foobar2000-v2/UI-Layout.txt`): `foo_plorg` + tabs(`qu
 
 1. **Single up-next model.** The hidden "Now Playing" playlist is the one and only up-next list.
 2. **Up Next popover** opened from a new button in PlayVanced's bar.
-3. **Unified actions** in AlbumViewVanced, LibVanced and (when hosted by the shell) SimPlaylist: **Play**, **Play Next**, **Add to Queue**, **Add to Playlist ▸**, with no duplicate entries.
-4. **ShellVanced**: new ui_element that owns the main area — sidebar (Albums, Library, Playlists) + content area hosting the existing panels, with back/forward.
-5. Fix the duplicate ui_element GUID `{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}` shared by Playlist Organizer, Playback Controls and Tidal.
+3. **Unified actions** in AlbumViewVanced and (when hosted by the shell) SimPlaylist: **Play**, **Play Next**, **Add to Queue**, **Add to Playlist ▸**, with no duplicate entries.
+4. **ShellVanced**: new ui_element that owns the main area — sidebar (Albums, Your Library with Playlists/Artists filters) + content area hosting the existing panels, with back/forward.
+5. **Artist browser** (added 2026-11-27): artist list with round photos (Deezer, album-cover fallback) and an artist page.
+6. **Keyboard shortcuts** in the Spotify/Apple Music style (§7).
+7. Fix the duplicate ui_element GUID `{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}` shared by Playlist Organizer, Playback Controls and Tidal.
 
 ## Non-goals (v1)
 
 - Shell-level global search (each hosted panel keeps its own search field).
-- Album/artist detail "pages" (AlbumViewVanced's inline expand stays the album view).
+- Album detail pages (AlbumViewVanced's inline expand stays the album view).
+- LibVanced in the shell (user decided: album search already finds artists; the artist browser replaces the tree). LibVanced is untouched.
+- Spotify as a photo source (tested 2026-11-27: Deezer 46/62 album artists with photo vs Spotify 40/62, union 48; Spotify dev apps hit a 24 h rate-limit block after ~70 searches).
 - Playlist folders in the sidebar (plorg keeps folders; the shell sidebar is flat).
 - SDK upgrade to 2026-10-01 (separate task: C++17→C++20 across all projects).
 - Exact shuffle-order prediction in the popover.
@@ -74,13 +78,14 @@ One implementation, compiled into each component that needs it:
 
 **Playing from another playlist:** when playback is from playlist P ≠ Now Playing and the user does Play Next / Add to Queue, first copy P's remaining items (from the playing index on) into Now Playing, call `set_playing_playlist(NowPlaying)` so the next track comes from Now Playing, then apply the action. The current track keeps playing uninterrupted. When stopped, Play Next/Add to Queue simply edits Now Playing without starting playback.
 
-### 2. AlbumViewVanced and LibVanced
+### 2. AlbumViewVanced
 
 - Context menu top section: **Play**, **Play Next**, **Add to Queue**, **Add to Playlist ▸** (playlist list excludes Now Playing), separator, then foobar's tree with duplicates filtered.
 - Remove "Add to Now Playing" / "Add to Playback Queue" custom items.
-- Double-click / Enter → Play (replace Now Playing). LibVanced's current "send to current playlist" on double-click changes to this.
+- Double-click / Enter → Play (replace Now Playing).
 - `Q` → Add to Queue (append to Now Playing).
-- LibVanced keeps "Send to Playlist / Send to New Playlist" under Add to Playlist ▸.
+- **Artist filter** for the shell's artist page: the controller responds to `-setArtistFilter:(nullable NSString*)name` (called by the shell via ObjC messaging, no linking). When set: show only albums where the artist is an album artist (after collaboration splitting) first, then albums they appear on (track artist) under an "Appears on" separator; hide the search field. `nil` restores the normal grid.
+- **⌘F / ⌘L** focus its search field (works standalone too).
 
 ### 3. SimPlaylist shell mode
 
@@ -106,10 +111,11 @@ Without the flag SimPlaylist behaves exactly as today. (Whether foobar itself pa
 - Scaffold with `Scripts/new-component.sh shellvanced "ShellVanced"` (read the script first — it touches `~/.local/bin` and zsh completions). Layout names: `ShellVanced`, `shellvanced`, `vanced_shell`.
 - **Structure:** an `NSSplitView` with a source-list sidebar (min ~180, default ~220, collapsible) and a content container. Toolbar row at the top of the content area: back/forward buttons + current destination title.
 - **Sidebar** (`NSOutlineView`, source-list style):
-  - LIBRARY: **Albums** (hosts AlbumViewVanced), **Library** (hosts LibVanced).
-  - PLAYLISTS (+ button): every playlist except Now Playing, with item counts. Selecting one → `set_active_playlist(idx)` and show the hosted SimPlaylist (shell mode). Context menu: Play (→ `playPlaylistIntoNowPlaying(idx, 0)`), Rename, Delete. Accepts track drops (suite pasteboard format + file URLs) to add to that playlist. Refreshes via `playlist_callback`.
-- **Hosting:** enumerate `ui_element_mac` services, match by GUID (AlbumViewVanced, LibVanced, SimPlaylist), `instantiate` lazily on first visit with the arg dict, `unwrapNSObject` → `NSViewController`, add as child VC. Keep instances alive and swap visibility (Eole model). If a component isn't installed, show a placeholder "Install <name> to use this section".
-- **History:** destinations = {albums, library, playlist(name)}; back/forward stack; persist last destination and sidebar width in component config.
+  - **Albums** (home, hosts AlbumViewVanced) fixed at the top.
+  - **Your Library** header with filter chips **[Playlists] [Artists]** (none selected = both, like Spotify) and a + (new playlist).
+  - Playlists: every playlist except Now Playing, with item counts. Selecting one → `set_active_playlist(idx)` and show the hosted SimPlaylist (shell mode). Context menu: Play (→ `playPlaylistIntoNowPlaying(idx, 0)`), Rename, Delete. Accepts track drops (suite pasteboard format + file URLs) to add to that playlist. Refreshes via `playlist_callback`.
+- **Hosting:** enumerate `ui_element_mac` services, match by GUID (AlbumViewVanced, SimPlaylist), `instantiate` lazily on first visit with the arg dict, `unwrapNSObject` → `NSViewController`, add as child VC. Keep instances alive and swap visibility (Eole model). If a component isn't installed, show a placeholder "Install <name> to use this section".
+- **History:** destinations = {albums, playlist(name), artist(name)}; back/forward stack; persist last destination and sidebar width in component config.
 - **Risk to spike first:** enumerating and instantiating another component's `ui_element_mac` from inside a ui_element (no repo precedent). Also verify hosted controllers that register with singleton callback managers behave with exactly one instance and unregister on teardown.
 
 New layout once ready:
@@ -120,9 +126,36 @@ splitter horizontal style=thin
  splitter vertical style=thin
   playvanced
 ```
-(mirrors the current root structure; builder adjusts to whatever keeps PlayVanced as the bottom bar). Queue Manager and plorg leave the layout.
+(mirrors the current root structure; builder adjusts to whatever keeps PlayVanced as the bottom bar). Queue Manager, LibVanced and plorg leave the layout.
 
-### 6. GUID collision
+### 6. Artist browser (part of ShellVanced)
+
+- **Shared pure helpers** `shared/ArtistNames.h`: `splitArtists(name)` (split on " vs ", " & ", " x ", " feat. ", " ft. ", ", "; parenthesised group names become extra parts; drop "Friends"), `isVariousArtists(name)` ("Various Artists", "VA", "V/A", case-insensitive), `artistKey(name)` (case/accent/punctuation-insensitive). Used by the shell index and AlbumViewVanced's artist filter so both agree.
+- **Artist index** (shell): from the foobar library (`library_manager`), per track `%album artist%` (fallback `%artist%`), `%artist%`, `%album%`, `%date%`. Album artists → split → artists with owned albums; track artists on other albums → "appears on". VA excluded. Sorted A–Z by `artistKey`. Rebuilt (debounced) on library changes.
+- **Sidebar rows:** 32 px round photo + name.
+- **Artist page:** header (128 px round photo, name, "N albums · M tracks", **Play** = `playNow` of all the artist's tracks in album/track order with label "Next from: <artist>", **Shuffle** = same list shuffled) above the single hosted AlbumViewVanced instance with `setArtistFilter:`. Navigating back to Albums calls `setArtistFilter:nil`.
+- **Photos:** Deezer `search/artist` (no key). Exact match on `artistKey`. If several exact candidates: fetch each candidate's `artist/{id}/albums` and accept only a candidate sharing a normalised album/track title with the user's library; if none confirms, use the fallback (never show a stranger's photo). Deezer's empty picture (URL containing `/images/artist//`) = no photo. Fallback: newest album's cover (album art of a track from it), cropped round. Disk cache under the user Caches directory (positive: image file; negative: JSON entry with 30-day TTL). ≤ 8 requests/s, fetch lazily for visible rows. Code to adapt (copy, not link): `extensions/foo_jl_biography_mac/src/API/DeezerClient.*`, `Core/ArtistImageCache.*`, `shared/RateLimiter.*`.
+
+### 7. Keyboard shortcuts
+
+Scoped to the foobar main window; ignored while a text field has focus (except ⌘ shortcuts).
+
+| Keys | Action | Owner |
+|---|---|---|
+| ⌘F, ⌘L | Focus search of the current view | Shell (and AlbumViewVanced standalone) |
+| Space | Play/pause | PlayVanced |
+| ⌘→ / ⌘← | Next / previous track | PlayVanced |
+| ⌘↑ / ⌘↓ | Volume up / down | PlayVanced |
+| ⌘S / ⌘R | Toggle shuffle / cycle repeat | PlayVanced |
+| ⌥⌘U | Toggle Up Next popover | PlayVanced |
+| ⌘[ / ⌘] | Back / forward | Shell |
+| ⌘1 | Go to Albums | Shell |
+| ⌘N | New playlist (inline rename) | Shell |
+| ⌃⌘S | Toggle sidebar | Shell |
+
+PlayVanced uses a local `NSEvent` key-down monitor (so Space works whatever has focus); the shell overrides `performKeyEquivalent:`. The shell spike dumps foobar's runtime main-menu key equivalents to the console; any collision is resolved by picking another key before release.
+
+### 8. GUID collision
 
 Give Playback Controls and Tidal fresh GUIDs (keep plorg's, since it's in the user's layout). Note in their changelogs that existing layouts referencing them by GUID may need re-adding.
 
