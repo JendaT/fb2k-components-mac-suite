@@ -84,6 +84,7 @@ module Fb2kVersions
     "queue" => "QUEUE_MANAGER_VERSION",
     "libvanced" => "LIBVANCED_VERSION",
     "playvanced" => "PLAYVANCED_VERSION",
+    "shellvanced" => "SHELLVANCED_VERSION",
     "cloud_streamer" => "CLOUD_STREAMER_VERSION",
     "cloud" => "CLOUD_STREAMER_VERSION",
     "tidal" => "TIDAL_VERSION",

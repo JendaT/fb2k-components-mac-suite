@@ -10,6 +10,7 @@ TODAY=$(date +%Y-%m-%d)
 # Component display names
 typeset -A DISPLAY_NAMES
 DISPLAY_NAMES=(
+    [shellvanced]="ShellVanced"
     [albumviewvanced]="AlbumViewVanced"
     [effects-dsp]="Effects DSP"
     [simplaylist]="SimPlaylist"

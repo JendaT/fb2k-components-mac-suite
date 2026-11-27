@@ -60,3 +60,7 @@
 // Tidal Integration
 #define TIDAL_VERSION "0.3.1"
 #define TIDAL_VERSION_INT 031
+
+// ShellVanced (streaming-style shell)
+#define SHELLVANCED_VERSION "0.1.0"
+#define SHELLVANCED_VERSION_INT 010
