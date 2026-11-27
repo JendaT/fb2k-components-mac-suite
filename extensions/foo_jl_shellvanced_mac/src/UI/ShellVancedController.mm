@@ -10,6 +10,7 @@
 #include "../../../../shared/UpNext.h"   // after the SDK include
 #import "../Artists/SVArtistLibrary.h"
 #import "../Artists/SVArtistHeaderView.h"
+#import "SVAlbumPageViewController.h"
 
 using shellcore::DestKind;
 using shellcore::Destination;
@@ -56,6 +57,15 @@ static void SVSetArtistFilter(id vc, NSString *name) {
     SEL sel = NSSelectorFromString(@"setArtistFilter:");
     if (![vc respondsToSelector:sel]) return;
     ((void (*)(id, SEL, NSString *))objc_msgSend)(vc, sel, name);
+}
+
+// Hands AlbumViewVanced the open-album callback (clicking a card opens the
+// album page instead of expanding it inline). Older builds lack the setter: the
+// inline expansion then stays, which is fine.
+static void SVSetOpenAlbumHandler(id vc, void (^handler)(NSDictionary<NSString *, id> *)) {
+    SEL sel = NSSelectorFromString(@"setOpenAlbumHandler:");
+    if (![vc respondsToSelector:sel]) return;
+    ((void (*)(id, SEL, id))objc_msgSend)(vc, sel, handler);
 }
 
 // First visible view that can take keyboard focus (the hosted grid / list).
@@ -120,8 +130,14 @@ static NSView *SVMakePlaceholder(NSString *text) {
     SVArtistHeaderView *_artistHeader;
     NSString *_filteredArtist;        // artist currently applied to AlbumViewVanced (nil = none)
     NSString *_pendingArtistRestore;  // saved artist waiting for the library index to finish
+    NSString *_pendingAlbumRestore;   // saved album key waiting for the library index to finish
     BOOL _userNavigated;
     BOOL _suppressPersist;            // restoring while the artist index is still building
+
+    // Album page (own hosted view) and the AlbumViewVanced dictionaries for albums opened this session.
+    SVAlbumPageViewController *_albumPage;
+    NSView *_albumPageView;
+    NSMutableDictionary<NSString *, NSDictionary *> *_albumInfo;
 
     shellcore::NavHistory _history;
 
@@ -344,8 +360,29 @@ static NSView *SVMakePlaceholder(NSString *text) {
         _albumsVC = SVInstantiateElement(kSVGuidAlbumViewVanced, @{});
         if (!_albumsVC) console::info("[ShellVanced] AlbumViewVanced not available");
         _albumsView = [self embedHosted:_albumsVC placeholder:@"Install AlbumViewVanced to use this section"];
+        if (_albumsVC) {
+            __weak ShellVancedController *weakSelf = self;
+            SVSetOpenAlbumHandler(_albumsVC, ^(NSDictionary<NSString *, id> *album) {
+                [weakSelf openAlbumFromGrid:album];
+            });
+        }
     }
     return _albumsView;
+}
+
+- (SVAlbumPageViewController *)albumPage {
+    if (!_albumPage) {
+        _albumPage = [[SVAlbumPageViewController alloc] init];
+        __weak ShellVancedController *weakSelf = self;
+        _albumPage.onOpenArtist = ^(NSString *name) {
+            [weakSelf navigateTo:Destination{DestKind::Artist, SVToStd(name)}];
+        };
+        _albumPage.onUnresolved = ^(NSString *key) {
+            [weakSelf albumUnresolved:key];
+        };
+        _albumPageView = [self embedHosted:_albumPage placeholder:@""];
+    }
+    return _albumPage;
 }
 
 - (NSView *)playlistHostView {
@@ -395,9 +432,8 @@ static NSView *SVMakePlaceholder(NSString *text) {
             for (t_size idx : order) copy.add_item(handles[idx]);
             handles = copy;
         }
-        pfc::string8 label("Next from: ");
-        label << name.UTF8String;
-        upnext::fb::playNow(handles, 0, label.c_str());   // only Now Playing changes
+        // Bare artist name: the Up Next popover adds "Next from: ".
+        upnext::fb::playNow(handles, 0, name.UTF8String);   // only Now Playing changes
     } catch (...) {
         console::info("[ShellVanced] play artist failed");
     }
@@ -450,8 +486,43 @@ static NSView *SVMakePlaceholder(NSString *text) {
     albums.frame = _hostContainer.bounds;
 }
 
+#pragma mark Album page
+
+// A card was clicked in the hosted AlbumViewVanced.
+- (void)openAlbumFromGrid:(NSDictionary<NSString *, id> *)album {
+    NSString *key = [album[@"key"] isKindOfClass:[NSString class]] ? album[@"key"] : nil;
+    if (key.length == 0) return;
+    if (!_albumInfo) _albumInfo = [NSMutableDictionary dictionary];
+    if (_albumInfo.count >= 64) [_albumInfo removeAllObjects];   // small session cache
+    _albumInfo[key] = [album copy];
+    [self navigateTo:Destination{DestKind::Album, SVToStd(key)}];
+    // Keep the keyboard with the page (Return / Q work on the track list).
+    [self.view.window makeFirstResponder:_albumPage.tableView];
+}
+
+// The album is gone from the library (retagged / removed) or never existed.
+- (void)albumUnresolved:(NSString *)key {
+    Destination d{DestKind::Album, SVToStd(key)};
+    auto cur = _history.current();
+    BOOL wasCurrent = cur && *cur == d;
+    _history.remove(d);
+    [_albumInfo removeObjectForKey:key];
+    if (wasCurrent) {
+        _history.push({DestKind::Albums, ""});
+        [self showCurrent];
+    } else {
+        [self updateChrome];
+    }
+}
+
 - (void)artistLibraryDidChange:(NSNotification *)note {
     NSArray<NSString *> *names = [SVArtistLibrary shared].artistNames;
+    if (_pendingAlbumRestore && names.count > 0) {
+        NSString *pending = _pendingAlbumRestore;
+        _pendingAlbumRestore = nil;
+        if (!_userNavigated) [self navigateTo:Destination{DestKind::Album, SVToStd(pending)}];
+        return;
+    }
     if (_filteredArtist && !_pendingArtistRestore) {
         auto cur = _history.current();
         if (names.count > 0 && ![names containsObject:_filteredArtist] && cur && cur->kind == DestKind::Artist) {
@@ -479,6 +550,12 @@ static NSView *SVMakePlaceholder(NSString *text) {
     std::string name = shell_config::getString(shell_config::kLastDestName, "");
     Destination d{DestKind::Albums, ""};
     NSString *deferred = nil;
+    NSString *deferredAlbum = nil;
+    if (kind == (int64_t)DestKind::Album && name.find(shellcore::kAlbumKeySeparator) != std::string::npos) {
+        // Resolved by a library scan when the page opens; wait for the index like the artist restore does.
+        if ([SVArtistLibrary shared].artistNames.count > 0) d = {DestKind::Album, name};
+        else deferredAlbum = SVToNS(name);
+    }
     if (kind == (int64_t)DestKind::Playlist && SVFindPlaylistExact(name) != pfc_infinite) {
         d = {DestKind::Playlist, name};
     }
@@ -493,16 +570,18 @@ static NSView *SVMakePlaceholder(NSString *text) {
             deferred = artist;
         }
     }
-    _suppressPersist = deferred != nil;   // keep the saved Artist destination until the index arrives
+    _suppressPersist = deferred != nil || deferredAlbum != nil;   // keep the saved destination until the index arrives
     [self navigateTo:d];
     _suppressPersist = NO;
     _userNavigated = NO;   // restoring is not the user navigating
     _pendingArtistRestore = deferred;      // after navigateTo:, which clears it
+    _pendingAlbumRestore = deferredAlbum;
 }
 
 - (void)navigateTo:(const Destination &)d {
     _userNavigated = YES;
     _pendingArtistRestore = nil;
+    _pendingAlbumRestore = nil;
     _history.push(d);
     [self showCurrent];
 }
@@ -552,6 +631,15 @@ static NSView *SVMakePlaceholder(NSString *text) {
             [self applyArtistPage:artist];
             break;
         }
+        case DestKind::Album: {
+            SVAlbumPageViewController *page = [self albumPage];
+            [self showHostView:_albumPageView];
+            // Leave the artist filter alone: Back returns to the artist page as it was.
+            _artistHeader.hidden = YES;
+            NSString *key = SVToNS(d.name);
+            [page showAlbumKey:key info:_albumInfo[key]];
+            break;
+        }
         case DestKind::Albums:
             [self showHostView:[self albumsHostView]];
             [self applyArtistPage:nil];
@@ -568,7 +656,8 @@ static NSView *SVMakePlaceholder(NSString *text) {
     Destination d = cur ? *cur : Destination{DestKind::Albums, ""};
     NSString *title = @"Albums";
     NSString *subtitle = @"";
-    if (d.kind != DestKind::Albums) title = SVToNS(d.name);
+    if (d.kind == DestKind::Album) title = SVToNS(shellcore::albumKeyTitle(d.name));
+    else if (d.kind != DestKind::Albums) title = SVToNS(d.name);
     if (d.kind == DestKind::Playlist) {
         t_size idx = SVFindPlaylistExact(d.name);
         if (idx != pfc_infinite) {
@@ -584,7 +673,7 @@ static NSView *SVMakePlaceholder(NSString *text) {
 }
 
 - (void)persistDestination:(const Destination &)d {
-    if (_suppressPersist || _pendingArtistRestore) return;
+    if (_suppressPersist || _pendingArtistRestore || _pendingAlbumRestore) return;
     shell_config::setInt(shell_config::kLastDestKind, (int64_t)d.kind);
     shell_config::setString(shell_config::kLastDestName, d.name.c_str());
 }
@@ -652,11 +741,15 @@ static NSView *SVMakePlaceholder(NSString *text) {
     NSString *key = event.charactersIgnoringModifiers.lowercaseString;
     if (key.length != 1) return NO;
 
+    // ⌘[ ⌘] ⌘N ⌘1 belong to the text field being edited (rename, search, ...).
+    BOOL typing = [self.view.window.firstResponder isKindOfClass:[NSTextView class]];
+
     if (mods == NSEventModifierFlagCommand) {
         if ([key isEqualToString:@"f"] || [key isEqualToString:@"l"]) {
             [self focusSearch];
             return YES;          // also a deliberate no-op on playlist pages
         }
+        if (typing && ![key isEqualToString:@"f"] && ![key isEqualToString:@"l"]) return NO;
         if ([key isEqualToString:@"["]) { [self goBack]; return YES; }
         if ([key isEqualToString:@"]"]) { [self goForward]; return YES; }
         if ([key isEqualToString:@"1"]) { [self navigateTo:Destination{DestKind::Albums, ""}]; return YES; }

@@ -8,7 +8,9 @@
 
 #pragma once
 
+#include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <functional>
 #include <optional>
 #include <string>
@@ -20,11 +22,12 @@ namespace shellcore {
 // kept local so this header stays SDK- and shared-free).
 inline constexpr const char* kNowPlayingPlaylistName = "Now Playing";
 
-enum class DestKind { Albums, Playlist, Artist };
+// Values are persisted (shell_config::kLastDestKind): only ever append.
+enum class DestKind { Albums, Playlist, Artist, Album };
 
 struct Destination {
     DestKind kind = DestKind::Albums;
-    std::string name;   // playlist or artist name; empty for Albums
+    std::string name;   // playlist / artist name, or album key (see albumKey); empty for Albums
 
     bool operator==(const Destination& o) const { return kind == o.kind && name == o.name; }
     bool operator!=(const Destination& o) const { return !(*this == o); }
@@ -96,6 +99,70 @@ private:
     std::vector<Destination> entries_;
     long index_ = -1;
 };
+
+// Album identity: album artist display name + U+001F + album title (the key
+// AlbumViewVanced hands over). Empty artist is allowed.
+inline const char* const kAlbumKeySeparator = "\x1f";
+
+inline std::string albumKey(const std::string& artist, const std::string& title) {
+    return artist + kAlbumKeySeparator + title;
+}
+
+inline std::string albumKeyArtist(const std::string& key) {
+    size_t p = key.find(kAlbumKeySeparator);
+    return p == std::string::npos ? std::string() : key.substr(0, p);
+}
+
+inline std::string albumKeyTitle(const std::string& key) {
+    size_t p = key.find(kAlbumKeySeparator);
+    return p == std::string::npos ? key : key.substr(p + 1);
+}
+
+// "2024-02-26" -> "2024"; anything not starting with four digits is returned trimmed as is.
+inline std::string albumYear(const std::string& date) {
+    size_t b = 0;
+    while (b < date.size() && date[b] == ' ') ++b;
+    if (date.size() >= b + 4) {
+        bool digits = true;
+        for (size_t i = b; i < b + 4; ++i) digits = digits && date[i] >= '0' && date[i] <= '9';
+        if (digits) return date.substr(b, 4);
+    }
+    size_t e = date.size();
+    while (e > b && date[e - 1] == ' ') --e;
+    return date.substr(b, e - b);
+}
+
+// "3:07" / "1:02:03"; negative or non-finite -> "".
+inline std::string formatTrackLength(double seconds) {
+    if (!std::isfinite(seconds) || seconds < 0) return "";
+    long total = static_cast<long>(std::llround(seconds));
+    char buf[32];
+    if (total >= 3600) std::snprintf(buf, sizeof buf, "%ld:%02ld:%02ld", total / 3600, (total / 60) % 60, total % 60);
+    else std::snprintf(buf, sizeof buf, "%ld:%02ld", total / 60, total % 60);
+    return buf;
+}
+
+// "12 songs, 45 min" / "1 song, 1 hr 5 min" (minutes rounded, at least 1).
+inline std::string albumStats(size_t songs, double seconds) {
+    char buf[64];
+    long mins = std::isfinite(seconds) && seconds > 0 ? static_cast<long>(std::llround(seconds / 60.0)) : 0;
+    if (mins < 1) mins = 1;
+    const char* noun = songs == 1 ? "song" : "songs";
+    if (mins >= 60) {
+        long h = mins / 60, m = mins % 60;
+        if (m == 0) std::snprintf(buf, sizeof buf, "%zu %s, %ld hr", songs, noun, h);
+        else std::snprintf(buf, sizeof buf, "%zu %s, %ld hr %ld min", songs, noun, h, m);
+    } else {
+        std::snprintf(buf, sizeof buf, "%zu %s, %ld min", songs, noun, mins);
+    }
+    return buf;
+}
+
+// Sidebar "Search in Your Library": both strings already case/accent folded.
+// An empty needle matches everything.
+inline bool searchMatches(const std::string& foldedHaystack, const std::string& foldedNeedle) {
+    return foldedNeedle.empty() || foldedHaystack.find(foldedNeedle) != std::string::npos;
+}
 
 // Indices of playlists the sidebar shows: all but the exact "Now Playing".
 inline std::vector<size_t> sidebarPlaylists(const std::vector<std::string>& names) {

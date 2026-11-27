@@ -2,6 +2,7 @@
 #include "../fb2k_sdk.h"
 #include "../../../../shared/UpNext.h"   // after the SDK include
 #import "../../../../shared/UIStyles.h"
+#include "../../../../shared/ArtistNames.h"
 #include "../Integration/ShellConfig.h"
 #include "../Integration/ShellPlaylists.h"
 #import "../Artists/SVArtistLibrary.h"
@@ -18,6 +19,8 @@ static const CGFloat kRowHeight          = 28.0;
 static const CGFloat kArtistRowHeight    = 40.0;
 static const CGFloat kSectionRowHeight   = 24.0;
 static const CGFloat kHeaderRowHeight    = 72.0;
+static const CGFloat kSearchExtraHeight  = 30.0;   // header grows by this while the search field is open
+static const NSInteger kHeaderRowIndex   = 1;      // Albums, then the Your Library header
 static const CGFloat kArtistPhotoSize    = 32.0;
 
 #pragma mark - Model
@@ -147,6 +150,9 @@ typedef NS_ENUM(NSInteger, SVRowKind) {
 @interface SVLibraryHeaderView : NSTableCellView
 @property (nonatomic, strong) NSTextField *titleLabel;
 @property (nonatomic, strong) NSButton *addButton;
+@property (nonatomic, strong) NSButton *searchButton;
+@property (nonatomic, strong) NSSearchField *searchField;
+@property (nonatomic, assign) BOOL searchExpanded;
 @property (nonatomic, strong) SVChipButton *playlistsChip;
 @property (nonatomic, strong) SVChipButton *artistsChip;
 @property (nonatomic, assign) BOOL separatorVisible;
@@ -154,6 +160,16 @@ typedef NS_ENUM(NSInteger, SVRowKind) {
 
 @implementation SVLibraryHeaderView {
     NSBox *_separator;
+    NSLayoutConstraint *_chipsTopCollapsed;
+    NSLayoutConstraint *_chipsTopExpanded;
+}
+- (void)setSearchExpanded:(BOOL)expanded {
+    _searchExpanded = expanded;
+    _searchField.hidden = !expanded;
+    _chipsTopCollapsed.active = !expanded;
+    _chipsTopExpanded.active = expanded;
+    _searchButton.contentTintColor = expanded ? [NSColor controlAccentColor] : [NSColor secondaryLabelColor];
+    [self setAccessibilityValue:expanded ? @"search open" : nil];
 }
 - (void)setSeparatorVisible:(BOOL)visible {
     _separatorVisible = visible;
@@ -200,10 +216,27 @@ typedef NS_ENUM(NSInteger, SVRowKind) {
         _addButton.toolTip = @"New Playlist (⌘N)";
         _addButton.translatesAutoresizingMaskIntoConstraints = NO;
 
+        NSImage *glass = [NSImage imageWithSystemSymbolName:@"magnifyingglass" accessibilityDescription:@"Search in Your Library"];
+        _searchButton = [NSButton buttonWithImage:glass target:nil action:nil];
+        _searchButton.bordered = NO;
+        _searchButton.imageScaling = NSImageScaleProportionallyDown;
+        _searchButton.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:12 weight:NSFontWeightSemibold];
+        _searchButton.contentTintColor = [NSColor secondaryLabelColor];
+        _searchButton.toolTip = @"Search in Your Library";
+        _searchButton.translatesAutoresizingMaskIntoConstraints = NO;
+
+        _searchField = [[NSSearchField alloc] initWithFrame:NSZeroRect];
+        _searchField.placeholderString = @"Search in Your Library";
+        _searchField.controlSize = NSControlSizeSmall;
+        _searchField.font = [NSFont systemFontOfSize:12];
+        _searchField.sendsSearchStringImmediately = YES;
+        _searchField.hidden = YES;
+        _searchField.translatesAutoresizingMaskIntoConstraints = NO;
+
         _playlistsChip = [[SVChipButton alloc] initWithTitle:@"Playlists"];
         _artistsChip = [[SVChipButton alloc] initWithTitle:@"Artists"];
 
-        for (NSView *v in @[_titleLabel, _addButton, _playlistsChip, _artistsChip]) [self addSubview:v];
+        for (NSView *v in @[_titleLabel, _searchButton, _addButton, _searchField, _playlistsChip, _artistsChip]) [self addSubview:v];
 
         [NSLayoutConstraint activateConstraints:@[
             [_titleLabel.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:8],
@@ -212,12 +245,21 @@ typedef NS_ENUM(NSInteger, SVRowKind) {
             [_addButton.centerYAnchor constraintEqualToAnchor:_titleLabel.centerYAnchor],
             [_addButton.widthAnchor constraintEqualToConstant:20],
             [_addButton.heightAnchor constraintEqualToConstant:20],
-            [_titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_addButton.leadingAnchor constant:-4],
+            [_searchButton.trailingAnchor constraintEqualToAnchor:_addButton.leadingAnchor constant:-2],
+            [_searchButton.centerYAnchor constraintEqualToAnchor:_titleLabel.centerYAnchor],
+            [_searchButton.widthAnchor constraintEqualToConstant:20],
+            [_searchButton.heightAnchor constraintEqualToConstant:20],
+            [_titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_searchButton.leadingAnchor constant:-4],
+            [_searchField.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:6],
+            [_searchField.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-6],
+            [_searchField.topAnchor constraintEqualToAnchor:_titleLabel.bottomAnchor constant:6],
             [_playlistsChip.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:6],
-            [_playlistsChip.topAnchor constraintEqualToAnchor:_titleLabel.bottomAnchor constant:8],
             [_artistsChip.leadingAnchor constraintEqualToAnchor:_playlistsChip.trailingAnchor constant:6],
             [_artistsChip.centerYAnchor constraintEqualToAnchor:_playlistsChip.centerYAnchor],
         ]];
+        _chipsTopCollapsed = [_playlistsChip.topAnchor constraintEqualToAnchor:_titleLabel.bottomAnchor constant:8];
+        _chipsTopExpanded = [_playlistsChip.topAnchor constraintEqualToAnchor:_searchField.bottomAnchor constant:8];
+        _chipsTopCollapsed.active = YES;
     }
     return self;
 }
@@ -414,7 +456,7 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
 
 #pragma mark - Controller
 
-@interface ShellSidebarController () <NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSMenuDelegate, NSMenuItemValidation>
+@interface ShellSidebarController () <NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSSearchFieldDelegate, NSMenuDelegate, NSMenuItemValidation>
 @end
 
 @implementation ShellSidebarController {
@@ -430,6 +472,13 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     t_size _editingIndexHint;
     BOOL _renameCancelled;
     BOOL _reloadPending;
+
+    // "Search in Your Library"
+    BOOL _searchOpen;
+    NSString *_query;                       // raw text; empty = no filtering
+    NSArray<NSString *> *_keyedNames;       // artist names the caches below were built for
+    NSArray<NSString *> *_foldedArtists;    // case/accent-folded names, parallel to _keyedNames
+    std::vector<std::string> _artistKeys;   // artistnames::artistKey, parallel to _keyedNames
 
     // Drag payload cache (keyed by pasteboard changeCount)
     NSInteger _dragChangeCount;
@@ -509,8 +558,8 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
 
 // Hairline under the sticky header only while rows are scrolled beneath it.
 - (void)sidebarScrolled:(NSNotification *)note {
-    if (_items.count == 0 || _items[0].kind != SVRowKindLibraryHeader) return;
-    NSView *v = [_table viewAtColumn:0 row:0 makeIfNecessary:NO];
+    if (_items.count <= (NSUInteger)kHeaderRowIndex || _items[kHeaderRowIndex].kind != SVRowKindLibraryHeader) return;
+    NSView *v = [_table viewAtColumn:0 row:kHeaderRowIndex makeIfNecessary:NO];
     if ([v isKindOfClass:[SVLibraryHeaderView class]])
         ((SVLibraryHeaderView *)v).separatorVisible = _scroll.contentView.bounds.origin.y > 0.5;
 }
@@ -527,11 +576,23 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     [items addObject:[SVSidebarItem itemWithKind:SVRowKindLibraryHeader title:@"Your Library"]];
 
     const BOOL both = _filter == LibraryFilter::All;
+    NSString *foldedQuery = [self foldedQuery];
+    const BOOL searching = foldedQuery.length > 0;
+    const std::string needle = SVToStd(foldedQuery);
+    const NSUInteger headerCount = items.count;
 
     if (shellcore::showsPlaylists(_filter)) {
-        if (both) [items addObject:[SVSidebarItem itemWithKind:SVRowKindSection title:@"Playlists"]];
         const auto names = SVPlaylistNames();
-        const auto visible = shellcore::sidebarPlaylists(names);
+        auto visible = shellcore::sidebarPlaylists(names);
+        if (searching) {
+            std::vector<size_t> hits;
+            for (size_t idx : visible) {
+                if (shellcore::searchMatches(SVToStd([self fold:SVToNS(names[idx])]), needle)) hits.push_back(idx);
+            }
+            visible = hits;
+        }
+        if (both && (!searching || !visible.empty()))
+            [items addObject:[SVSidebarItem itemWithKind:SVRowKindSection title:@"Playlists"]];
         static NSNumberFormatter *fmt;
         static dispatch_once_t once;
         dispatch_once(&once, ^{
@@ -545,27 +606,145 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
             item.detail = [fmt stringFromNumber:@(item.itemCount)];
             [items addObject:item];
         }
-        if (visible.empty()) {
+        if (visible.empty() && !searching) {
             [items addObject:[SVSidebarItem itemWithKind:SVRowKindNote title:@"No playlists yet"]];
         }
     }
 
     if (shellcore::showsArtists(_filter)) {
-        if (both) [items addObject:[SVSidebarItem itemWithKind:SVRowKindSection title:@"Artists"]];
-        [self appendArtistItems:items];
+        [self appendArtistItems:items query:foldedQuery showSection:both];
+    }
+
+    if (searching && items.count == headerCount) {
+        [items addObject:[SVSidebarItem itemWithKind:SVRowKindNote title:@"No matches"]];
     }
     return items;
 }
 
-- (void)appendArtistItems:(NSMutableArray<SVSidebarItem *> *)items {
+#pragma mark Search
+
+// Case-, accent- and width-insensitive form used for substring matching.
+- (NSString *)fold:(NSString *)s {
+    return [(s ?: @"") stringByFoldingWithOptions:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch | NSWidthInsensitiveSearch
+                                           locale:nil];
+}
+
+- (NSString *)foldedQuery {
+    NSString *trimmed = [(_query ?: @"") stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    return [self fold:trimmed];
+}
+
+// Folded names and artist keys are rebuilt only when the index delivers a new name list.
+- (void)ensureArtistCaches:(NSArray<NSString *> *)names {
+    if (_keyedNames == names) return;
+    NSMutableArray<NSString *> *folded = [NSMutableArray arrayWithCapacity:names.count];
+    _artistKeys.clear();
+    _artistKeys.reserve(names.count);
+    for (NSString *name in names) {
+        [folded addObject:[self fold:name]];
+        _artistKeys.push_back(artistnames::artistKey(SVToStd(name)));
+    }
+    _foldedArtists = folded;
+    _keyedNames = names;
+}
+
+- (void)appendArtistItems:(NSMutableArray<SVSidebarItem *> *)items query:(NSString *)foldedQuery showSection:(BOOL)showSection {
     // First touch of the singleton happens here, from UI creation (not static init).
     NSArray<NSString *> *names = [SVArtistLibrary shared].artistNames;
-    for (NSString *name in names) {
-        [items addObject:[SVSidebarItem itemWithKind:SVRowKindArtist title:name]];
+    const BOOL searching = foldedQuery.length > 0;
+    NSUInteger firstRow = items.count;
+    if (showSection && !searching) [items addObject:[SVSidebarItem itemWithKind:SVRowKindSection title:@"Artists"]];
+
+    if (!searching) {
+        for (NSString *name in names) [items addObject:[SVSidebarItem itemWithKind:SVRowKindArtist title:name]];
+        if (names.count == 0) {
+            // The index builds in the background; this row is replaced when it arrives.
+            [items addObject:[SVSidebarItem itemWithKind:SVRowKindNote title:@"No artists found"]];
+        }
+        return;
     }
-    if (names.count == 0) {
-        // The index builds in the background; this row is replaced when it arrives.
-        [items addObject:[SVSidebarItem itemWithKind:SVRowKindNote title:@"No artists found"]];
+
+    // Artists match on the folded name or on artistKey (also ignores spaces and punctuation).
+    [self ensureArtistCaches:names];
+    const std::string needle = SVToStd(foldedQuery);
+    const std::string needleKey = artistnames::artistKey(needle);
+    NSMutableArray<SVSidebarItem *> *hits = [NSMutableArray array];
+    for (NSUInteger i = 0; i < names.count; i++) {
+        bool hit = shellcore::searchMatches(SVToStd(_foldedArtists[i]), needle) ||
+                   (!needleKey.empty() && shellcore::searchMatches(_artistKeys[i], needleKey));
+        if (hit) [hits addObject:[SVSidebarItem itemWithKind:SVRowKindArtist title:names[i]]];
+    }
+    if (hits.count == 0) return;   // no matches: the section hides
+    if (showSection) [items insertObject:[SVSidebarItem itemWithKind:SVRowKindSection title:@"Artists"] atIndex:firstRow];
+    [items addObjectsFromArray:hits];
+}
+
+- (SVLibraryHeaderView *)libraryHeaderView {
+    if (_items.count <= (NSUInteger)kHeaderRowIndex) return nil;
+    NSView *v = [_table viewAtColumn:0 row:kHeaderRowIndex makeIfNecessary:YES];
+    return [v isKindOfClass:[SVLibraryHeaderView class]] ? (SVLibraryHeaderView *)v : nil;
+}
+
+- (void)searchClicked:(id)sender {
+    if (_searchOpen) [self closeSearchReturningFocus:YES];
+    else [self openSearch];
+}
+
+- (void)openSearch {
+    SVLibraryHeaderView *header = [self libraryHeaderView];
+    if (!header) return;
+    _searchOpen = YES;
+    header.searchExpanded = YES;
+    [_table noteHeightOfRowsWithIndexesChanged:[NSIndexSet indexSetWithIndex:(NSUInteger)kHeaderRowIndex]];
+    [self.view.window makeFirstResponder:header.searchField];
+}
+
+// Collapses the field and restores the unfiltered lists.
+- (void)closeSearchReturningFocus:(BOOL)focus {
+    if (!_searchOpen) return;
+    SVLibraryHeaderView *header = [self libraryHeaderView];
+    NSWindow *window = self.view.window;
+    BOOL fieldHasFocus = NO;
+    if (header && window) {
+        id fr = window.firstResponder;
+        fieldHasFocus = [fr isKindOfClass:[NSTextView class]] && [(NSTextView *)fr delegate] == (id)header.searchField;
+    }
+    _searchOpen = NO;
+    BOOL hadQuery = [self foldedQuery].length > 0;
+    _query = nil;
+    header.searchField.stringValue = @"";
+    header.searchExpanded = NO;
+    [_table noteHeightOfRowsWithIndexesChanged:[NSIndexSet indexSetWithIndex:(NSUInteger)kHeaderRowIndex]];
+    if (fieldHasFocus && focus) [window makeFirstResponder:_table];
+    if (hadQuery) [self rebuildItemsReloading:NO];
+}
+
+- (void)searchCancelClicked:(id)sender {
+    [self closeSearchReturningFocus:YES];
+}
+
+- (void)searchTextChanged {
+    SVLibraryHeaderView *header = [self libraryHeaderView];
+    NSString *text = header.searchField.stringValue ?: @"";
+    if ([text isEqualToString:_query ?: @""]) return;
+    _query = [text copy];
+    [self rebuildItemsReloading:NO];
+    [_scroll.contentView scrollToPoint:NSZeroPoint];
+    [_scroll reflectScrolledClipView:_scroll.contentView];
+}
+
+// Down arrow in the field: into the results.
+- (void)searchMoveIntoList {
+    NSWindow *window = self.view.window;
+    [window makeFirstResponder:_table];
+    if (_table.selectedRow >= 0) return;
+    for (NSUInteger i = 0; i < _items.count; i++) {
+        SVRowKind k = _items[i].kind;
+        if (k == SVRowKindPlaylist || k == SVRowKindArtist) {
+            [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:i] byExtendingSelection:NO];
+            [_table scrollRowToVisible:(NSInteger)i];
+            return;
+        }
     }
 }
 
@@ -593,7 +772,22 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     NSClipView *clip = _scroll.contentView;
     const NSPoint origin = clip.bounds.origin;
     _reflecting = YES;
-    [_table reloadData];
+    const NSUInteger keep = (NSUInteger)kHeaderRowIndex + 1;   // Albums + Your Library header stay put
+    const BOOL patch = !forceReload && old.count >= keep && fresh.count >= keep &&
+        fresh[kHeaderRowIndex].kind == SVRowKindLibraryHeader && old[kHeaderRowIndex].kind == SVRowKindLibraryHeader;
+    if (patch) {
+        // Replace only the rows below the header: the header's search field keeps keyboard focus while typing.
+        [_table beginUpdates];
+        if (old.count > keep)
+            [_table removeRowsAtIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(keep, old.count - keep)]
+                          withAnimation:NSTableViewAnimationEffectNone];
+        if (fresh.count > keep)
+            [_table insertRowsAtIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(keep, fresh.count - keep)]
+                          withAnimation:NSTableViewAnimationEffectNone];
+        [_table endUpdates];
+    } else {
+        [_table reloadData];
+    }
     _reflecting = NO;
     [self reflectDestination:_reflected scroll:NO];
     NSPoint restored = origin;
@@ -621,6 +815,8 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
             case DestKind::Artist:
                 if (item.kind == SVRowKindArtist && SVToStd(item.title) == d.name) return (NSInteger)i;
                 break;
+            case DestKind::Album:
+                break;   // album pages have no sidebar row
         }
     }
     return -1;
@@ -650,7 +846,10 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     if (_filter == filter) return;
     _filter = filter;
     shell_config::setInt(shell_config::kLibraryFilter, (int64_t)filter);
-    [self rebuildItemsReloading:YES];
+    [self rebuildItemsReloading:NO];
+    SVLibraryHeaderView *header = [self libraryHeaderView];
+    header.playlistsChip.chipSelected = _filter == LibraryFilter::Playlists;
+    header.artistsChip.chipSelected = _filter == LibraryFilter::Artists;
 }
 
 #pragma mark Actions
@@ -667,6 +866,7 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
 - (void)createPlaylistAndBeginRename {
     if (!self.isViewLoaded) return;
     if (_editingName) [self.view.window makeFirstResponder:_table];   // commit a pending rename first
+    [self closeSearchReturningFocus:NO];   // the new playlist must not be filtered out
     if (!shellcore::showsPlaylists(_filter)) [self setFilter:LibraryFilter::All];
 
     std::string name;
@@ -774,6 +974,17 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
 }
 
 - (BOOL)control:(NSControl *)control textView:(NSTextView *)textView doCommandBySelector:(SEL)selector {
+    if (control == [self libraryHeaderView].searchField) {
+        if (selector == @selector(cancelOperation:)) {   // Esc
+            [self closeSearchReturningFocus:YES];
+            return YES;
+        }
+        if (selector == @selector(moveDown:)) {
+            [self searchMoveIntoList];
+            return YES;
+        }
+        return NO;
+    }
     if (selector == @selector(cancelOperation:) && _editingName) {
         _renameCancelled = YES;
         ((NSTextField *)control).stringValue = _editingName;
@@ -783,8 +994,13 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     return NO;
 }
 
+- (void)controlTextDidChange:(NSNotification *)note {
+    if (note.object == [self libraryHeaderView].searchField) [self searchTextChanged];
+}
+
 - (void)controlTextDidEndEditing:(NSNotification *)note {
     NSTextField *field = note.object;
+    if (field == (id)[self libraryHeaderView].searchField) return;   // leaving the search field keeps it open
     if (!_editingName || ![field isKindOfClass:[NSTextField class]]) return;
 
     NSString *original = _editingName;
@@ -911,7 +1127,7 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
 
 - (CGFloat)tableView:(NSTableView *)tableView heightOfRow:(NSInteger)row {
     switch (_items[(NSUInteger)row].kind) {
-        case SVRowKindLibraryHeader: return kHeaderRowHeight;
+        case SVRowKindLibraryHeader: return kHeaderRowHeight + (_searchOpen ? kSearchExtraHeight : 0);
         case SVRowKindSection:       return kSectionRowHeight;
         case SVRowKindArtist:        return kArtistRowHeight;
         default:                     return kRowHeight;
@@ -932,6 +1148,12 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
                 v.identifier = @"header";
                 v.addButton.target = self;
                 v.addButton.action = @selector(addClicked:);
+                v.searchButton.target = self;
+                v.searchButton.action = @selector(searchClicked:);
+                v.searchField.delegate = self;
+                NSButtonCell *cancel = [(NSSearchFieldCell *)v.searchField.cell cancelButtonCell];
+                cancel.target = self;
+                cancel.action = @selector(searchCancelClicked:);
                 v.playlistsChip.target = self;
                 v.playlistsChip.action = @selector(chipClicked:);
                 v.artistsChip.target = self;
@@ -939,6 +1161,7 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
             }
             v.playlistsChip.chipSelected = _filter == LibraryFilter::Playlists;
             v.artistsChip.chipSelected = _filter == LibraryFilter::Artists;
+            v.searchExpanded = _searchOpen;
             return v;
         }
         case SVRowKindSection: {

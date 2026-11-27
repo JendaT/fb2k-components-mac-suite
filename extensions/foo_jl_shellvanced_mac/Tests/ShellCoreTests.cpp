@@ -176,6 +176,53 @@ static void testLibraryFilter() {
     CHECK(filterFromInt(-1) == LibraryFilter::All, "negative -> All");
 }
 
+static void testAlbumDestination() {
+    g_context = "album destination";
+    const std::string k = albumKey("Daft Punk", "Discovery");
+    CHECK(albumKeyArtist(k) == "Daft Punk", "key artist");
+    CHECK(albumKeyTitle(k) == "Discovery", "key title");
+    CHECK(albumKeyArtist(albumKey("", "Untitled")) == "", "empty artist allowed");
+    CHECK(albumKeyTitle(albumKey("", "Untitled")) == "Untitled", "title with empty artist");
+    CHECK(albumKeyTitle("no separator") == "no separator", "malformed key -> whole string as title");
+    Destination a{DestKind::Album, k};
+    CHECK(a != artist("Daft Punk"), "album differs from artist");
+    CHECK(a == Destination({DestKind::Album, k}), "same album equal");
+    CHECK(static_cast<int>(DestKind::Album) == 3, "persisted value stable");
+    NavHistory h;
+    h.push(artist("Daft Punk"));
+    h.push(a);
+    CHECK(is(h.back(), artist("Daft Punk")), "back from album to artist");
+    CHECK(is(h.forward(), a), "forward to album");
+    h.remove(a);
+    CHECK(is(h.current(), artist("Daft Punk")), "removing the album falls back");
+}
+
+static void testAlbumFormatting() {
+    g_context = "album formatting";
+    CHECK(albumYear("2024-02-26") == "2024", "year from full date");
+    CHECK(albumYear("2020") == "2020", "plain year");
+    CHECK(albumYear("") == "", "empty date");
+    CHECK(albumYear("c. 1999") == "c. 1999", "non-numeric kept");
+    CHECK(formatTrackLength(187) == "3:07", "m:ss");
+    CHECK(formatTrackLength(59.6) == "1:00", "rounds");
+    CHECK(formatTrackLength(3723) == "1:02:03", "h:mm:ss");
+    CHECK(formatTrackLength(-1) == "", "negative blank");
+    CHECK(albumStats(12, 45 * 60) == "12 songs, 45 min", "minutes only");
+    CHECK(albumStats(1, 20) == "1 song, 1 min", "singular, at least a minute");
+    CHECK(albumStats(20, 65 * 60) == "20 songs, 1 hr 5 min", "hours and minutes");
+    CHECK(albumStats(30, 120 * 60) == "30 songs, 2 hr", "whole hours");
+    CHECK(albumStats(0, 0) == "0 songs, 1 min", "empty");
+}
+
+static void testSearchMatches() {
+    g_context = "search matches";
+    CHECK(searchMatches("hitech", ""), "empty query matches all");
+    CHECK(searchMatches("hitech", "tec"), "substring");
+    CHECK(searchMatches("hitech", "hi"), "prefix");
+    CHECK(!searchMatches("hitech", "tek"), "non-substring");
+    CHECK(!searchMatches("", "a"), "empty haystack");
+}
+
 int main() {
     testBackForward();
     testPushTruncatesForward();
@@ -185,5 +232,8 @@ int main() {
     testRemove();
     testSidebarPlaylists();
     testLibraryFilter();
+    testAlbumDestination();
+    testAlbumFormatting();
+    testSearchMatches();
     TEST_MAIN_END();
 }
