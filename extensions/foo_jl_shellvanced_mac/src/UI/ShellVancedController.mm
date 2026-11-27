@@ -121,6 +121,7 @@ static NSView *SVMakePlaceholder(NSString *text) {
     NSString *_filteredArtist;        // artist currently applied to AlbumViewVanced (nil = none)
     NSString *_pendingArtistRestore;  // saved artist waiting for the library index to finish
     BOOL _userNavigated;
+    BOOL _suppressPersist;            // restoring while the artist index is still building
 
     shellcore::NavHistory _history;
 
@@ -450,8 +451,19 @@ static NSView *SVMakePlaceholder(NSString *text) {
 }
 
 - (void)artistLibraryDidChange:(NSNotification *)note {
-    if (!_pendingArtistRestore) return;
     NSArray<NSString *> *names = [SVArtistLibrary shared].artistNames;
+    if (_filteredArtist && !_pendingArtistRestore) {
+        auto cur = _history.current();
+        if (names.count > 0 && ![names containsObject:_filteredArtist] && cur && cur->kind == DestKind::Artist) {
+            // The artist vanished from a built index.
+            _history.remove(*cur);
+            [self navigateTo:Destination{DestKind::Albums, ""}];
+        } else {
+            [_artistHeader refreshCounts];
+        }
+        return;
+    }
+    if (!_pendingArtistRestore) return;
     if (names.count == 0) return;   // still empty (empty library or not built yet)
     NSString *pending = _pendingArtistRestore;
     _pendingArtistRestore = nil;
@@ -466,6 +478,7 @@ static NSView *SVMakePlaceholder(NSString *text) {
     auto kind = shell_config::getInt(shell_config::kLastDestKind, (int64_t)DestKind::Albums);
     std::string name = shell_config::getString(shell_config::kLastDestName, "");
     Destination d{DestKind::Albums, ""};
+    NSString *deferred = nil;
     if (kind == (int64_t)DestKind::Playlist && SVFindPlaylistExact(name) != pfc_infinite) {
         d = {DestKind::Playlist, name};
     }
@@ -477,11 +490,14 @@ static NSView *SVMakePlaceholder(NSString *text) {
         } else if (names.count == 0) {
             // The artist index builds in the background: open Albums now and
             // jump to the artist when it arrives (unless the user navigates first).
-            _pendingArtistRestore = artist;
+            deferred = artist;
         }
     }
+    _suppressPersist = deferred != nil;   // keep the saved Artist destination until the index arrives
     [self navigateTo:d];
+    _suppressPersist = NO;
     _userNavigated = NO;   // restoring is not the user navigating
+    _pendingArtistRestore = deferred;      // after navigateTo:, which clears it
 }
 
 - (void)navigateTo:(const Destination &)d {
@@ -568,6 +584,7 @@ static NSView *SVMakePlaceholder(NSString *text) {
 }
 
 - (void)persistDestination:(const Destination &)d {
+    if (_suppressPersist || _pendingArtistRestore) return;
     shell_config::setInt(shell_config::kLastDestKind, (int64_t)d.kind);
     shell_config::setString(shell_config::kLastDestName, d.name.c_str());
 }

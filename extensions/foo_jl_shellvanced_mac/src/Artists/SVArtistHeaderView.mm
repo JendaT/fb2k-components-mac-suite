@@ -115,6 +115,8 @@ static const CGFloat kPad = 24.0;
     }];
 }
 
+- (void)refreshCounts { [self updateCounts]; }
+
 - (void)updateCounts {
     if (_artistName.length == 0) { _countLabel.stringValue = @""; return; }
     SVArtistLibrary *lib = [SVArtistLibrary shared];

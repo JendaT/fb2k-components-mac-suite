@@ -19,6 +19,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^onPlay)(void);
 @property (nonatomic, copy, nullable) void (^onShuffle)(void);
 
+/// Re-reads album/track counts (library index rebuilt).
+- (void)refreshCounts;
+
 @end
 
 NS_ASSUME_NONNULL_END

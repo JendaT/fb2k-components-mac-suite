@@ -580,8 +580,11 @@ NSArray<NSURL*>* SVReadFileURLs(NSPasteboard* pb) {
     NSInteger row = [self rowForDestination:destination];
     _reflecting = YES;
     if (row >= 0) {
-        if (_table.selectedRow != row) [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
-        [_table scrollRowToVisible:row];
+        if (_table.selectedRow != row) {
+            // Only move the list when the selection actually changes, so rebuilds don't yank the scroll position.
+            [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
+            [_table scrollRowToVisible:row];
+        }
     } else {
         [_table deselectAll:nil];
     }
