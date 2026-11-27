@@ -2,6 +2,11 @@
 
 All notable changes to Vectorscope will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **Correlation meter**: The horizontal meter is centred on the scope, so its zero lines up with the scope's axis (@Scannou, #61).
+
 ## [1.1.1] - 2026-11-09
 
 Contributed by @Scannou (#58, #59).
