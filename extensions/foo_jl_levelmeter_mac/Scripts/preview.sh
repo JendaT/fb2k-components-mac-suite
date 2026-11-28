@@ -6,19 +6,28 @@
 # writes a set of panel sizes and styles to the output directory.
 #
 # Usage: ./Scripts/preview.sh [output-dir]   (default: build/preview)
+#        ./Scripts/preview.sh --stack        check the draw layers stack up to the full picture
+#        ./Scripts/preview.sh --time         time each draw pass
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-OUT_DIR="${1:-$PROJECT_DIR/build/preview}"
+MODE="${1:-}"
+OUT_DIR="$PROJECT_DIR/build/preview"
+[[ -n "$MODE" && "$MODE" != --* ]] && OUT_DIR="$MODE"
 BIN="$PROJECT_DIR/build/tests/MeterPreview"
 
-mkdir -p "$OUT_DIR" "$(dirname "$BIN")"
+mkdir -p "$(dirname "$BIN")"
+[[ "$MODE" == --* ]] || mkdir -p "$OUT_DIR"
 clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
     "$PROJECT_DIR/Tools/MeterPreview.mm" \
     "$PROJECT_DIR/src/UI/MeterRenderer.mm" \
     "$PROJECT_DIR"/src/Core/*.cpp \
     -framework Cocoa \
     -o "$BIN"
-"$BIN" "$OUT_DIR"
+if [[ "$MODE" == --* ]]; then
+    "$BIN" "$MODE"
+else
+    "$BIN" "$OUT_DIR"
+fi

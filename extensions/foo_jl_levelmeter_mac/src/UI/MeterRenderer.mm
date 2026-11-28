@@ -283,16 +283,13 @@ void MeterRenderer::draw(CGContextRef ctx, CGRect bounds, const DisplaySettings 
                          Pass pass) {
     _bounds = bounds;
     _analog = s.style == MeterStyle::Analog;
-    if (pass != Pass::Live && (s.palette.background >> 24) != 0) {
+    if (pass == Pass::Overlay && !_analog) return;  // the bars have nothing above them
+    if ((pass == Pass::All || pass == Pass::Static) && (s.palette.background >> 24) != 0) {
         CGContextSetFillColorWithColor(ctx, cg(s.palette.background));
         CGContextFillRect(ctx, bounds);
     }
-    // The analog faces are drawn whole in the live pass.
-    if (_analog) {
-        if (pass != Pass::Static) drawAnalog(ctx, bounds, s, snap);
-    } else {
-        drawDigital(ctx, bounds, s, snap, pass);
-    }
+    if (_analog) drawAnalog(ctx, bounds, s, snap, pass);
+    else drawDigital(ctx, bounds, s, snap, pass);
 }
 
 HitArea MeterRenderer::hitTest(CGPoint p) const {
@@ -309,7 +306,8 @@ HitArea MeterRenderer::hitTest(CGPoint p) const {
 
 void MeterRenderer::drawDigital(CGContextRef ctx, CGRect bounds, const DisplaySettings &s, const Snapshot &snap,
                                 Pass pass) {
-    const bool drawStatic = pass != Pass::Live, drawLive = pass != Pass::Static;
+    const bool drawStatic = pass == Pass::All || pass == Pass::Static;
+    const bool drawLive = pass == Pass::All || pass == Pass::Live;
     const Palette &p = s.palette;
     Input in;
     in.width = bounds.size.width;
@@ -514,30 +512,70 @@ void strokeArc(CGContextRef ctx, CGPoint pivot, double radius, double fromDeg, d
     CGContextStrokePath(ctx);
 }
 
-void drawFace(CGContextRef ctx, CGRect cell, const DisplaySettings &s, const Snapshot &snap,
-              const int *channels, int needleCount, NSString *caption) {
+// Where everything on one face goes. All three passes work from the same
+// numbers, so the layers they draw line up exactly.
+struct FaceGeometry {
+    bool tooSmall = true;          // nothing is drawn in such a cell
+    CGRect face, inner;            // bezel outline, window inside it
+    CGFloat corner, H, Wd, line;
+    double R, half, zeroDeg;       // scale radius, half sweep, 0 VU angle
+    CGPoint pivot;
+    CGPoint ledCentre;
+    CGFloat ledR;
+};
+
+FaceGeometry faceGeometry(CGRect cell) {
+    FaceGeometry g;
     // A classic face is about 1.55 : 1.
     const CGFloat aspect = 1.55;
     CGFloat w = cell.size.width, h = w / aspect;
     if (h > cell.size.height) { h = cell.size.height; w = h * aspect; }
-    if (w < 40 || h < 26) return;
-    const CGRect face = CGRectMake(std::round(CGRectGetMidX(cell) - w / 2), std::round(CGRectGetMidY(cell) - h / 2),
-                                   std::round(w), std::round(h));
-    const FaceColors fc = faceColors(s);
-    const CGFloat corner = std::max(3.0, w * 0.035);
+    if (w < 40 || h < 26) return g;
+    g.tooSmall = false;
+    g.face = CGRectMake(std::round(CGRectGetMidX(cell) - w / 2), std::round(CGRectGetMidY(cell) - h / 2),
+                        std::round(w), std::round(h));
+    g.corner = std::max(3.0, w * 0.035);
+    const CGFloat bezelW = std::max(1.5, w * 0.012);
+    g.inner = CGRectInset(g.face, bezelW, bezelW);
+    g.H = g.inner.size.height;
+    g.Wd = g.inner.size.width;
+    // Radius chosen so the outer numbers at both ends stay on the face.
+    g.R = std::min(0.80 * g.H, 0.52 * g.Wd);
+    g.pivot = CGPointMake(CGRectGetMidX(g.inner), g.inner.origin.y + 0.30 * g.H + g.R);
+    g.half = vu_face::kSweepDegrees / 2.0;
+    g.zeroDeg = vu_face::angle(0.0);
+    g.line = std::max(1.0, g.H * 0.008);
+    g.ledR = std::max(2.5, g.H * 0.035);
+    g.ledCentre = CGPointMake(CGRectGetMaxX(g.inner) - g.Wd * 0.08, g.inner.origin.y + g.H * 0.13);
+    return g;
+}
+
+// Clip to the window inside the bezel (caller saves and restores the state).
+void clipToWindow(CGContextRef ctx, const FaceGeometry &g) {
+    CGPathRef innerPath = CGPathCreateWithRoundedRect(g.inner, g.corner * 0.8, g.corner * 0.8, NULL);
+    CGContextAddPath(ctx, innerPath);
+    CGContextClip(ctx);
+    CGPathRelease(innerPath);
+}
+
+// Everything under the needles that only changes with the settings or the
+// size: bezel, backlight, scales, legend and captions.
+void drawFaceStatic(CGContextRef ctx, const FaceGeometry &g, const FaceColors &fc, const DisplaySettings &s,
+                    const int *channels, int needleCount, NSString *caption) {
+    const CGRect inner = g.inner;
+    const CGFloat H = g.H, Wd = g.Wd, line = g.line;
+    const double R = g.R, half = g.half, zeroDeg = g.zeroDeg;
+    const CGPoint pivot = g.pivot;
 
     CGContextSaveGState(ctx);
 
     // Bezel and face
-    CGPathRef outer = CGPathCreateWithRoundedRect(face, corner, corner, NULL);
+    CGPathRef outer = CGPathCreateWithRoundedRect(g.face, g.corner, g.corner, NULL);
     CGContextAddPath(ctx, outer);
     CGContextSetFillColorWithColor(ctx, cg(fc.bezel));
     CGContextFillPath(ctx);
-    const CGFloat bezelW = std::max(1.5, w * 0.012);
-    const CGRect inner = CGRectInset(face, bezelW, bezelW);
-    CGPathRef innerPath = CGPathCreateWithRoundedRect(inner, corner * 0.8, corner * 0.8, NULL);
-    CGContextAddPath(ctx, innerPath);
-    CGContextClip(ctx);
+    CGPathRelease(outer);
+    clipToWindow(ctx, g);
 
     // Backlight: brightest low in the middle, falling off to the edges.
     {
@@ -545,21 +583,13 @@ void drawFace(CGContextRef ctx, CGRect cell, const DisplaySettings &s, const Sna
         CGColorRef stops[2] = { cg(fc.faceCentre), cg(fc.faceEdge) };
         CFArrayRef arr = CFArrayCreate(NULL, (const void **)stops, 2, &kCFTypeArrayCallBacks);
         const CGFloat locs[2] = { 0.0, 1.0 };
-        CGGradientRef g = CGGradientCreateWithColors(space, arr, locs);
+        CGGradientRef grad = CGGradientCreateWithColors(space, arr, locs);
         const CGPoint c = CGPointMake(CGRectGetMidX(inner), inner.origin.y + inner.size.height * 0.78);
-        CGContextDrawRadialGradient(ctx, g, c, 0, c, inner.size.width * 0.72, kCGGradientDrawsAfterEndLocation);
-        CGGradientRelease(g);
+        CGContextDrawRadialGradient(ctx, grad, c, 0, c, inner.size.width * 0.72, kCGGradientDrawsAfterEndLocation);
+        CGGradientRelease(grad);
         CFRelease(arr);
         CGColorSpaceRelease(space);
     }
-
-    const CGFloat H = inner.size.height, Wd = inner.size.width;
-    // Radius chosen so the outer numbers at both ends stay on the face.
-    const double R = std::min(0.80 * H, 0.52 * Wd);
-    const CGPoint pivot = CGPointMake(CGRectGetMidX(inner), inner.origin.y + 0.30 * H + R);
-    const double half = vu_face::kSweepDegrees / 2.0;
-    const double zeroDeg = vu_face::angle(0.0);
-    const CGFloat line = std::max(1.0, H * 0.008);
 
     // Scale arc, red zone above 0 VU
     strokeArc(ctx, pivot, R, -half, zeroDeg, line, cg(fc.ink));
@@ -647,12 +677,24 @@ void drawFace(CGContextRef ctx, CGRect cell, const DisplaySettings &s, const Sna
     drawText(refText, CGRectMake(inner.origin.x + Wd * 0.62, inner.origin.y + H * 0.82, Wd * 0.34, H * 0.1),
              refFont, color(fc.ink, 0.55), Align::Right);
 
+    CGContextRestoreGState(ctx);
+}
+
+// What moves: the peak LED and the needles. The LED is drawn whole here,
+// label included: a lit dot's glow over a static label would cover it, and a
+// lit dot over an unlit one would leave a dark fringe.
+void drawFaceLive(CGContextRef ctx, const FaceGeometry &g, const FaceColors &fc, const DisplaySettings &s,
+                  const Snapshot &snap, const int *channels, int needleCount) {
+    const CGFloat H = g.H;
+    CGContextSaveGState(ctx);
+    clipToWindow(ctx, g);
+
     // Peak LED (any of this face's channels over the threshold)
     if (s.peakLed) {
         bool lit = false;
         for (int i = 0; i < needleCount; ++i) lit = lit || snap.ch[channels[i]].peakDb > s.peakLedDbfs;
-        const CGFloat r = std::max(2.5, H * 0.035);
-        const CGPoint c = CGPointMake(CGRectGetMaxX(inner) - Wd * 0.08, inner.origin.y + H * 0.13);
+        const CGFloat r = g.ledR;
+        const CGPoint c = g.ledCentre;
         if (lit) {
             CGContextSaveGState(ctx);
             CGContextSetShadowWithColor(ctx, CGSizeZero, r * 3.0, cg(0xFFFF3B20));
@@ -669,8 +711,8 @@ void drawFace(CGContextRef ctx, CGRect cell, const DisplaySettings &s, const Sna
     const CGFloat needleW = std::max(1.0, H * 0.011);
     for (int i = needleCount - 1; i >= 0; --i) {
         const double deg = vu_face::angle(snap.ch[channels[i]].needleDb);
-        const CGPoint tip = polar(pivot, R + H * 0.10, deg);
-        const CGPoint base = polar(pivot, R * 0.32, deg);
+        const CGPoint tip = polar(g.pivot, g.R + H * 0.10, deg);
+        const CGPoint base = polar(g.pivot, g.R * 0.32, deg);
         CGContextSaveGState(ctx);
         CGContextSetShadowWithColor(ctx, CGSizeMake(H * 0.012, H * 0.018), H * 0.012, cg(0xFF000000, 0.35));
         CGContextSetStrokeColorWithColor(ctx, cg(fc.needle[needleCount > 1 ? i : 0]));
@@ -681,6 +723,16 @@ void drawFace(CGContextRef ctx, CGRect cell, const DisplaySettings &s, const Sna
         CGContextStrokePath(ctx);
         CGContextRestoreGState(ctx);
     }
+
+    CGContextRestoreGState(ctx);
+}
+
+// What sits over the needles: pivot housing, glass glare, window shadow.
+void drawFaceOverlay(CGContextRef ctx, const FaceGeometry &g, const FaceColors &fc) {
+    const CGRect inner = g.inner;
+    const CGFloat H = g.H, corner = g.corner;
+    CGContextSaveGState(ctx);
+    clipToWindow(ctx, g);
 
     // Pivot housing across the bottom edge
     {
@@ -696,22 +748,18 @@ void drawFace(CGContextRef ctx, CGRect cell, const DisplaySettings &s, const Sna
         CGColorRef stops[2] = { cg(0xFFFFFFFF, fc.glass), cg(0xFFFFFFFF, 0.0) };
         CFArrayRef arr = CFArrayCreate(NULL, (const void **)stops, 2, &kCFTypeArrayCallBacks);
         const CGFloat locs[2] = { 0.0, 1.0 };
-        CGGradientRef g = CGGradientCreateWithColors(space, arr, locs);
-        CGContextDrawLinearGradient(ctx, g, inner.origin, CGPointMake(inner.origin.x, inner.origin.y + H * 0.5), 0);
-        CGGradientRelease(g);
+        CGGradientRef grad = CGGradientCreateWithColors(space, arr, locs);
+        CGContextDrawLinearGradient(ctx, grad, inner.origin, CGPointMake(inner.origin.x, inner.origin.y + H * 0.5), 0);
+        CGGradientRelease(grad);
         CFRelease(arr);
         CGColorSpaceRelease(space);
     }
 
-    CGPathRelease(innerPath);
-    CGPathRelease(outer);
     CGContextRestoreGState(ctx);
 
     // Inner shadow along the top edge of the window
     CGContextSaveGState(ctx);
-    CGPathRef edge = CGPathCreateWithRoundedRect(inner, corner * 0.8, corner * 0.8, NULL);
-    CGContextAddPath(ctx, edge);
-    CGContextClip(ctx);
+    clipToWindow(ctx, g);
     CGContextSetShadowWithColor(ctx, CGSizeMake(0, H * 0.02), H * 0.04, cg(0xFF000000, 0.45));
     CGContextSetStrokeColorWithColor(ctx, cg(0xFF000000));
     CGContextSetLineWidth(ctx, H * 0.04);
@@ -719,13 +767,23 @@ void drawFace(CGContextRef ctx, CGRect cell, const DisplaySettings &s, const Sna
     CGContextAddPath(ctx, ring);
     CGContextStrokePath(ctx);
     CGPathRelease(ring);
-    CGPathRelease(edge);
     CGContextRestoreGState(ctx);
+}
+
+void drawFace(CGContextRef ctx, CGRect cell, const DisplaySettings &s, const Snapshot &snap,
+              const int *channels, int needleCount, NSString *caption, Pass pass) {
+    const FaceGeometry g = faceGeometry(cell);
+    if (g.tooSmall) return;
+    const FaceColors fc = faceColors(s);
+    if (pass == Pass::All || pass == Pass::Static) drawFaceStatic(ctx, g, fc, s, channels, needleCount, caption);
+    if (pass == Pass::All || pass == Pass::Live) drawFaceLive(ctx, g, fc, s, snap, channels, needleCount);
+    if (pass == Pass::All || pass == Pass::Overlay) drawFaceOverlay(ctx, g, fc);
 }
 
 } // namespace
 
-void MeterRenderer::drawAnalog(CGContextRef ctx, CGRect bounds, const DisplaySettings &s, const Snapshot &snap) {
+void MeterRenderer::drawAnalog(CGContextRef ctx, CGRect bounds, const DisplaySettings &s, const Snapshot &snap,
+                               Pass pass) {
     const CGRect area = CGRectInset(bounds, 4, 4);
     const bool mono = snap.channels == 1;
     NeedleLayout layout = s.needleLayout;
@@ -734,7 +792,7 @@ void MeterRenderer::drawAnalog(CGContextRef ctx, CGRect bounds, const DisplaySet
     if (layout == NeedleLayout::Single) {
         static const int both[2] = { 0, 1 };
         static const int left[1] = { 0 };
-        drawFace(ctx, area, s, snap, mono ? left : both, mono ? 1 : 2, mono ? @"MONO" : @"LR");
+        drawFace(ctx, area, s, snap, mono ? left : both, mono ? 1 : 2, mono ? @"MONO" : @"LR", pass);
         return;
     }
     // Two faces: side by side or stacked, whichever gives the bigger face.
@@ -758,8 +816,8 @@ void MeterRenderer::drawAnalog(CGContextRef ctx, CGRect bounds, const DisplaySet
         b = CGRectMake(area.origin.x, area.origin.y + ch + gap, area.size.width, ch);
     }
     static const int l[1] = { 0 }, r[1] = { 1 };
-    drawFace(ctx, a, s, snap, l, 1, @"L");
-    drawFace(ctx, b, s, snap, r, 1, @"R");
+    drawFace(ctx, a, s, snap, l, 1, @"L", pass);
+    drawFace(ctx, b, s, snap, r, 1, @"R", pass);
 }
 
 } // namespace meter
